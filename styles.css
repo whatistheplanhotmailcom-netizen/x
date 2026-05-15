@@ -61,31 +61,31 @@ body {
   height: 100vh; height: 100dvh;
   padding: 8px;
   display: grid;
-  /* v22.58: 2-column layout. Left column = main content stack, right column
-     (56px) = timeline rail spanning from destination bar to actions.
-     Row meaning unchanged:
+  /* v22.58: single-column outer grid. The map + tools rail get their
+     own 2-column .map-row wrapper so the rail only sits beside the map,
+     not above (topbar/route/diag/stats stay full width) and not below
+     (actions stay full width).
+     Children, in order:
        1. .topbar             auto
        2. .route-bar          auto
        3. .diag-strip         auto
        4. .stats              auto
-       5. .map-wrap           1fr    ← map grows
+       5. .map-row            1fr   ← map + tools rail live here
        6. .actions            auto
        7. status line         auto */
-  grid-template-columns: 1fr 56px;
   grid-template-rows: auto auto auto auto 1fr auto auto;
   gap: 8px;
-  column-gap: 6px;
   position: relative;
 }
-/* v22.58: rows above the map (topbar, route-bar, diag-strip, stats) and
-   the bottom status line span the FULL width — the timeline rail only
-   begins at the map row. Map and actions stay in column 1, leaving
-   column 2 for the rail. */
-.topbar, .route-bar, .diag-strip, .stats, .status-line {
-  grid-column: 1 / -1;
-}
-.map-wrap, .actions {
-  grid-column: 1;
+
+/* v22.58: map sits beside a slim vertical tools rail. The rail starts
+   at the top edge of the map and ends at the bottom edge of the map. */
+.map-row {
+  display: grid;
+  grid-template-columns: 1fr 72px;
+  gap: 6px;
+  align-items: stretch;
+  min-height: 0;
 }
 
 /* TOP BAR */
@@ -167,12 +167,10 @@ body {
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }
 
-/* v22.58: TIMELINE RAIL — vertical strip of recent captures on the right.
-   Lives in column 2 of the .app grid; spans map row + actions row only
-   (so the topbar / destination / diag / stats above keep full width). */
-.timeline-rail {
-  grid-column: 2;
-  grid-row: 5 / 7;
+/* v22.58: TOOLS RAIL — vertical strip of recent captures, sits in column 2
+   of .map-row beside the map. Height matches the map (align-items: stretch
+   on the parent). NOT absolutely positioned over the map. */
+.tools-rail {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -183,6 +181,8 @@ body {
   padding: 4px;
   font-family: ui-monospace, monospace;
   min-height: 0;
+  height: 100%;
+  align-self: stretch;
 }
 .timeline-entry {
   display: flex;

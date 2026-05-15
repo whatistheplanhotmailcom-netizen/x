@@ -77,22 +77,25 @@
     </div>
   </div>
 
-  <!-- MAP -->
-  <div class="map-wrap">
-    <div id="map"></div>
-    <button class="follow-pill" id="follow-pill">
-      <span class="blink"></span>
-      <span id="follow-label">Follow: ON</span>
-    </button>
-    <div class="map-overlay-btns">
-      <button class="map-btn" id="btn-fit" title="Fit all">⛶</button>
-      <button class="map-btn" id="btn-recenter" title="Recenter">📍</button>
-      <button class="map-btn" id="btn-nav" title="Auto-rotate (heading up)">🧭</button>
+  <!-- MAP ROW — map + right-side tools rail in a 2-column grid -->
+  <div class="map-row">
+    <!-- MAP -->
+    <div class="map-wrap">
+      <div id="map"></div>
+      <button class="follow-pill" id="follow-pill">
+        <span class="blink"></span>
+        <span id="follow-label">Follow: ON</span>
+      </button>
+      <div class="map-overlay-btns">
+        <button class="map-btn" id="btn-fit" title="Fit all">⛶</button>
+        <button class="map-btn" id="btn-recenter" title="Recenter">📍</button>
+        <button class="map-btn" id="btn-nav" title="Auto-rotate (heading up)">🧭</button>
+      </div>
     </div>
-  </div>
 
-  <!-- TIMELINE RAIL — vertical strip of recent captures, right side -->
-  <aside class="timeline-rail" id="timeline-rail" aria-label="Recent captures"></aside>
+    <!-- TOOLS RAIL — vertical strip of recent captures, sits beside the map -->
+    <aside class="tools-rail" id="tools-rail" aria-label="Recent captures"></aside>
+  </div>
 
   <!-- ACTIONS -->
   <div class="actions">

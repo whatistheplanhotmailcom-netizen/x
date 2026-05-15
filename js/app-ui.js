@@ -401,7 +401,7 @@ const UI = {
    *  Each entry shows emoji + short type label + abbreviated time-ago.
    *  Tap an entry → opens the point editor (same as map-marker popup). */
   renderTimeline() {
-    const rail = document.getElementById('timeline-rail');
+    const rail = document.getElementById('tools-rail');
     if (!rail) return;
     const pts = State.activePoints()
       .filter(p => p.status !== 'no')

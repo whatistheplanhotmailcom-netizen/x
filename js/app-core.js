@@ -605,6 +605,9 @@ const GPS = {
     State.uTurnTicks = 0;
     // v22.38: reset confirmation queue for fresh trip
     Confirm.resetTrip();
+    // v22.58: force the route to be refetched on the first tick of this
+    // session — start of the route line is always the current GPS position.
+    if (typeof MapView !== 'undefined' && MapView) MapView._routeForDestId = null;
     State.mode = 'gps';
     UI.setStatusMode('LIVE', 'live');
     await this.requestWakeLock();
@@ -620,6 +623,8 @@ const GPS = {
     if (State.watchId != null) { navigator.geolocation.clearWatch(State.watchId); State.watchId = null; }
     if (State.wakeLock) { try { State.wakeLock.release(); } catch (e) {} State.wakeLock = null; }
     State.mode = 'idle';
+    // v22.58: remove the drawn route line when GPS stops
+    if (typeof MapView !== 'undefined' && MapView && MapView.clearRoute) MapView.clearRoute();
     UI.setStatusMode('Idle', '');
     UI.setBtnGoActive(false);
   },

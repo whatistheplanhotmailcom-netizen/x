@@ -19,6 +19,11 @@ const MapView = {
   _lastBearingApplied: null,
   _lastBearingAt: 0,
 
+  // v22.58: route line state. Fetch once per (GPS session, destination) pair
+  // from OSRM's free public endpoint and render as a MapLibre line layer.
+  _routeForDestId: null,
+  _routeFetching: false,
+
   init() {
     if (this.m) return;
     if (typeof maplibregl === 'undefined') {
@@ -323,6 +328,10 @@ const MapView = {
 
     this.updateAheadRanks();
 
+    // v22.58: fetch & draw the driving route once per (session, destination)
+    // — internal guards make this cheap on subsequent ticks.
+    this._fetchAndDrawRoute();
+
     // Lazy full rebuild every 30 s (passed-status, fmtAgo)
     const refreshMs = 30000;
     if (!this._lastPointRefresh || Date.now() - this._lastPointRefresh > refreshMs) {
@@ -366,6 +375,84 @@ const MapView = {
       zoom: Math.max(this.m.getZoom(), 13),
       duration: 500,
     });
+  },
+
+  /** v22.58: fetch a driving route from current GPS pos → active destination
+   *  via OSRM's free public router and draw it on the map. Idempotent:
+   *  cached per destId, so it only runs once per (GPS session, destination).
+   *  Stale-fetch safe: if dest changes during the network round-trip, the
+   *  result is discarded. */
+  _fetchAndDrawRoute() {
+    if (!this.m || !this._mapLoaded) return;
+    const pos = State.pos;
+    const dest = State.activeDest();
+    if (!pos || !dest) {
+      if (this._routeForDestId) this.clearRoute();
+      return;
+    }
+    if (this._routeFetching) return;
+    if (this._routeForDestId === dest.id) return;
+
+    // Different destination than the currently-drawn one → wipe old line
+    // immediately so the user doesn't see a stale path while we fetch.
+    if (this._routeForDestId && this._routeForDestId !== dest.id) {
+      this.clearRoute();
+    }
+
+    this._routeFetching = true;
+    const destIdSnap = dest.id;
+    const url = `https://router.project-osrm.org/route/v1/driving/${pos.lng},${pos.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
+    fetch(url)
+      .then(r => { if (!r.ok) throw new Error('OSRM ' + r.status); return r.json(); })
+      .then(data => {
+        if (!data.routes || !data.routes.length) throw new Error('no route');
+        // Stale check: destination may have changed during the await
+        const currentDest = State.activeDest();
+        if (!currentDest || currentDest.id !== destIdSnap) return;
+        this._renderRoute(data.routes[0].geometry);
+        this._routeForDestId = destIdSnap;
+        const km = (data.routes[0].distance / 1000).toFixed(0);
+        const min = Math.round(data.routes[0].duration / 60);
+        Utils.toast(`Route: ${km} km · ~${min} min`, 'good');
+      })
+      .catch(e => { console.warn('Route fetch failed:', e); })
+      .finally(() => { this._routeFetching = false; });
+  },
+
+  /** v22.58: write/update the route LineString as MapLibre source+layers.
+   *  Two layers: a wider translucent glow underneath + a solid line on top
+   *  for HUD-style contrast against the map. */
+  _renderRoute(geom) {
+    if (!this.m) return;
+    const data = { type: 'Feature', properties: {}, geometry: geom };
+    const src = this.m.getSource('ra-route');
+    if (src) { src.setData(data); return; }
+    this.m.addSource('ra-route', { type: 'geojson', data });
+    this.m.addLayer({
+      id: 'ra-route-glow',
+      type: 'line',
+      source: 'ra-route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#f59e0b', 'line-width': 10, 'line-opacity': 0.25 },
+    });
+    this.m.addLayer({
+      id: 'ra-route-line',
+      type: 'line',
+      source: 'ra-route',
+      layout: { 'line-cap': 'round', 'line-join': 'round' },
+      paint: { 'line-color': '#f59e0b', 'line-width': 5, 'line-opacity': 0.9 },
+    });
+  },
+
+  /** v22.58: remove the route layers and source. Called on GPS stop and
+   *  on destination change (before a refetch). */
+  clearRoute() {
+    if (!this.m) return;
+    ['ra-route-line', 'ra-route-glow'].forEach(id => {
+      try { if (this.m.getLayer(id)) this.m.removeLayer(id); } catch (e) {}
+    });
+    try { if (this.m.getSource('ra-route')) this.m.removeSource('ra-route'); } catch (e) {}
+    this._routeForDestId = null;
   },
 
   askSetDest(latlng) {
@@ -1027,6 +1114,8 @@ const UI = {
         State.saveData();
         this.renderRoutesList();
         MapView.updatePoints();
+        // v22.58: clear the old route line; next GPS tick will refetch for the new destination
+        MapView.clearRoute();
         Utils.toast('Destination set', 'good');
       }
     );

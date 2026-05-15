@@ -77,8 +77,14 @@ body {
   column-gap: 6px;
   position: relative;
 }
-/* All existing children stay in column 1 */
-.topbar, .route-bar, .diag-strip, .stats, .map-wrap, .actions, .status-line {
+/* v22.58: rows above the map (topbar, route-bar, diag-strip, stats) and
+   the bottom status line span the FULL width — the timeline rail only
+   begins at the map row. Map and actions stay in column 1, leaving
+   column 2 for the rail. */
+.topbar, .route-bar, .diag-strip, .stats, .status-line {
+  grid-column: 1 / -1;
+}
+.map-wrap, .actions {
   grid-column: 1;
 }
 
@@ -162,10 +168,11 @@ body {
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }
 
 /* v22.58: TIMELINE RAIL — vertical strip of recent captures on the right.
-   Lives in column 2 of the .app grid; spans destination-bar row to actions row. */
+   Lives in column 2 of the .app grid; spans map row + actions row only
+   (so the topbar / destination / diag / stats above keep full width). */
 .timeline-rail {
   grid-column: 2;
-  grid-row: 2 / 7;
+  grid-row: 5 / 7;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;

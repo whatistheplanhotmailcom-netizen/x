@@ -33,6 +33,23 @@ const MapView = {
       return setTimeout(() => this.init(), 200);
     }
     try {
+      // v22.58: register RTL text plugin BEFORE creating the map so Arabic
+      // (and Hebrew, Persian) labels render in correct reading order
+      // instead of visually reversed. MapLibre uses Mapbox's bidi plugin.
+      // Idempotent — status check prevents double-registration on re-init.
+      try {
+        const status = (typeof maplibregl.getRTLTextPluginStatus === 'function')
+          ? maplibregl.getRTLTextPluginStatus()
+          : 'unavailable';
+        if (status === 'unavailable') {
+          maplibregl.setRTLTextPlugin(
+            'https://unpkg.com/@mapbox/mapbox-gl-rtl-text@0.2.3/mapbox-gl-rtl-text.min.js',
+            err => { if (err) console.warn('RTL plugin load error:', err); },
+            true  // lazy: only fetch when an RTL character is encountered
+          );
+        }
+      } catch (e) { console.warn('RTL plugin setup failed:', e); }
+
       const dest = State.activeDest();
       // MapLibre uses [lng, lat] (NOT [lat, lng] like Leaflet!).
       const center = dest ? [dest.lng, dest.lat]

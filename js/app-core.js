@@ -69,12 +69,12 @@ const Utils = {
     if (subtype === 'spider') return '🕷️';
     return { petrol:'⛽', checkpoint:'🛂', speed_camera:'📷',
              mobile_camera:'📱', pole_camera:'📹', spider_camera:'🕷️',
-             speed_change:'⇅', gate:'🚪', other:'📝' }[type] || '•';
+             speed_change:'⇅', gate:'🚪', traffic_light:'🚦', other:'📝' }[type] || '•';
   },
   typeLabel(t) {
     return { petrol:'Petrol', checkpoint:'Checkpoint', speed_camera:'Speed cam',
              mobile_camera:'Mobile cam', pole_camera:'Pole speed cam', spider_camera:'Spider speed cam',
-             speed_change:'Speed zone', gate:'Gate', other:'Custom' }[t] || t;
+             speed_change:'Speed zone', gate:'Gate', traffic_light:'Traffic light', other:'Custom' }[t] || t;
   },
   toast(msg, cls) {
     const el = document.getElementById('toast');

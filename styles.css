@@ -621,6 +621,7 @@ body {
 .ra-marker.t-spider_camera { border-color: #7e22ce; background: #f3e8ff; }
 .ra-marker.t-speed_change  { border-color: #0891b2; background: #cffafe; }
 .ra-marker.t-gate          { border-color: #7c3aed; background: #ede9fe; }
+.ra-marker.t-traffic_light { border-color: #16a34a; background: #dcfce7; }
 .ra-marker.t-other         { border-color: #57534e; background: #f5f1e8; }
 .ra-marker .side {
   position: absolute;
@@ -870,6 +871,7 @@ body {
 .cap-btn.t-spider_camera { border-color: #7e22ce; }
 .cap-btn.t-speed_change  { border-color: #0891b2; }
 .cap-btn.t-gate          { border-color: #7c3aed; }
+.cap-btn.t-traffic_light { border-color: #16a34a; }
 .cap-btn.t-other         { border-color: #57534e; }
 
 /* SHEET BUTTONS */

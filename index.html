@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -8,866 +7,41 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Road Alert">
-<title>Road Alert v17</title>
+<title>Road Alert v22.57</title>
 
 <link rel="manifest" href='data:application/json,{"name":"Road Alert","short_name":"RoadAlert","start_url":".","display":"standalone","background_color":"%23f5f1e8","theme_color":"%23f5f1e8","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 192 192%22%3E%3Crect width=%22192%22 height=%22192%22 fill=%22%23f5f1e8%22/%3E%3Ccircle cx=%2296%22 cy=%2296%22 r=%2240%22 fill=%22none%22 stroke=%22%23ef4444%22 stroke-width=%2210%22/%3E%3Ctext x=%2296%22 y=%22112%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-weight=%22800%22 font-size=%2240%22 fill=%22%231c1917%22%3E120%3C/text%3E%3C/svg%3E","sizes":"192x192","type":"image/svg+xml"}]}'>
 
 <link rel="preconnect" href="https://unpkg.com">
+<!-- v22.51: switched from Leaflet to MapLibre GL JS for native map rotation -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
+      onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<!-- Leaflet from CDN with SRI for security; cached aggressively by the browser -->
-
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-      crossorigin="">
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-        crossorigin=""></script>
-
-<style>
-/* ============================================================
-   THEME — light by default (matches v20.2 screenshot), dark via [data-theme="dark"]
-   ============================================================ */
-:root, [data-theme="light"] {
-  --bg: #f5f1e8;
-  --surface: #ffffff;
-  --surface-2: #faf7f0;
-  --line: rgba(28,25,23,0.10);
-  --line-2: rgba(28,25,23,0.18);
-  --ink: #1c1917;
-  --ink-2: #57534e;
-  --ink-3: #a8a29e;
-  --amber: #f59e0b;
-  --amber-2: #d97706;
-  --red: #ef4444;
-  --green: #65a30d;
-  --green-2: #84cc16;
-  --blue: #2563eb;
-  --orange: #f97316;
-  --yellow: #eab308;
-  --cyan: #06b6d4;
-  --violet: #a78bfa;
-  --sign-bg: #ffffff;
-  --sign-ring: #ef4444;
-  --sign-ink: #2563eb;
-  --speedo-bg: #1c1917;
-  --speedo-ink: #ffffff;
-  --shadow: 0 2px 8px rgba(28,25,23,0.06);
-}
-[data-theme="dark"] {
-  --bg: #0c0a09;
-  --surface: #1c1917;
-  --surface-2: #292524;
-  --line: rgba(245,241,232,0.10);
-  --line-2: rgba(245,241,232,0.20);
-  --ink: #f5f1e8;
-  --ink-2: #a8a29e;
-  --ink-3: #57534e;
-  --shadow: 0 2px 12px rgba(0,0,0,0.5);
-}
-
-/* ============================================================
-   RESET & BASE
-   ============================================================ */
-* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-html, body { height: 100%; overflow: hidden; }
-body {
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  background: var(--bg);
-  color: var(--ink);
-  height: 100vh; height: 100dvh;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
-  user-select: none; -webkit-user-select: none;
-  font-size: 14px;
-  transition: background 0.3s, color 0.3s;
-}
-
-/* ============================================================
-   LAYOUT — full-screen grid, no scrolling at app level
-   ============================================================ */
-.app {
-  max-width: 520px;
-  margin: 0 auto;
-  height: 100vh; height: 100dvh;
-  padding: 8px;
-  display: grid;
-  grid-template-rows: auto auto auto 1fr auto auto;
-  gap: 8px;
-  position: relative;
-}
-
-/* ============================================================
-   TOP BAR — brand + settings cog
-   ============================================================ */
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 4px 0;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-weight: 700;
-  font-size: 14px;
-}
-.brand .dot {
-  width: 12px; height: 12px;
-  border: 2px solid var(--amber);
-  border-radius: 50%;
-  position: relative;
-}
-.brand .dot::after {
-  content: '';
-  position: absolute;
-  inset: 2px;
-  background: var(--amber);
-  border-radius: 50%;
-}
-.brand .version {
-  color: var(--amber-2);
-  font-size: 11px;
-  font-weight: 600;
-}
-.topbar-spacer { flex: 1; }
-.icon-btn {
-  appearance: none;
-  border: 1px solid var(--line);
-  background: var(--surface);
-  color: var(--ink);
-  width: 32px; height: 32px;
-  border-radius: 8px;
-  cursor: pointer;
-  display: grid; place-items: center;
-  font-size: 14px;
-  padding: 0;
-  transition: transform 0.1s;
-}
-.icon-btn:active { transform: scale(0.92); }
-
-/* ============================================================
-   ROUTE BAR — current destination, tap to switch
-   ============================================================ */
-.route-bar {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 6px;
-}
-.route-current {
-  appearance: none;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 12px 14px;
-  text-align: left;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font: inherit;
-  color: var(--amber-2);
-  font-weight: 700;
-  font-size: 15px;
-}
-.route-current:active { background: var(--surface-2); }
-.route-current .arrow { color: var(--amber); }
-.route-menu {
-  appearance: none;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  width: 56px;
-  cursor: pointer;
-  font-size: 18px;
-  color: var(--ink-2);
-  letter-spacing: 2px;
-}
-.route-menu:active { background: var(--surface-2); }
-
-/* ============================================================
-   STATS ROW — speed sign + next ahead
-   ============================================================ */
-.stats {
-  display: grid;
-  grid-template-columns: minmax(0,1fr) minmax(0,1.1fr);
-  gap: 8px;
-  min-height: 0;
-}
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-.stat-label {
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  color: var(--ink-2);
-  text-transform: uppercase;
-  font-weight: 700;
-  margin-bottom: 6px;
-}
-.speed-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex: 1;
-}
-.sign {
-  width: 72px; height: 72px;
-  border-radius: 50%;
-  border: 5px solid var(--sign-ring);
-  background: var(--sign-bg);
-  display: grid;
-  place-items: center;
-  position: relative;
-  flex-shrink: 0;
-}
-.sign-value {
-  font-size: 26px;
-  font-weight: 800;
-  color: var(--sign-ink);
-  line-height: 1;
-  letter-spacing: -0.04em;
-}
-.sign-label {
-  position: absolute;
-  bottom: 10px;
-  font-size: 9px;
-  font-weight: 700;
-  color: var(--ink-2);
-  letter-spacing: 0.04em;
-}
-.sign.flash {
-  animation: signflash 0.6s ease-out;
-}
-@keyframes signflash {
-  0% { box-shadow: 0 0 0 0 rgba(239,68,68,0.8); transform: scale(1); }
-  50% { box-shadow: 0 0 0 16px rgba(239,68,68,0); transform: scale(1.05); }
-  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); transform: scale(1); }
-}
-.speedo {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-.speedo-val {
-  background: var(--speedo-bg);
-  color: var(--speedo-ink);
-  font-weight: 800;
-  font-size: 26px;
-  line-height: 1;
-  padding: 8px 10px;
-  border-radius: 8px;
-  font-variant-numeric: tabular-nums;
-  min-width: 50px;
-  text-align: center;
-}
-.speedo-val.over { background: var(--red); animation: overpulse 0.6s infinite; }
-@keyframes overpulse {
-  0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
-  50% { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
-}
-.speedo-unit {
-  font-size: 10px;
-  color: var(--ink-2);
-  letter-spacing: 0.04em;
-  font-weight: 700;
-}
-.next-body {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  min-width: 0;
-}
-.next-empty {
-  font-style: italic;
-  color: var(--ink-3);
-  font-size: 13px;
-}
-.next-name {
-  font-weight: 700;
-  font-size: 14px;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.next-meta {
-  font-size: 11px;
-  color: var(--ink-2);
-  margin-top: 2px;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.next-dist {
-  font-size: 22px;
-  font-weight: 800;
-  color: var(--amber-2);
-  letter-spacing: -0.03em;
-  font-variant-numeric: tabular-nums;
-  margin-top: 4px;
-}
-.next-dist .unit { font-size: 12px; color: var(--ink-2); margin-left: 3px; font-weight: 600; }
-
-/* ============================================================
-   MAP — the big one in the middle
-   ============================================================ */
-.map-wrap {
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  overflow: hidden;
-  position: relative;
-  min-height: 200px;
-}
-#map { width: 100%; height: 100%; background: var(--surface-2); }
-.map-overlay-btns {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  z-index: 500;
-}
-.map-btn {
-  appearance: none;
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--line-2);
-  border-radius: 8px;
-  width: 36px; height: 36px;
-  cursor: pointer;
-  display: grid; place-items: center;
-  font-size: 14px;
-  box-shadow: var(--shadow);
-}
-.map-btn.active {
-  background: var(--green-2);
-  color: #0c0a09;
-  border-color: var(--green-2);
-}
-.map-btn:active { transform: scale(0.92); }
-.follow-pill {
-  position: absolute;
-  left: 8px;
-  bottom: 8px;
-  z-index: 500;
-  background: var(--green-2);
-  color: #0c0a09;
-  border: none;
-  border-radius: 999px;
-  padding: 4px 10px;
-  font: 600 10px ui-monospace, monospace;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  box-shadow: var(--shadow);
-}
-.follow-pill.off {
-  background: var(--surface);
-  color: var(--ink-2);
-  border: 1px solid var(--line);
-}
-.follow-pill .blink {
-  width: 6px; height: 6px;
-  border-radius: 50%;
-  background: #0c0a09;
-  animation: blink 1.5s infinite;
-}
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
-.follow-pill.off .blink { background: var(--ink-3); animation: none; }
-
-/* ============================================================
-   MAP MARKERS — custom Leaflet divIcons
-   ============================================================ */
-.ra-marker {
-  width: 36px !important; height: 36px !important;
-  margin-left: -18px !important; margin-top: -18px !important;
-  border: 3px solid;
-  border-radius: 50%;
-  display: grid !important; place-items: center;
-  font-size: 18px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.25);
-  background: var(--surface);
-  position: relative;
-}
-.ra-marker.passed { opacity: 0.4; }
-.ra-marker.disabled { opacity: 0.3; filter: grayscale(1); }
-.ra-marker.t-petrol        { border-color: #65a30d; background: #ecfccb; }
-.ra-marker.t-checkpoint    { border-color: #ca8a04; background: #fef9c3; }
-.ra-marker.t-speed_camera  { border-color: #dc2626; background: #fee2e2; }
-.ra-marker.t-mobile_camera { border-color: #ea580c; background: #ffedd5; }
-.ra-marker.t-speed_change  { border-color: #0891b2; background: #cffafe; }
-.ra-marker.t-gate          { border-color: #7c3aed; background: #ede9fe; }
-.ra-marker.t-other         { border-color: #57534e; background: #f5f1e8; }
-.ra-marker .side {
-  position: absolute;
-  bottom: -6px; right: -6px;
-  width: 16px; height: 16px;
-  background: #1c1917;
-  color: #fff;
-  font-size: 9px;
-  font-weight: 800;
-  border-radius: 3px;
-  border: 2px solid var(--surface);
-  display: grid; place-items: center;
-}
-.ra-current {
-  width: 22px !important; height: 22px !important;
-  margin-left: -11px !important; margin-top: -11px !important;
-  background: #2563eb;
-  border: 3px solid #fff;
-  border-radius: 50%;
-  box-shadow: 0 0 0 4px rgba(37,99,235,0.3), 0 2px 6px rgba(0,0,0,0.5);
-  animation: pulsedot 2s infinite;
-}
-@keyframes pulsedot {
-  0%,100% { box-shadow: 0 0 0 4px rgba(37,99,235,0.3), 0 2px 6px rgba(0,0,0,0.5); }
-  50% { box-shadow: 0 0 0 10px rgba(37,99,235,0), 0 2px 6px rgba(0,0,0,0.5); }
-}
-.ra-dest {
-  width: 36px !important; height: 36px !important;
-  margin-left: -18px !important; margin-top: -18px !important;
-  background: var(--green-2);
-  border: 3px solid #fff;
-  border-radius: 50%;
-  display: grid !important; place-items: center;
-  font-size: 18px;
-  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
-}
-
-/* ============================================================
-   ACTION ROW — Capture / Start GPS / Settings
-   ============================================================ */
-.actions {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr auto;
-  gap: 6px;
-}
-.btn {
-  appearance: none;
-  border: 1px solid var(--line-2);
-  background: var(--surface);
-  color: var(--ink);
-  font: 700 14px ui-monospace, monospace;
-  padding: 14px 16px;
-  border-radius: 10px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  transition: transform 0.1s;
-}
-.btn:active { transform: scale(0.97); }
-.btn-capture { background: var(--red); color: #fff; border-color: var(--red); }
-.btn-go { background: var(--green-2); color: #0c0a09; border-color: var(--green-2); }
-.btn-go.active { background: var(--surface); color: var(--red); border-color: var(--red); }
-.btn-square { width: 48px; padding: 14px 0; }
-
-/* ============================================================
-   STATUS LINE — small under the actions
-   ============================================================ */
-.status-line {
-  font-size: 10px;
-  color: var(--ink-3);
-  text-align: center;
-  letter-spacing: 0.04em;
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  padding: 0 4px;
-  flex-wrap: wrap;
-}
-.status-line strong { color: var(--ink-2); margin-right: 3px; }
-.status-line .live { color: var(--green); }
-.status-line .demo { color: var(--cyan); }
-
-/* ============================================================
-   MODALS — bottom sheets
-   ============================================================ */
-.modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(0,0,0,0.5);
-  display: none;
-  align-items: flex-end;
-  z-index: 1000;
-}
-.modal.open { display: flex; }
-.modal-card {
-  width: 100%;
-  max-width: 520px;
-  margin: 0 auto;
-  background: var(--bg);
-  border-top: 1px solid var(--line-2);
-  border-radius: 16px 16px 0 0;
-  padding: 16px;
-  max-height: 90vh;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-bottom: calc(16px + env(safe-area-inset-bottom));
-}
-.modal-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.modal-title { font-weight: 700; font-size: 16px; }
-.modal-close {
-  appearance: none;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  color: var(--ink-2);
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  cursor: pointer;
-  font-size: 16px;
-}
-.section-title {
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  color: var(--ink-3);
-  text-transform: uppercase;
-  font-weight: 700;
-  margin-top: 6px;
-  padding: 0 4px;
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font-size: 13px;
-}
-.row .label { flex: 1; color: var(--ink); }
-.row input, .row select {
-  background: var(--bg);
-  border: 1px solid var(--line-2);
-  color: var(--ink);
-  font: inherit;
-  padding: 6px 8px;
-  border-radius: 6px;
-  text-align: right;
-}
-.row input[type=number] { width: 72px; text-align: center; }
-.row input[type=text]   { flex: 2; text-align: left; }
-.opts {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-.opts button {
-  appearance: none;
-  background: var(--bg);
-  border: 1px solid var(--line-2);
-  color: var(--ink-2);
-  padding: 5px 10px;
-  border-radius: 6px;
-  font: 600 11px ui-monospace, monospace;
-  cursor: pointer;
-}
-.opts button.active {
-  background: var(--amber);
-  color: #0c0a09;
-  border-color: var(--amber);
-}
-.toggle {
-  width: 36px; height: 20px;
-  background: var(--bg);
-  border: 1px solid var(--line-2);
-  border-radius: 999px;
-  position: relative;
-  cursor: pointer;
-}
-.toggle::after {
-  content: '';
-  position: absolute;
-  left: 2px; top: 2px;
-  width: 14px; height: 14px;
-  background: var(--ink-3);
-  border-radius: 50%;
-  transition: transform 0.15s, background 0.15s;
-}
-.toggle.on { background: var(--amber); border-color: var(--amber); }
-.toggle.on::after { transform: translateX(16px); background: #0c0a09; }
-
-/* ============================================================
-   CAPTURE GRID — big tappable buttons
-   ============================================================ */
-.cap-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-.cap-btn {
-  appearance: none;
-  border: 2px solid var(--line-2);
-  background: var(--surface);
-  color: var(--ink);
-  padding: 16px 8px;
-  border-radius: 12px;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  font: 700 12px ui-monospace, monospace;
-  min-height: 80px;
-}
-.cap-btn:active { transform: scale(0.95); }
-.cap-btn .em { font-size: 28px; }
-.cap-btn.t-petrol        { border-color: #65a30d; }
-.cap-btn.t-checkpoint    { border-color: #ca8a04; }
-.cap-btn.t-speed_camera  { border-color: #dc2626; }
-.cap-btn.t-mobile_camera { border-color: #ea580c; }
-.cap-btn.t-speed_change  { border-color: #0891b2; }
-.cap-btn.t-gate          { border-color: #7c3aed; }
-.cap-btn.t-other         { border-color: #57534e; }
-
-/* ============================================================
-   SHEET BUTTONS — side / limit pickers
-   ============================================================ */
-.sheet-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.sheet-btn {
-  appearance: none;
-  background: var(--surface);
-  border: 1px solid var(--line-2);
-  color: var(--ink);
-  padding: 18px;
-  border-radius: 12px;
-  font: 700 14px ui-monospace, monospace;
-  cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-}
-.sheet-btn:active { transform: scale(0.97); }
-.sheet-btn .em { font-size: 26px; }
-
-.limit-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-.limit-pick {
-  appearance: none;
-  border: 3px solid var(--red);
-  background: #fff;
-  color: #1c1917;
-  font: 800 22px ui-monospace, monospace;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  cursor: pointer;
-  display: grid;
-  place-items: center;
-}
-.limit-pick:active { transform: scale(0.94); }
-
-/* ============================================================
-   POINTS LIST (used in settings, audit, log)
-   ============================================================ */
-.list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 50vh;
-  overflow-y: auto;
-}
-.list-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font-size: 12px;
-}
-.list-row .em { font-size: 20px; flex-shrink: 0; }
-.list-row .info { flex: 1; min-width: 0; }
-.list-row .name {
-  font-weight: 700;
-  color: var(--ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.list-row .meta {
-  font-size: 10px;
-  color: var(--ink-3);
-}
-.list-row.disabled .name { text-decoration: line-through; opacity: 0.5; }
-.list-row .row-btn {
-  appearance: none;
-  border: 1px solid var(--line-2);
-  background: var(--surface);
-  color: var(--ink);
-  width: 28px; height: 28px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 12px;
-  display: grid; place-items: center;
-}
-.list-row .row-btn.del { color: var(--red); border-color: var(--red); }
-.list-row .row-btn.keep { color: var(--green); border-color: var(--green); }
-.list-row .row-btn.active.keep { background: var(--green); color: #fff; }
-.list-row .row-btn.active.del { background: var(--red); color: #fff; }
-.empty {
-  text-align: center;
-  padding: 24px 12px;
-  color: var(--ink-3);
-  font-size: 13px;
-  font-style: italic;
-}
-
-/* ============================================================
-   TABS
-   ============================================================ */
-.tabs {
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  flex-wrap: wrap;
-}
-.tab {
-  appearance: none;
-  background: transparent;
-  border: none;
-  color: var(--ink-2);
-  padding: 6px 10px;
-  border-radius: 6px;
-  font: 600 11px ui-monospace, monospace;
-  cursor: pointer;
-  text-transform: uppercase;
-  flex: 1;
-  min-width: max-content;
-}
-.tab.active {
-  background: var(--amber);
-  color: #0c0a09;
-}
-
-/* ============================================================
-   TOAST
-   ============================================================ */
-.toast {
-  position: fixed;
-  bottom: calc(80px + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%) translateY(20px);
-  background: var(--ink);
-  color: var(--bg);
-  padding: 10px 16px;
-  border-radius: 999px;
-  font: 600 12px ui-monospace, monospace;
-  opacity: 0;
-  pointer-events: none;
-  z-index: 2000;
-  transition: opacity 0.2s, transform 0.2s;
-  box-shadow: var(--shadow);
-}
-.toast.show {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-.toast.good { background: var(--green); color: #fff; }
-.toast.bad { background: var(--red); color: #fff; }
-
-/* Leaflet style overrides — match our theme */
-.leaflet-container { background: var(--surface-2); font-family: ui-monospace, monospace; }
-.leaflet-control-attribution {
-  background: rgba(255,255,255,0.7) !important;
-  font-size: 9px !important;
-  color: var(--ink-2) !important;
-}
-.leaflet-control-attribution a { color: var(--amber-2) !important; }
-.leaflet-popup-content-wrapper {
-  background: var(--surface) !important;
-  color: var(--ink) !important;
-  border-radius: 10px !important;
-  border: 1px solid var(--line-2);
-}
-.leaflet-popup-tip { background: var(--surface) !important; }
-.leaflet-popup-content { margin: 10px 14px !important; font-size: 12px; }
-.leaflet-popup-content .pop-name { font-weight: 700; margin-bottom: 4px; font-size: 13px; }
-.leaflet-popup-content .pop-meta { font-size: 10px; color: var(--ink-2); margin-bottom: 6px; }
-.leaflet-popup-content button {
-  appearance: none;
-  border: none;
-  background: var(--amber);
-  color: #0c0a09;
-  padding: 5px 10px;
-  border-radius: 5px;
-  font-weight: 700;
-  font-size: 11px;
-  cursor: pointer;
-  margin-right: 4px;
-}
-.leaflet-control-zoom a {
-  background: var(--surface) !important;
-  color: var(--ink) !important;
-  border-color: var(--line) !important;
-}
-
-/* Tight phone screens */
-@media (max-height: 700px) {
-  .sign { width: 60px; height: 60px; border-width: 4px; }
-  .sign-value { font-size: 22px; }
-  .sign-label { bottom: 7px; font-size: 8px; }
-  .speedo-val { font-size: 22px; padding: 6px 8px; }
-  .next-dist { font-size: 18px; }
-}
-</style>
-
+<link rel="stylesheet" href="styles.css?v=22.57">
 </head>
 <body data-theme="light">
 
 <div class="app">
-
-  <!-- ============================================================
-       TOP BAR
-       ============================================================ -->
-
+  <!-- TOP BAR -->
   <div class="topbar">
     <div class="brand">
       <span class="dot"></span>
       <span>Road Alert</span>
-      <span class="version">v17</span>
+      <span class="version">v22.57</span>
     </div>
     <span class="topbar-spacer"></span>
-    <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
+    <div class="topbar-actions">
+      <button class="icon-btn" id="btn-sound" title="Sound mode">🔊</button>
+      <button class="icon-btn" id="btn-theme" title="Theme">☀</button>
+      <!-- v22.56: toggle long-press-to-capture on/off. OFF (🔒) prevents
+           accidental captures. ON (🔓) enables long-press on empty map. -->
+      <button class="icon-btn" id="btn-longpress" title="Long-press capture">🔒</button>
+      <button class="icon-btn" id="btn-fit-top" title="Fit all">⛶</button>
+      <button class="icon-btn" id="btn-recenter-top" title="Recenter">📍</button>
+      <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
+    </div>
   </div>
 
-  <!-- ============================================================
-       ROUTE BAR
-       ============================================================ -->
-
+  <!-- ROUTE BAR -->
   <div class="route-bar">
     <button class="route-current" id="btn-route">
       <span class="arrow">→</span>
@@ -876,15 +50,17 @@ body {
     <button class="route-menu" id="btn-route-menu" title="Switch route">⋯</button>
   </div>
 
-  <!-- ============================================================
-       STATS — speed sign, current speed, next ahead
-       ============================================================ -->
+  <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->
+  <div class="diag-strip" id="diag-strip">
+    <span id="diag-gps">GPS —</span>
+  </div>
 
+  <!-- STATS -->
   <div class="stats">
     <div class="stat-card">
       <div class="stat-label">Speed</div>
       <div class="speed-row">
-        <div class="sign" id="sign">
+        <div class="sign" id="sign" title="Tap to set limit">
           <div class="sign-value" id="sign-value">—</div>
           <div class="sign-label">LIMIT</div>
         </div>
@@ -894,18 +70,15 @@ body {
         </div>
       </div>
     </div>
-    <div class="stat-card">
-      <div class="stat-label">Next ahead</div>
+    <div class="stat-card" id="next-card" style="cursor:pointer;-webkit-user-select:none;user-select:none;touch-action:manipulation;">
+      <div class="stat-label">Next ahead <span style="font-size:9px;color:var(--ink-3);font-weight:600;">· tap</span></div>
       <div class="next-body" id="next-body">
         <div class="next-empty">— nothing ahead —</div>
       </div>
     </div>
   </div>
 
-  <!-- ============================================================
-       MAP
-       ============================================================ -->
-
+  <!-- MAP -->
   <div class="map-wrap">
     <div id="map"></div>
     <button class="follow-pill" id="follow-pill">
@@ -915,37 +88,82 @@ body {
     <div class="map-overlay-btns">
       <button class="map-btn" id="btn-fit" title="Fit all">⛶</button>
       <button class="map-btn" id="btn-recenter" title="Recenter">📍</button>
+      <button class="map-btn" id="btn-nav" title="Auto-rotate (heading up)">🧭</button>
     </div>
   </div>
 
-  <!-- ============================================================
-       ACTION ROW
-       ============================================================ -->
-
+  <!-- ACTIONS -->
   <div class="actions">
     <button class="btn btn-capture" id="btn-capture">📷 Capture</button>
     <button class="btn btn-go" id="btn-go">▶ Start GPS</button>
-    <button class="btn btn-square" id="btn-demo" title="Demo">▷</button>
   </div>
 
-  <!-- ============================================================
-       STATUS LINE
-       ============================================================ -->
-
+  <!-- STATUS LINE -->
   <div class="status-line">
     <span><strong id="status-mode">Idle</strong></span>
     <span><strong id="status-gps">—</strong></span>
     <span id="status-pts">0 pts</span>
   </div>
-
 </div>
 
-<!-- ============================================================
-     MODALS
-     ============================================================ -->
+<!-- ============== MODALS ============== -->
 
-<!-- Capture menu -->
+<!-- v22.8: Sound Check diagnostic -->
+<div class="modal" id="m-sound-check">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title">🔊 Sound check</div>
+      <button class="modal-close" data-close>×</button>
+    </div>
+    <div id="sound-check-results" style="font-family:var(--mono,monospace);font-size:11px;line-height:1.6;padding:8px;background:var(--surface);border:1px solid var(--line);border-radius:8px;"></div>
 
+    <div class="section-title">Tests</div>
+    <button class="btn" id="sc-tone">▶ Play tone (current style)</button>
+    <button class="btn" id="sc-tone-cam">▶ Play speed-cam pattern</button>
+    <button class="btn" id="sc-voice">▶ Speak "Speed camera in 500 meters"</button>
+    <button class="btn" id="sc-alert">▶ Full alert (tone + voice)</button>
+    <button class="btn" id="sc-repeat">▶ Test repeat (3× with gap)</button>
+    <button class="btn" id="sc-near" style="background:var(--amber);color:#0c0a09;">⚡ Force-alert nearest ahead</button>
+
+    <div class="section-title">Troubleshooting</div>
+    <div style="font-size:11px;color:var(--ink-2);padding:6px;line-height:1.5;">
+      <strong>If you hear nothing on iOS:</strong><br>
+      • Check the silent-mode switch on the side of the phone — flip it OFF (no orange).<br>
+      • Tones use Web Audio which is muted by the silent switch. Voice is NOT muted.<br>
+      • Turn up the volume buttons (Ringer volume, not Media).<br>
+      <br>
+      <strong>If voice doesn't work:</strong><br>
+      • iOS may need a few seconds to load voices on first launch.<br>
+      • Wait, then re-open Sound check.<br>
+      • Some voices need download in Settings → Accessibility → Spoken Content.<br>
+      <br>
+      <strong>If tested in an in-app browser (TikTok/Facebook):</strong><br>
+      • Open the page in real Safari or Chrome instead.
+    </div>
+  </div>
+</div>
+
+<!-- v22.7: Start GPS confirm destination -->
+<div class="modal" id="m-confirm-start">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title">Confirm destination</div>
+      <button class="modal-close" data-close>×</button>
+    </div>
+    <div style="text-align:center;padding:14px 8px 8px;">
+      <div style="font-size:11px;color:var(--ink-2);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:6px;">Drive to</div>
+      <div id="confirm-dest-name" style="font-size:22px;font-weight:800;color:var(--amber-2);">—</div>
+      <div id="confirm-dest-meta" style="font-size:11px;color:var(--ink-3);margin-top:4px;">—</div>
+    </div>
+    <div style="display:flex;gap:6px;">
+      <button class="btn" id="confirm-cancel" style="flex:1;">Cancel</button>
+      <button class="btn" id="confirm-change" style="flex:1.2;">Change</button>
+      <button class="btn btn-go" id="confirm-start" style="flex:1.5;">▶ Start</button>
+    </div>
+  </div>
+</div>
+
+<!-- Capture -->
 <div class="modal" id="m-capture">
   <div class="modal-card">
     <div class="modal-head">
@@ -957,6 +175,8 @@ body {
       <button class="cap-btn t-checkpoint"    data-cap="checkpoint"><span class="em">🛂</span>Checkpoint</button>
       <button class="cap-btn t-speed_camera"  data-cap="speed_camera"><span class="em">📷</span>Speed cam</button>
       <button class="cap-btn t-mobile_camera" data-cap="mobile_camera"><span class="em">📱</span>Mobile cam</button>
+      <button class="cap-btn t-pole_camera"   data-cap="pole_camera"><span class="em">📹</span>Pole speed cam</button>
+      <button class="cap-btn t-spider_camera" data-cap="spider_camera"><span class="em">🕷️</span>Spider speed cam</button>
       <button class="cap-btn t-speed_change"  data-cap="speed_change"><span class="em">⇅</span>Speed zone</button>
       <button class="cap-btn t-gate"          data-cap="gate"><span class="em">🚪</span>Gate</button>
       <button class="cap-btn t-other"         data-cap="other" style="grid-column:span 2;"><span class="em">📝</span>Other / Custom</button>
@@ -964,8 +184,7 @@ body {
   </div>
 </div>
 
-<!-- Side picker (cameras only) -->
-
+<!-- Side picker -->
 <div class="modal" id="m-side">
   <div class="modal-card">
     <div class="modal-head">
@@ -981,11 +200,10 @@ body {
 </div>
 
 <!-- Speed limit picker -->
-
 <div class="modal" id="m-limit">
   <div class="modal-card">
     <div class="modal-head">
-      <div class="modal-title">New speed limit (km/h)</div>
+      <div class="modal-title" id="limit-title">New speed limit (km/h)</div>
       <button class="modal-close" data-close>×</button>
     </div>
     <div class="limit-grid" id="limit-grid"></div>
@@ -993,11 +211,11 @@ body {
       <input type="number" id="limit-custom" placeholder="Custom" min="20" max="200" step="5">
       <button class="btn btn-go" id="limit-save" style="flex:0 0 auto;padding:8px 16px;">Save</button>
     </div>
+    <button class="btn" id="limit-clear" style="color:var(--red);border-color:var(--red);">Clear manual limit</button>
   </div>
 </div>
 
-<!-- Custom name (for "Other" type) -->
-
+<!-- Custom name -->
 <div class="modal" id="m-other">
   <div class="modal-card">
     <div class="modal-head">
@@ -1012,7 +230,6 @@ body {
 </div>
 
 <!-- Point editor -->
-
 <div class="modal" id="m-edit">
   <div class="modal-card">
     <div class="modal-head">
@@ -1026,6 +243,8 @@ body {
         <option value="checkpoint">🛂 Checkpoint</option>
         <option value="speed_camera">📷 Speed cam</option>
         <option value="mobile_camera">📱 Mobile cam</option>
+        <option value="pole_camera">📹 Pole speed cam</option>
+        <option value="spider_camera">🕷️ Spider speed cam</option>
         <option value="speed_change">⇅ Speed zone</option>
         <option value="gate">🚪 Gate</option>
         <option value="other">📝 Other</option>
@@ -1053,7 +272,7 @@ body {
     <div class="row"><span class="label">Lat</span><input type="number" id="e-lat" step="0.00001"></div>
     <div class="row"><span class="label">Lng</span><input type="number" id="e-lng" step="0.00001"></div>
     <div style="display:flex;gap:6px;">
-      <button class="btn" id="e-gmap">📍 Google Maps</button>
+      <button class="btn" id="e-gmap">📍 Maps</button>
       <button class="btn" id="e-delete" style="color:var(--red);border-color:var(--red);">Delete</button>
       <button class="btn btn-go" id="e-save" style="flex:2;">Save</button>
     </div>
@@ -1061,7 +280,6 @@ body {
 </div>
 
 <!-- Destinations list -->
-
 <div class="modal" id="m-routes">
   <div class="modal-card">
     <div class="modal-head">
@@ -1074,7 +292,6 @@ body {
 </div>
 
 <!-- Destination editor -->
-
 <div class="modal" id="m-route-edit">
   <div class="modal-card">
     <div class="modal-head">
@@ -1096,7 +313,7 @@ body {
       <div class="row"><span class="label">Lng</span><input type="number" id="re-lng" step="0.00001"></div>
     </div>
     <div data-pane="tap" class="re-pane" style="display:none;">
-      <div class="row" style="font-size:12px;color:var(--ink-2);">Close this dialog, then long-press the map. Coordinates fill in here automatically.</div>
+      <div class="row" style="font-size:12px;color:var(--ink-2);">Close this dialog, then long-press the map. Coordinates fill in automatically.</div>
     </div>
     <div class="row" id="re-coords-display" style="display:none;font-family:ui-monospace,monospace;font-size:11px;color:var(--ink-2);"></div>
     <div style="display:flex;gap:6px;">
@@ -1107,7 +324,6 @@ body {
 </div>
 
 <!-- Settings -->
-
 <div class="modal" id="m-settings">
   <div class="modal-card">
     <div class="modal-head">
@@ -1115,76 +331,120 @@ body {
       <button class="modal-close" data-close>×</button>
     </div>
 
-```
-<div class="section-title">Display</div>
-<div class="row">
-  <span class="label">Theme</span>
-  <div class="opts" id="theme-opts">
-    <button data-theme="auto">Auto</button>
-    <button data-theme="light">Day</button>
-    <button data-theme="dark">Night</button>
+    <div class="section-title">Display</div>
+    <div class="row">
+      <span class="label">Theme</span>
+      <div class="opts" id="theme-opts">
+        <button data-theme="auto">Auto</button>
+        <button data-theme="light">Day</button>
+        <button data-theme="dark">Night</button>
+      </div>
+    </div>
+
+    <div class="section-title">Alerts</div>
+    <div class="row">
+      <span class="label">Sound</span>
+      <div class="opts" id="sound-opts">
+        <button data-sound="voice">🗣 Voice</button>
+        <button data-sound="beep">🔔 Tone</button>
+      </div>
+    </div>
+    <div class="row">
+      <span class="label">Voice type</span>
+      <div class="opts" id="voice-opts">
+        <button data-voice="female">♀ Female</button>
+        <button data-voice="male">♂ Male</button>
+        <button data-voice="none">None</button>
+      </div>
+    </div>
+    <div class="row"><span class="label">Announce side in voice</span><span class="toggle" id="t-side"></span></div>
+    <div class="row" style="display:block;">
+      <span class="label" style="display:block;margin-bottom:6px;">Alert distances (meters)</span>
+      <div id="markers-chips" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:8px;min-height:30px;"></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+        <input type="number" id="i-marker-add" min="50" max="10000" step="50" placeholder="add distance"
+               style="background:var(--bg);border:1px solid var(--line-2);color:var(--ink);padding:6px 8px;border-radius:6px;width:120px;font:inherit;">
+        <button class="btn" id="btn-marker-add" style="padding:6px 14px;">+ Add</button>
+      </div>
+      <div style="display:flex;gap:4px;margin-top:8px;flex-wrap:wrap;">
+        <button class="btn" data-marker-preset="default" style="font-size:11px;padding:4px 8px;flex:0 0 auto;">Default (2k/1k/500)</button>
+        <button class="btn" data-marker-preset="city" style="font-size:11px;padding:4px 8px;flex:0 0 auto;">City (1k/500/200)</button>
+        <button class="btn" data-marker-preset="highway" style="font-size:11px;padding:4px 8px;flex:0 0 auto;">Highway (3k/2k/1k/500)</button>
+      </div>
+      <div style="font-size:10px;color:var(--ink-3);margin-top:6px;">Tap a chip to remove · alerts fire when you cross each distance</div>
+    </div>
+    <div class="row">
+      <span class="label">Flash border at (m)</span>
+      <input type="number" id="i-flash" min="50" max="3000" step="50">
+    </div>
+    <div class="row">
+      <span class="label">Repeat alert × times</span>
+      <input type="number" id="i-repeat" min="1" max="5" step="1">
+    </div>
+    <div class="row">
+      <span class="label">Repeat gap (sec)</span>
+      <input type="number" id="i-repeatgap" min="0.5" max="10" step="0.5">
+    </div>
+    <!-- v22.32: tone frequency + continuous proximity ping -->
+    <div class="row">
+      <span class="label">Tone frequency (Hz)</span>
+      <input type="number" id="i-tonefreq" min="800" max="3000" step="100">
+    </div>
+    <div class="row">
+      <span class="label">Proximity ping start (m)</span>
+      <input type="number" id="i-proximity-start" min="200" max="5000" step="100">
+    </div>
+    <div class="row">
+      <span class="label">Proximity ping</span>
+      <span class="toggle" id="t-proximity"></span>
+    </div>
+
+    <div class="section-title">Speed limit alerts</div>
+    <div class="row">
+      <span class="label">Mode</span>
+      <div class="opts" id="speed-opts">
+        <button data-speed="off">Off</button>
+        <button data-speed="beep">Beep</button>
+        <button data-speed="voice">Voice</button>
+        <button data-speed="both">Both</button>
+      </div>
+    </div>
+    <div class="row"><span class="label">Trigger when over by (km/h)</span><input type="number" id="i-over" min="0" max="50"></div>
+
+    <div class="section-title">Trips</div>
+    <div style="display:flex;gap:6px;">
+      <button class="btn" id="trip-toggle">▶ Start trip</button>
+      <button class="btn" id="trip-list">View trips</button>
+    </div>
+
+    <div class="section-title">GitHub backup</div>
+    <div style="font-size:10px;color:var(--ink-3);padding:4px 6px;line-height:1.4;">
+      ⚠ Token stored in browser localStorage. Use a fine-grained token with access to <strong>one repo only</strong>. Anyone with this device can read it.
+    </div>
+    <div class="row"><span class="label">Token</span><input type="password" id="i-gh-token" placeholder="ghp_..."></div>
+    <div class="row"><span class="label">Repo</span><input type="text" id="i-gh-repo" placeholder="user/repo"></div>
+    <div class="row"><span class="label">File path</span><input type="text" id="i-gh-path" placeholder="road-alert.json"></div>
+    <div class="row"><span class="label">Auto-backup every 5 min</span><span class="toggle" id="t-autobackup"></span></div>
+    <div id="backup-status" style="font-size:10px;color:var(--ink-3);text-align:center;padding:4px;">No backup yet</div>
+    <div style="display:flex;gap:6px;">
+      <button class="btn btn-go" id="btn-backup-now" style="flex:1;">☁ Backup now</button>
+      <button class="btn" id="btn-restore" style="flex:1;">⬇ Restore</button>
+    </div>
+
+    <div class="section-title">Data</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn" id="btn-audit">Audit points</button>
+      <button class="btn" id="btn-disabled">Disabled (<span id="disabled-count">0</span>)</button>
+      <button class="btn" id="btn-export">Export</button>
+      <button class="btn" id="btn-import">Import</button>
+      <button class="btn" id="btn-edit-json">Edit JSON</button>
+    </div>
+    <input type="file" id="import-file" accept="application/json" style="display:none">
+    <button class="btn" id="btn-test-sound">🔊 Sound check</button>
   </div>
 </div>
 
-<div class="section-title">Alerts</div>
-<div class="row">
-  <span class="label">Sound</span>
-  <div class="opts" id="sound-opts">
-    <button data-sound="voice">Voice</button>
-    <button data-sound="beep">Beep</button>
-    <button data-sound="both">Both</button>
-    <button data-sound="off">Off</button>
-  </div>
-</div>
-<div class="row"><span class="label">Smart distance (faster = earlier)</span><span class="toggle" id="t-smart"></span></div>
-<div class="row"><span class="label">Announce side in voice</span><span class="toggle" id="t-side"></span></div>
-<div class="row"><span class="label">Cluster cameras within (m)</span><input type="number" id="i-cluster" min="0" max="2000" step="50"></div>
-
-<div class="section-title">Speed limit alerts</div>
-<div class="row">
-  <span class="label">Mode</span>
-  <div class="opts" id="speed-opts">
-    <button data-speed="off">Off</button>
-    <button data-speed="beep">Beep</button>
-    <button data-speed="voice">Voice</button>
-    <button data-speed="both">Both</button>
-  </div>
-</div>
-<div class="row"><span class="label">Trigger when over by (km/h)</span><input type="number" id="i-over" min="0" max="50"></div>
-
-<div class="section-title">Map</div>
-<div class="row"><span class="label">Rotate map with direction</span><span class="toggle" id="t-rotate"></span></div>
-
-<div class="section-title">Trips</div>
-<div style="display:flex;gap:6px;">
-  <button class="btn" id="trip-toggle">▶ Start trip</button>
-  <button class="btn" id="trip-list">View trips</button>
-</div>
-
-<div class="section-title">GitHub backup</div>
-<div class="row"><span class="label">Token</span><input type="password" id="i-gh-token" placeholder="ghp_..."></div>
-<div class="row"><span class="label">Repo</span><input type="text" id="i-gh-repo" placeholder="user/repo"></div>
-<div class="row"><span class="label">File path</span><input type="text" id="i-gh-path" placeholder="road-alert.json"></div>
-<div class="row"><span class="label">Auto-backup every 5 min</span><span class="toggle" id="t-autobackup"></span></div>
-<div id="backup-status" style="font-size:10px;color:var(--ink-3);text-align:center;padding:4px;">No backup yet</div>
-<button class="btn btn-go" id="btn-backup-now">☁ Backup now</button>
-
-<div class="section-title">Data</div>
-<div style="display:flex;gap:6px;flex-wrap:wrap;">
-  <button class="btn" id="btn-audit">Audit points</button>
-  <button class="btn" id="btn-disabled">Disabled (<span id="disabled-count">0</span>)</button>
-  <button class="btn" id="btn-export">Export</button>
-  <button class="btn" id="btn-import">Import</button>
-  <button class="btn" id="btn-edit-json">Edit JSON</button>
-</div>
-<input type="file" id="import-file" accept="application/json" style="display:none">
-```
-
-  </div>
-</div>
-
-<!-- Audit list -->
-
+<!-- Audit -->
 <div class="modal" id="m-audit">
   <div class="modal-card">
     <div class="modal-head">
@@ -1195,8 +455,7 @@ body {
   </div>
 </div>
 
-<!-- Disabled list -->
-
+<!-- Disabled -->
 <div class="modal" id="m-disabled">
   <div class="modal-card">
     <div class="modal-head">
@@ -1207,8 +466,7 @@ body {
   </div>
 </div>
 
-<!-- Trip list -->
-
+<!-- Trips -->
 <div class="modal" id="m-trips">
   <div class="modal-card">
     <div class="modal-head">
@@ -1224,7 +482,6 @@ body {
 </div>
 
 <!-- JSON editor -->
-
 <div class="modal" id="m-json">
   <div class="modal-card">
     <div class="modal-head">
@@ -1242,1536 +499,26 @@ body {
 
 <div class="toast" id="toast"></div>
 
+<!-- v22.51: MapLibre GL JS with CDN fallback (~250 KB minified) -->
 <script>
-'use strict';
-
-/* ============================================================
-   ROAD ALERT v17
-   Lessons learned from v16:
-   - v16 was 3700+ lines, one file, monolithic update() function.
-   - v17: keep single file, but split into clear modules via IIFEs/objects.
-   - Use UUIDs (not "name+lat+lng" strings) so renames don't break references.
-   - Smooth speed with a rolling buffer (raw GPS speed jumps on cellular).
-   - Gate map rotation by speed (>2 m/s) so parked = no spin.
-   - One state object as source of truth; render is pure function of state.
-   - Light theme by default (matches the screenshot the user picked).
-   - Tile provider list, but use ONE primary that doesn't 403 (Esri).
-   ============================================================ */
-
-// ============================================================
-// 0. UTILITIES — pure functions, no side effects
-// ============================================================
-
-const Utils = {
-  /** UUID v4 (good enough for client-side IDs). */
-  uid() {
-    // crypto.randomUUID() if available, else manual fallback
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-      const r = Math.random() * 16 | 0;
-      return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+(function loadMapLibre() {
+  function tryLoad(url, onfail) {
+    var s = document.createElement('script');
+    s.src = url;
+    s.onload = function() { window._maplibreReady = true; };
+    s.onerror = function() { if (onfail) onfail(); };
+    document.head.appendChild(s);
+  }
+  tryLoad('https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.js', function() {
+    tryLoad('https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.js', function() {
+      tryLoad('https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/5.7.3/maplibre-gl.js');
     });
-  },
-
-  /** Haversine distance in KILOMETERS. */
-  distKm(a, b) {
-    const R = 6371;
-    const toRad = d => d * Math.PI / 180;
-    const dLat = toRad(b.lat - a.lat);
-    const dLng = toRad(b.lng - a.lng);
-    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-    const x = Math.sin(dLat/2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng/2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(x));
-  },
-
-  /** Bearing from a to b in degrees (0–360). */
-  bearing(a, b) {
-    const toRad = d => d * Math.PI / 180;
-    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-    const dLng = toRad(b.lng - a.lng);
-    const y = Math.sin(dLng) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
-  },
-
-  /** Format distance as "350 m" or "12.3 km". */
-  fmtDist(km) {
-    if (km == null || isNaN(km)) return '—';
-    if (km < 1) return Math.round(km * 1000) + ' m';
-    return km.toFixed(1) + ' km';
-  },
-
-  /** Format ETA at current speed (m/s) as "12s", "5m", "1h 20m". */
-  fmtEta(km, mps) {
-    if (!mps || mps < 1) return '—';
-    const sec = (km * 1000) / mps;
-    if (sec < 60) return Math.round(sec) + 's';
-    if (sec < 3600) return Math.round(sec / 60) + 'm';
-    const h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
-    return `${h}h ${m}m`;
-  },
-
-  /** Escape HTML for safe injection into innerHTML. */
-  escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, c => ({
-      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
-    }[c]));
-  },
-
-  /** Type → emoji icon. */
-  emoji(type, subtype) {
-    if (subtype === 'box') return '📦';
-    if (subtype === 'spider') return '🕷️';
-    if (subtype === 'pole') return '📍';
-    return { petrol:'⛽', checkpoint:'🛂', speed_camera:'📷',
-             mobile_camera:'📱', speed_change:'⇅', gate:'🚪', other:'📝' }[type] || '•';
-  },
-
-  /** Type → human label. */
-  typeLabel(t) {
-    return { petrol:'Petrol', checkpoint:'Checkpoint', speed_camera:'Speed cam',
-             mobile_camera:'Mobile cam', speed_change:'Speed zone', gate:'Gate', other:'Custom' }[t] || t;
-  },
-
-  /** Type → CSS color var. */
-  typeColor(t) {
-    return { petrol:'#65a30d', checkpoint:'#ca8a04', speed_camera:'#dc2626',
-             mobile_camera:'#ea580c', speed_change:'#0891b2', gate:'#7c3aed' }[t] || '#57534e';
-  },
-
-  /** Show a toast for ~2 seconds. */
-  toast(msg, cls) {
-    const el = document.getElementById('toast');
-    el.textContent = msg;
-    el.className = 'toast show' + (cls ? ' ' + cls : '');
-    clearTimeout(Utils._toastT);
-    Utils._toastT = setTimeout(() => el.className = 'toast', 2000);
-  },
-};
-
-// ============================================================
-// 1. STORAGE — versioned localStorage with migration
-// ============================================================
-
-const Storage = {
-  KEYS: {
-    data:     'roadAlert.v17.data',
-    settings: 'roadAlert.v17.settings',
-    trips:    'roadAlert.v17.trips',
-    gh:       'roadAlert.v17.gh',
-    panel:    'roadAlert.v17.panel',
-  },
-
-  /** Generic loader with default. */
-  load(key, def) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw) return JSON.parse(raw);
-    } catch (e) { console.warn('Storage load failed', key, e); }
-    return def;
-  },
-
-  /** Generic saver, swallows quota errors with a toast. */
-  save(key, val) {
-    try { localStorage.setItem(key, JSON.stringify(val)); return true; }
-    catch (e) {
-      Utils.toast('Storage full — export and clean up', 'bad');
-      return false;
-    }
-  },
-
-  /** Initial data shape. Used on first run. */
-  defaultData() {
-    return {
-      version: 17,
-      activeDestId: null,
-      destinations: [],
-      points: [],   // each: {id, name, type, subtype?, side?, limit?, lat, lng, status, confidence, destId?, createdAt}
-    };
-  },
-
-  /** Initial settings shape. */
-  defaultSettings() {
-    return {
-      theme: 'light',          // auto | light | dark
-      sound: 'voice',          // voice | beep | both | off
-      smart: true,             // speed-aware alert distance
-      announceSide: true,      // include "left/right" in voice
-      clusterMeters: 200,      // group cameras
-      rotateMap: true,         // turn map to direction of travel
-      speedAlertMode: 'beep',  // off | beep | voice | both
-      overBy: 5,               // trigger limit alert when this many km/h over
-      autoBackup: false,
-    };
-  },
-};
-
-// ============================================================
-// 2. STATE — single source of truth
-// ============================================================
-
-const State = {
-  data: Storage.load(Storage.KEYS.data, Storage.defaultData()),
-  settings: Storage.load(Storage.KEYS.settings, Storage.defaultSettings()),
-  trips: Storage.load(Storage.KEYS.trips, []),
-  gh: Storage.load(Storage.KEYS.gh, { token: '', repo: '', path: 'road-alert.json' }),
-
-  // Runtime-only (not persisted)
-  mode: 'idle',         // idle | gps | demo
-  watchId: null,
-  demoTimer: null,
-  pos: null,            // {lat, lng}
-  prevPos: null,
-  accuracy: null,       // meters
-  speedMps: 0,          // smoothed
-  heading: null,        // degrees 0-360
-  speedBuffer: [],      // for rolling-average smoothing
-  alertedIds: new Set(),// points we've already chimed for
-  wakeLock: null,
-  activeTrip: null,
-  followMap: true,
-  speedAlertWasOver: false,
-  lastSpeedAlertZone: null,
-  backupTimer: null,
-  lastBackup: null,
-  pendingCapture: null, // building-up capture before save
-  editingPointId: null,
-  editingDestId: null,
-  pendingTapCoords: null, // for "tap map" destination flow
-
-  /** Persist data + repaint side-effects. */
-  saveData()     { Storage.save(Storage.KEYS.data, this.data); UI.updateMapPoints(); UI.render(); },
-  saveSettings() { Storage.save(Storage.KEYS.settings, this.settings); },
-  saveTrips()    { Storage.save(Storage.KEYS.trips, this.trips); },
-  saveGh()       { Storage.save(Storage.KEYS.gh, this.gh); },
-
-  /** Currently active destination object (or null). */
-  activeDest() {
-    return this.data.destinations.find(d => d.id === this.data.activeDestId) || null;
-  },
-
-  /** Points associated with the active destination (or unassigned). */
-  activePoints() {
-    const id = this.data.activeDestId;
-    return this.data.points.filter(p => !p.destId || p.destId === id);
-  },
-};
-
-// ============================================================
-// 3. AUDIO — beeps and voice
-// ============================================================
-
-const Audio = {
-  ctx: null,
-
-  /** Lazy-init AudioContext; iOS needs a user gesture first. */
-  ensure() {
-    if (!this.ctx) {
-      try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
-      catch (e) { return null; }
-    }
-    if (this.ctx.state === 'suspended') this.ctx.resume();
-    return this.ctx;
-  },
-
-  /** Play a beep pattern keyed by type. Each type sounds different so
-   *  the driver can identify it without looking. */
-  beep(type) {
-    const ctx = this.ensure(); if (!ctx) return;
-    const patterns = {
-      petrol:        [{f:700,d:0.15}],
-      checkpoint:    [{f:600,d:0.12},{f:600,d:0.12,gap:0.08}],
-      speed_camera:  [{f:1000,d:0.08},{f:1000,d:0.08,gap:0.05},{f:1000,d:0.08,gap:0.05}],
-      mobile_camera: [{f:800,d:0.1},{f:1000,d:0.1,gap:0.05}],
-      speed_change:  [{f:500,d:0.1},{f:700,d:0.1,gap:0.05}],
-      gate:          [{f:900,d:0.25}],
-      other:         [{f:600,d:0.1}],
-    };
-    const pat = patterns[type] || patterns.other;
-    let t = ctx.currentTime;
-    pat.forEach(b => {
-      t += (b.gap || 0);
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = 'sine';
-      osc.frequency.value = b.f;
-      gain.gain.setValueAtTime(0, t);
-      gain.gain.linearRampToValueAtTime(0.25, t + 0.01);
-      gain.gain.linearRampToValueAtTime(0, t + b.d);
-      osc.connect(gain); gain.connect(ctx.destination);
-      osc.start(t); osc.stop(t + b.d + 0.02);
-      t += b.d;
-    });
-  },
-
-  /** Web Speech API. Fails silently if not available. */
-  say(text) {
-    if (!('speechSynthesis' in window)) return;
-    try {
-      const u = new SpeechSynthesisUtterance(text);
-      speechSynthesis.cancel(); // don't queue, just say the latest
-      speechSynthesis.speak(u);
-    } catch (e) {}
-  },
-
-  /** High-level alert: voice + beep based on sound setting. */
-  alert(point, distKm) {
-    const s = State.settings.sound;
-    if (s === 'off') return;
-    let text = point.name;
-    if (distKm < 1) text += ` in ${Math.round(distKm * 1000)} meters`;
-    else text += ` in ${distKm.toFixed(1)} kilometers`;
-    if (State.settings.announceSide && point.side) {
-      text += point.side === 'left' ? ', left' : ', right';
-    }
-    if (s === 'voice' || s === 'both') this.say(text);
-    if (s === 'beep' || s === 'both') this.beep(point.type);
-  },
-};
-
-// ============================================================
-// 4. GPS — wraps geolocation, normalizes data
-// ============================================================
-
-const GPS = {
-  /** Start a real GPS watch. */
-  async start() {
-    if (!navigator.geolocation) { Utils.toast('GPS not supported', 'bad'); return; }
-    Audio.ensure();
-    this.stop();
-    State.mode = 'gps';
-    UI.setStatusMode('LIVE', 'live');
-    await this.requestWakeLock();
-    State.watchId = navigator.geolocation.watchPosition(
-      pos => this.onTick(pos),
-      err => { Utils.toast('GPS: ' + err.message, 'bad'); this.stop(); },
-      { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
-    );
-    UI.setBtnGoActive(true);
-  },
-
-  /** Start a fake drive demo. */
-  demo() {
-    Audio.ensure();
-    this.stop();
-    State.mode = 'demo';
-    UI.setStatusMode('DEMO', 'demo');
-    UI.setBtnGoActive(true);
-
-    // Use active dest as endpoint, or default to a Jeddah-Medina-ish line
-    const dest = State.activeDest();
-    let start, end;
-    if (dest && State.pos) {
-      start = { lat: State.pos.lat, lng: State.pos.lng };
-      end   = { lat: dest.lat, lng: dest.lng };
-    } else if (dest) {
-      // No GPS yet — synthesize a start 50km west of the dest
-      start = { lat: dest.lat, lng: dest.lng - 0.5 };
-      end   = { lat: dest.lat, lng: dest.lng };
-    } else {
-      // No dest either — fall back to a generic line
-      start = { lat: 21.5433, lng: 39.1728 };
-      end   = { lat: 24.4539, lng: 39.5680 };
-    }
-    const steps = 80;
-    let i = 0;
-    State.demoTimer = setInterval(() => {
-      if (i++ > steps) { this.stop(); Utils.toast('Demo complete', 'good'); return; }
-      const t = i / steps;
-      const fakePos = {
-        coords: {
-          latitude: start.lat + (end.lat - start.lat) * t,
-          longitude: start.lng + (end.lng - start.lng) * t,
-          accuracy: 8,
-          speed: 30,
-          heading: Utils.bearing(start, end),
-        },
-      };
-      this.onTick(fakePos);
-    }, 350);
-  },
-
-  /** Stop GPS / demo. */
-  stop() {
-    if (State.watchId != null) { navigator.geolocation.clearWatch(State.watchId); State.watchId = null; }
-    if (State.demoTimer != null) { clearInterval(State.demoTimer); State.demoTimer = null; }
-    if (State.wakeLock) { try { State.wakeLock.release(); } catch (e) {} State.wakeLock = null; }
-    State.mode = 'idle';
-    UI.setStatusMode('Idle', '');
-    UI.setBtnGoActive(false);
-  },
-
-  /** Wake lock to keep screen on. */
-  async requestWakeLock() {
-    if (!('wakeLock' in navigator)) return;
-    try { State.wakeLock = await navigator.wakeLock.request('screen'); }
-    catch (e) {}
-  },
-
-  /** Smooth raw GPS speed with a 4-sample rolling average.
-   *  GPS speed often jumps (especially on cellular fallback);
-   *  smoothing keeps the display readable. */
-  smoothSpeed(rawMps) {
-    if (rawMps == null || isNaN(rawMps) || rawMps < 0) return State.speedMps;
-    State.speedBuffer.push(rawMps);
-    if (State.speedBuffer.length > 4) State.speedBuffer.shift();
-    return State.speedBuffer.reduce((a, b) => a + b, 0) / State.speedBuffer.length;
-  },
-
-  /** Process one GPS reading and trigger render. */
-  onTick(pos) {
-    State.prevPos = State.pos;
-    State.pos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
-    State.accuracy = pos.coords.accuracy;
-
-    // Speed: prefer GPS-provided, fall back to position-delta in m/s
-    let rawSpeed = pos.coords.speed;
-    if (rawSpeed == null || isNaN(rawSpeed) || rawSpeed < 0) {
-      if (State.prevPos) rawSpeed = Utils.distKm(State.prevPos, State.pos) * 1000; // crude
-    }
-    State.speedMps = this.smoothSpeed(rawSpeed);
-
-    // Heading: only trust it if we're actually moving (>2 m/s ~ 7 km/h)
-    if (pos.coords.heading != null && !isNaN(pos.coords.heading) && State.speedMps > 2) {
-      State.heading = pos.coords.heading;
-    }
-
-    // Trip tracking
-    if (State.activeTrip) {
-      const kmh = State.speedMps * 3.6;
-      if (kmh > State.activeTrip.maxSpeed) State.activeTrip.maxSpeed = kmh;
-      if (State.prevPos && State.speedMps > 1) {
-        State.activeTrip.distanceKm += Utils.distKm(State.prevPos, State.pos);
-      }
-    }
-
-    Alerts.tick();
-    UI.render();
-    Map.update();
-  },
-};
-
-// ============================================================
-// 5. ALERTS — distance-based proximity alerts + speed limit alerts
-// ============================================================
-
-const Alerts = {
-  /** Smart distance: faster = earlier warning. */
-  alertDistanceKm() {
-    if (!State.settings.smart) return 1.0;
-    const mps = State.speedMps;
-    if (mps < 4) return 0.5;
-    // ~22 seconds of travel
-    const km = (mps * 22) / 1000;
-    return Math.max(0.3, Math.min(3.0, km));
-  },
-
-  /** Currently effective speed limit (km/h) — looks up speed_change
-   *  points "behind" us along the route and takes the most recent. */
-  currentLimit() {
-    const dest = State.activeDest();
-    if (!dest || !State.pos) return null;
-    const myDist = Utils.distKm(State.pos, dest);
-    const behind = State.activePoints()
-      .filter(p => p.type === 'speed_change' && typeof p.limit === 'number' && p.status !== 'no')
-      .map(p => ({ p, dToDest: Utils.distKm(p, dest) }))
-      .filter(x => x.dToDest > myDist - 0.05)  // strictly "behind us" in route order
-      .sort((a, b) => a.dToDest - b.dToDest);
-    return behind.length ? behind[0].p.limit : null;
-  },
-
-  /** Get all points sorted by distance from current position. */
-  ahead() {
-    if (!State.pos) return [];
-    const dest = State.activeDest();
-    if (!dest) {
-      // No destination — just sort by distance from me
-      return State.activePoints()
-        .filter(p => p.status !== 'no')
-        .map(p => ({ ...p, dist: Utils.distKm(State.pos, p) }))
-        .sort((a, b) => a.dist - b.dist);
-    }
-    const myDist = Utils.distKm(State.pos, dest);
-    return State.activePoints()
-      .filter(p => p.status !== 'no')
-      .map(p => ({ ...p, dist: Utils.distKm(State.pos, p), distToDest: Utils.distKm(p, dest) }))
-      .filter(p => p.distToDest < myDist + 0.1)  // "ahead of us" along route
-      .sort((a, b) => a.dist - b.dist);
-  },
-
-  /** Fire proximity alerts on every tick. */
-  tick() {
-    if (!State.pos) return;
-    const aheadList = this.ahead();
-    const thresh = this.alertDistanceKm();
-
-    for (const p of aheadList) {
-      if (p.dist <= thresh && !State.alertedIds.has(p.id)) {
-        State.alertedIds.add(p.id);
-        Audio.alert(p, p.dist);
-        if (navigator.vibrate) navigator.vibrate(60);
-      }
-      // Forget points we've passed by ~3x the alert range; lets re-trigger if we double back
-      if (p.dist > thresh * 3) State.alertedIds.delete(p.id);
-    }
-
-    // Speed limit check
-    this.checkSpeed();
-  },
-
-  /** Speed limit warning logic. */
-  checkSpeed() {
-    const limit = this.currentLimit();
-    if (limit == null) { State.speedAlertWasOver = false; return; }
-    const kmh = State.speedMps * 3.6;
-    const isOver = kmh > limit + State.settings.overBy;
-
-    if (!isOver) { State.speedAlertWasOver = false; return; }
-
-    const mode = State.settings.speedAlertMode;
-    if (mode === 'off') { State.speedAlertWasOver = true; return; }
-
-    // Fire ONCE per zone (limit hasn't changed since last alert)
-    const newZone = State.lastSpeedAlertZone !== limit;
-    const wasOver = State.speedAlertWasOver;
-    if (newZone || !wasOver) {
-      State.lastSpeedAlertZone = limit;
-      State.speedAlertWasOver = true;
-      // Visual flash on the sign
-      const sign = document.getElementById('sign');
-      sign.classList.remove('flash');
-      void sign.offsetWidth; // restart animation
-      sign.classList.add('flash');
-      if (mode === 'beep' || mode === 'both') Audio.beep('speed_change');
-      if (mode === 'voice' || mode === 'both') Audio.say(`Speed limit ${limit}`);
-      if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
-    }
-    State.speedAlertWasOver = true;
-  },
-};
-
-// ============================================================
-// 6. MAP — Leaflet wrapper
-// ============================================================
-
-const Map = {
-  m: null,                    // Leaflet map instance
-  markers: null,              // LayerGroup for points
-  currentMarker: null,
-  destMarker: null,
-  longPressTimer: null,       // for tap-to-set-destination
-
-  /** Initialize the map once Leaflet is ready. */
-  init() {
-    if (this.m) return;
-    if (typeof L === 'undefined') {
-      // Leaflet not loaded yet; retry in a moment.
-      return setTimeout(() => this.init(), 200);
-    }
-    this.m = L.map('map', {
-      zoomControl: true,
-      attributionControl: true,
-      tap: true,
-      preferCanvas: false,
-    });
-
-    // Pick a default center: active dest, else current pos, else generic.
-    const dest = State.activeDest();
-    const center = dest ? [dest.lat, dest.lng]
-                : State.pos ? [State.pos.lat, State.pos.lng]
-                : [21.5433, 39.1728];
-    this.m.setView(center, 13);
-
-    // Primary tiles: Esri (no referer policy block).
-    // Fallback chain is overkill for v17; if Esri fails we show a toast and that's it.
-    L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
-      {
-        attribution: 'Tiles © Esri',
-        maxZoom: 19,
-        crossOrigin: true,
-      }
-    ).addTo(this.m);
-
-    this.markers = L.layerGroup().addTo(this.m);
-
-    // User drag = stop auto-follow (zoom does NOT, so you can pinch while followed)
-    this.m.on('dragstart', () => {
-      if (State.followMap) {
-        State.followMap = false;
-        UI.updateFollowPill();
-      }
-    });
-
-    // Long-press (mobile) or right-click (desktop) → "set destination here?"
-    this.m.on('contextmenu', e => this.askSetDest(e.latlng));
-    // Manual touch long-press support for iOS:
-    this.m.on('mousedown', e => {
-      clearTimeout(this.longPressTimer);
-      this.longPressTimer = setTimeout(() => this.askSetDest(e.latlng), 700);
-    });
-    this.m.on('mouseup mousemove dragstart', () => clearTimeout(this.longPressTimer));
-
-    this.updatePoints();
-  },
-
-  /** Rebuild all point markers + dest marker. */
-  updatePoints() {
-    if (!this.m || !this.markers) return;
-    this.markers.clearLayers();
-    if (this.destMarker) { this.m.removeLayer(this.destMarker); this.destMarker = null; }
-
-    const dest = State.activeDest();
-    if (dest) {
-      this.destMarker = L.marker([dest.lat, dest.lng], {
-        icon: L.divIcon({
-          className: '',
-          html: `<div class="ra-dest">📍</div>`,
-          iconSize: [36, 36], iconAnchor: [18, 18],
-        }),
-      }).bindPopup(`<div class="pop-name">🚩 ${Utils.escapeHtml(dest.name)}</div><div class="pop-meta">Destination</div>`).addTo(this.m);
-    }
-
-    const myDist = (State.pos && dest) ? Utils.distKm(State.pos, dest) : null;
-    State.activePoints().forEach(p => {
-      const passed = (myDist != null && dest)
-        ? Utils.distKm(p, dest) > myDist
-        : false;
-      const cls = ['ra-marker', 't-' + p.type];
-      if (passed) cls.push('passed');
-      if (p.status === 'no') cls.push('disabled');
-      const sideHtml = p.side ? `<span class="side">${p.side === 'left' ? 'L' : 'R'}</span>` : '';
-      const marker = L.marker([p.lat, p.lng], {
-        icon: L.divIcon({
-          className: '',
-          html: `<div class="${cls.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}</div>`,
-          iconSize: [36, 36], iconAnchor: [18, 18],
-        }),
-      });
-      const dist = State.pos ? Utils.distKm(State.pos, p) : null;
-      marker.bindPopup(`
-        <div class="pop-name">${Utils.emoji(p.type, p.subtype)} ${Utils.escapeHtml(p.name)}</div>
-        <div class="pop-meta">${Utils.typeLabel(p.type)}${p.side ? ' · ' + p.side : ''}${dist != null ? ' · ' + Utils.fmtDist(dist) : ''}</div>
-        <button data-edit="${p.id}">Edit</button>
-        <button data-gmap="${p.lat},${p.lng}" style="background:transparent;border:1px solid var(--line-2);color:var(--ink);">📍 Maps</button>
-      `, { maxWidth: 240 });
-      marker.on('popupopen', () => {
-        setTimeout(() => {
-          document.querySelectorAll('[data-edit]').forEach(b => {
-            b.onclick = () => { this.m.closePopup(); UI.openPointEditor(b.getAttribute('data-edit')); };
-          });
-          document.querySelectorAll('[data-gmap]').forEach(b => {
-            b.onclick = () => window.open(`https://www.google.com/maps/search/?api=1&query=${b.getAttribute('data-gmap')}`, '_blank');
-          });
-        }, 50);
-      });
-      this.markers.addLayer(marker);
-    });
-  },
-
-  /** Update the live "you are here" marker + follow logic. */
-  update() {
-    if (!this.m || !State.pos) return;
-
-    if (this.currentMarker) this.m.removeLayer(this.currentMarker);
-    this.currentMarker = L.marker([State.pos.lat, State.pos.lng], {
-      icon: L.divIcon({ className: '', html: '<div class="ra-current"></div>', iconSize: [22,22], iconAnchor: [11,11] }),
-      zIndexOffset: 1000,
-    }).addTo(this.m);
-
-    if (State.followMap) {
-      this.m.panTo([State.pos.lat, State.pos.lng], { animate: true, duration: 0.5 });
-    }
-    // Repaint points (passed state may have changed)
-    this.updatePoints();
-  },
-
-  /** Fit map to all relevant points. */
-  fitAll() {
-    if (!this.m) return;
-    State.followMap = false; UI.updateFollowPill();
-    const bounds = L.latLngBounds([]);
-    if (State.pos) bounds.extend([State.pos.lat, State.pos.lng]);
-    const dest = State.activeDest();
-    if (dest) bounds.extend([dest.lat, dest.lng]);
-    State.activePoints().forEach(p => bounds.extend([p.lat, p.lng]));
-    if (bounds.isValid()) this.m.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
-    else if (dest) this.m.setView([dest.lat, dest.lng], 13);
-  },
-
-  /** Recenter on current position and re-enable follow. */
-  recenter() {
-    if (!this.m) return;
-    if (!State.pos) { Utils.toast('No GPS yet'); this.fitAll(); return; }
-    State.followMap = true; UI.updateFollowPill();
-    this.m.setView([State.pos.lat, State.pos.lng], Math.max(this.m.getZoom(), 13), { animate: true });
-  },
-
-  /** Prompt to use a tapped/long-pressed location as a new destination. */
-  askSetDest(latlng) {
-    // Open the destination editor pre-filled
-    State.editingDestId = null;
-    State.pendingTapCoords = { lat: +latlng.lat.toFixed(5), lng: +latlng.lng.toFixed(5) };
-    UI.openDestEditor(null, State.pendingTapCoords);
-  },
-};
-
-// ============================================================
-// 7. UI — DOM rendering & event wiring
-// ============================================================
-
-const UI = {
-
-  // ---------- top-level render ----------
-
-  /** Re-paint everything that depends on State. Call after any data change. */
-  render() {
-    this.renderRouteBar();
-    this.renderStats();
-    this.renderStatusLine();
-    this.renderDisabledCount();
-  },
-
-  renderRouteBar() {
-    const d = State.activeDest();
-    document.getElementById('route-name').textContent = d ? d.name : 'Pick a destination';
-  },
-
-  renderStats() {
-    // Speed limit sign
-    const limit = Alerts.currentLimit();
-    document.getElementById('sign-value').textContent = limit != null ? limit : '—';
-    // Current speed
-    const kmh = Math.round(State.speedMps * 3.6);
-    const speedo = document.getElementById('speedo-val');
-    speedo.textContent = kmh;
-    const isOver = limit != null && kmh > limit + State.settings.overBy;
-    speedo.classList.toggle('over', isOver);
-
-    // Next ahead card
-    const aheadList = Alerts.ahead();
-    const body = document.getElementById('next-body');
-    if (aheadList.length === 0) {
-      body.innerHTML = `<div class="next-empty">— nothing ahead —</div>`;
-    } else {
-      const n = aheadList[0];
-      const sideTag = n.side ? ` · ${n.side[0].toUpperCase()}` : '';
-      body.innerHTML = `
-        <div class="next-name">${Utils.emoji(n.type, n.subtype)} ${Utils.escapeHtml(n.name)}</div>
-        <div class="next-meta">${Utils.typeLabel(n.type)}${sideTag}</div>
-        <div class="next-dist">${n.dist < 1 ? Math.round(n.dist * 1000) : n.dist.toFixed(1)}<span class="unit">${n.dist < 1 ? 'm' : 'km'}</span></div>
-      `;
-    }
-  },
-
-  renderStatusLine() {
-    document.getElementById('status-gps').textContent =
-      State.accuracy != null ? `±${Math.round(State.accuracy)}m` : '—';
-    document.getElementById('status-pts').textContent =
-      `${State.activePoints().filter(p => p.status !== 'no').length} pts`;
-  },
-
-  renderDisabledCount() {
-    const c = State.data.points.filter(p => p.status === 'no').length;
-    const el = document.getElementById('disabled-count');
-    if (el) el.textContent = c;
-  },
-
-  setStatusMode(label, cls) {
-    const el = document.getElementById('status-mode');
-    el.textContent = label;
-    el.className = cls || '';
-  },
-
-  setBtnGoActive(active) {
-    const btn = document.getElementById('btn-go');
-    btn.classList.toggle('active', active);
-    btn.textContent = active ? '■ Stop' : '▶ Start GPS';
-  },
-
-  updateMapPoints() { Map.updatePoints(); },
-
-  updateFollowPill() {
-    const pill = document.getElementById('follow-pill');
-    pill.classList.toggle('off', !State.followMap);
-    document.getElementById('follow-label').textContent = 'Follow: ' + (State.followMap ? 'ON' : 'OFF');
-  },
-
-  // ---------- modal helpers ----------
-
-  openModal(id) {
-    document.getElementById(id).classList.add('open');
-  },
-  closeAllModals() {
-    document.querySelectorAll('.modal.open').forEach(m => m.classList.remove('open'));
-    State.pendingCapture = null;
-  },
-
-  // ---------- capture flow ----------
-
-  openCaptureMenu() {
-    if (!State.pos) { Utils.toast('Need GPS fix first', 'bad'); return; }
-    Audio.ensure();
-    this.openModal('m-capture');
-  },
-
-  beginCapture(type) {
-    if (!State.pos) return;
-    State.pendingCapture = {
-      id: Utils.uid(),
-      type,
-      name: Utils.typeLabel(type),
-      lat: +State.pos.lat.toFixed(5),
-      lng: +State.pos.lng.toFixed(5),
-      status: 'active',
-      confidence: 1,
-      destId: State.data.activeDestId,
-      createdAt: new Date().toISOString(),
-    };
-    this.closeAllModals();
-    if (type === 'speed_camera' || type === 'mobile_camera') this.openModal('m-side');
-    else if (type === 'speed_change') this.openLimitPicker();
-    else if (type === 'other') this.openModal('m-other');
-    else this.finalizeCapture();
-  },
-
-  openLimitPicker() {
-    const grid = document.getElementById('limit-grid');
-    grid.innerHTML = [40,60,80,100,120,140].map(L =>
-      `<button class="limit-pick" data-limit="${L}">${L}</button>`
-    ).join('');
-    grid.querySelectorAll('[data-limit]').forEach(b =>
-      b.onclick = () => {
-        State.pendingCapture.limit = +b.dataset.limit;
-        State.pendingCapture.name = `Speed → ${b.dataset.limit}`;
-        this.closeAllModals();
-        this.finalizeCapture();
-      }
-    );
-    document.getElementById('limit-custom').value = '';
-    this.openModal('m-limit');
-  },
-
-  finalizeCapture() {
-    const c = State.pendingCapture;
-    if (!c) return;
-    // Merge with a nearby same-type point if within 100m
-    const nearby = State.data.points.find(p =>
-      p.type === c.type && Utils.distKm(p, c) * 1000 < 100
-    );
-    if (nearby) {
-      // average coordinates weighted by confidence
-      const n = (nearby.confidence || 0) + 1;
-      nearby.lat = +((nearby.lat * (n - 1) + c.lat) / n).toFixed(5);
-      nearby.lng = +((nearby.lng * (n - 1) + c.lng) / n).toFixed(5);
-      nearby.confidence = n;
-      nearby.status = 'active';
-      if (c.side) nearby.side = c.side;
-      if (c.limit) { nearby.limit = c.limit; nearby.name = c.name; }
-      if (c.subtype) nearby.subtype = c.subtype;
-      Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
-    } else {
-      State.data.points.push(c);
-      Utils.toast(`${Utils.typeLabel(c.type)} saved`, 'good');
-    }
-    State.pendingCapture = null;
-    State.saveData();
-    if (navigator.vibrate) navigator.vibrate(40);
-    if (State.settings.sound !== 'off') Audio.beep(c.type);
-  },
-
-  // ---------- point editor ----------
-
-  openPointEditor(id) {
-    const p = State.data.points.find(x => x.id === id);
-    if (!p) return;
-    State.editingPointId = id;
-    document.getElementById('e-name').value = p.name;
-    document.getElementById('e-type').value = p.type;
-    document.getElementById('e-limit').value = p.limit || '';
-    document.getElementById('e-lat').value = p.lat;
-    document.getElementById('e-lng').value = p.lng;
-    document.querySelectorAll('#e-side-opts button').forEach(b =>
-      b.classList.toggle('active', b.dataset.side === (p.side || '')));
-    document.querySelectorAll('#e-status-opts button').forEach(b =>
-      b.classList.toggle('active', b.dataset.status === (p.status || 'active')));
-    this.togglePEFields();
-    this.openModal('m-edit');
-  },
-
-  togglePEFields() {
-    const t = document.getElementById('e-type').value;
-    document.getElementById('e-limit-row').style.display = t === 'speed_change' ? 'flex' : 'none';
-    document.getElementById('e-side-row').style.display  = (t === 'speed_camera' || t === 'mobile_camera') ? 'flex' : 'none';
-  },
-
-  savePoint() {
-    const p = State.data.points.find(x => x.id === State.editingPointId);
-    if (!p) { this.closeAllModals(); return; }
-    p.name = document.getElementById('e-name').value.trim() || p.name;
-    p.type = document.getElementById('e-type').value;
-    p.lat = +document.getElementById('e-lat').value || p.lat;
-    p.lng = +document.getElementById('e-lng').value || p.lng;
-    const lim = document.getElementById('e-limit').value;
-    if (lim && p.type === 'speed_change') p.limit = +lim; else delete p.limit;
-    const sideBtn = document.querySelector('#e-side-opts button.active');
-    if (sideBtn) { if (sideBtn.dataset.side) p.side = sideBtn.dataset.side; else delete p.side; }
-    const statBtn = document.querySelector('#e-status-opts button.active');
-    if (statBtn) p.status = statBtn.dataset.status;
-    State.saveData();
-    Utils.toast('Saved', 'good');
-    this.closeAllModals();
-  },
-
-  deletePoint() {
-    if (!confirm('Delete this point?')) return;
-    State.data.points = State.data.points.filter(p => p.id !== State.editingPointId);
-    State.saveData();
-    this.closeAllModals();
-    Utils.toast('Deleted');
-  },
-
-  // ---------- destinations ----------
-
-  renderRoutesList() {
-    const list = document.getElementById('routes-list');
-    if (!State.data.destinations.length) {
-      list.innerHTML = '<div class="empty">No destinations. Tap + to add.</div>';
-      return;
-    }
-    list.innerHTML = State.data.destinations.map(d => {
-      const isActive = d.id === State.data.activeDestId;
-      const ptCount = State.data.points.filter(p => p.destId === d.id).length;
-      return `
-        <div class="list-row">
-          <div class="em">📍</div>
-          <div class="info">
-            <div class="name">${Utils.escapeHtml(d.name)}</div>
-            <div class="meta">${d.lat.toFixed(4)}, ${d.lng.toFixed(4)} · ${ptCount} pts</div>
-          </div>
-          <button class="row-btn ${isActive ? 'active keep' : ''}" data-activate="${d.id}" title="Set active">✓</button>
-          <button class="row-btn" data-edit-dest="${d.id}" title="Edit">✎</button>
-        </div>
-      `;
-    }).join('');
-    list.querySelectorAll('[data-activate]').forEach(b =>
-      b.onclick = () => {
-        State.data.activeDestId = b.dataset.activate;
-        State.alertedIds.clear();
-        State.saveData();
-        this.renderRoutesList();
-        Map.updatePoints();
-        Utils.toast('Destination set', 'good');
-      }
-    );
-    list.querySelectorAll('[data-edit-dest]').forEach(b =>
-      b.onclick = () => this.openDestEditor(b.dataset.editDest)
-    );
-  },
-
-  openDestEditor(id, prefilledCoords) {
-    State.editingDestId = id;
-    const d = id ? State.data.destinations.find(x => x.id === id) : null;
-    document.getElementById('re-title').textContent = d ? 'Edit destination' : 'Add destination';
-    document.getElementById('re-name').value = d ? d.name : '';
-    document.getElementById('re-lat').value = d ? d.lat : (prefilledCoords ? prefilledCoords.lat : '');
-    document.getElementById('re-lng').value = d ? d.lng : (prefilledCoords ? prefilledCoords.lng : '');
-    document.getElementById('re-delete').style.display = d ? 'block' : 'none';
-
-    // Show pre-filled coords nicely
-    const dis = document.getElementById('re-coords-display');
-    if (prefilledCoords) {
-      dis.style.display = 'flex';
-      dis.textContent = `Tapped: ${prefilledCoords.lat}, ${prefilledCoords.lng}`;
-      this.setRouteTab('latlng');
-    } else if (d) {
-      dis.style.display = 'flex';
-      dis.textContent = `Current: ${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}`;
-      this.setRouteTab('latlng');
-    } else {
-      dis.style.display = 'none';
-      this.setRouteTab('here');
-    }
-
-    // Close other modals first to avoid stacking
-    document.getElementById('m-routes').classList.remove('open');
-    this.openModal('m-route-edit');
-  },
-
-  setRouteTab(name) {
-    document.querySelectorAll('[data-retab]').forEach(b =>
-      b.classList.toggle('active', b.dataset.retab === name));
-    document.querySelectorAll('[data-pane]').forEach(p =>
-      p.style.display = p.dataset.pane === name ? 'block' : 'none');
-  },
-
-  saveDest() {
-    const name = document.getElementById('re-name').value.trim();
-    if (!name) { Utils.toast('Enter a name', 'bad'); return; }
-    let lat = +document.getElementById('re-lat').value;
-    let lng = +document.getElementById('re-lng').value;
-    // If user is on "here" tab, use current pos
-    const activeTab = document.querySelector('[data-retab].active');
-    if (activeTab && activeTab.dataset.retab === 'here') {
-      if (!State.pos) { Utils.toast('No GPS — start GPS first or pick another tab', 'bad'); return; }
-      lat = +State.pos.lat.toFixed(5);
-      lng = +State.pos.lng.toFixed(5);
-    }
-    if (!lat || !lng || isNaN(lat) || isNaN(lng)) { Utils.toast('Invalid coordinates', 'bad'); return; }
-
-    if (State.editingDestId) {
-      const d = State.data.destinations.find(x => x.id === State.editingDestId);
-      if (d) { d.name = name; d.lat = lat; d.lng = lng; }
-    } else {
-      const newId = Utils.uid();
-      State.data.destinations.push({ id: newId, name, lat, lng });
-      if (!State.data.activeDestId) State.data.activeDestId = newId;
-    }
-    State.saveData();
-    this.closeAllModals();
-    Map.updatePoints();
-    Utils.toast('Destination saved', 'good');
-  },
-
-  deleteDest() {
-    if (!State.editingDestId) return;
-    if (!confirm('Delete this destination?')) return;
-    State.data.destinations = State.data.destinations.filter(d => d.id !== State.editingDestId);
-    if (State.data.activeDestId === State.editingDestId) {
-      State.data.activeDestId = State.data.destinations[0]?.id || null;
-    }
-    State.saveData();
-    this.closeAllModals();
-    Map.updatePoints();
-    Utils.toast('Destination deleted');
-  },
-
-  // ---------- audit list ----------
-
-  renderAuditList() {
-    const list = document.getElementById('audit-list');
-    const pts = State.activePoints();
-    document.getElementById('audit-count').textContent = pts.length;
-    if (!pts.length) {
-      list.innerHTML = '<div class="empty">No points to audit. Capture some first.</div>';
-      return;
-    }
-    // Sort by created date (newest first)
-    const sorted = pts.slice().sort((a, b) =>
-      (b.createdAt || '').localeCompare(a.createdAt || '')
-    );
-    list.innerHTML = sorted.map(p => `
-      <div class="list-row ${p.status === 'no' ? 'disabled' : ''}">
-        <div class="em">${Utils.emoji(p.type, p.subtype)}</div>
-        <div class="info">
-          <div class="name">${Utils.escapeHtml(p.name)}</div>
-          <div class="meta">${Utils.typeLabel(p.type)}${p.side ? ' · ' + p.side : ''}${p.limit ? ' · ' + p.limit + ' km/h' : ''}</div>
-        </div>
-        <button class="row-btn keep ${p.status === 'active' ? 'active' : ''}" data-keep="${p.id}">✓</button>
-        <button class="row-btn del ${p.status === 'no' ? 'active' : ''}" data-rem="${p.id}">✕</button>
-      </div>
-    `).join('');
-    list.querySelectorAll('[data-keep]').forEach(b =>
-      b.onclick = () => {
-        const p = State.data.points.find(x => x.id === b.dataset.keep);
-        if (!p) return;
-        p.status = 'active';
-        p.confidence = (p.confidence || 0) + 1;
-        State.saveData();
-        this.renderAuditList();
-      }
-    );
-    list.querySelectorAll('[data-rem]').forEach(b =>
-      b.onclick = () => {
-        if (!confirm('Delete this point?')) return;
-        State.data.points = State.data.points.filter(p => p.id !== b.dataset.rem);
-        State.saveData();
-        this.renderAuditList();
-      }
-    );
-  },
-
-  // ---------- disabled list ----------
-
-  renderDisabledList() {
-    const list = document.getElementById('disabled-list');
-    const pts = State.data.points.filter(p => p.status === 'no');
-    if (!pts.length) {
-      list.innerHTML = '<div class="empty">No disabled points.</div>';
-      return;
-    }
-    list.innerHTML = pts.map(p => `
-      <div class="list-row disabled">
-        <div class="em">${Utils.emoji(p.type, p.subtype)}</div>
-        <div class="info">
-          <div class="name">${Utils.escapeHtml(p.name)}</div>
-          <div class="meta">${Utils.typeLabel(p.type)} · ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div>
-        </div>
-        <button class="row-btn keep" data-reactivate="${p.id}">↺</button>
-      </div>
-    `).join('');
-    list.querySelectorAll('[data-reactivate]').forEach(b =>
-      b.onclick = () => {
-        const p = State.data.points.find(x => x.id === b.dataset.reactivate);
-        if (p) { p.status = 'active'; State.saveData(); this.renderDisabledList(); Utils.toast('Reactivated', 'good'); }
-      }
-    );
-  },
-
-  // ---------- trip log ----------
-
-  renderTripsList() {
-    const list = document.getElementById('trips-list');
-    if (!State.trips.length) {
-      list.innerHTML = '<div class="empty">No trips yet.</div>';
-      return;
-    }
-    list.innerHTML = State.trips.map((t, i) => {
-      const start = new Date(t.startedAt);
-      const end = t.endedAt ? new Date(t.endedAt) : null;
-      const min = end ? Math.round((end - start) / 60000) : 0;
-      return `
-        <div class="list-row">
-          <div class="em">🚗</div>
-          <div class="info">
-            <div class="name">${start.toLocaleString()}</div>
-            <div class="meta">${(t.distanceKm || 0).toFixed(1)} km · ${min} min · max ${Math.round(t.maxSpeed || 0)} km/h</div>
-          </div>
-          <button class="row-btn del" data-trip-del="${i}">✕</button>
-        </div>
-      `;
-    }).join('');
-    list.querySelectorAll('[data-trip-del]').forEach(b =>
-      b.onclick = () => {
-        if (!confirm('Delete trip?')) return;
-        State.trips.splice(+b.dataset.tripDel, 1);
-        State.saveTrips();
-        this.renderTripsList();
-      }
-    );
-  },
-
-  // ---------- trip start/stop ----------
-
-  toggleTrip() {
-    if (State.activeTrip) {
-      State.activeTrip.endedAt = new Date().toISOString();
-      State.trips.unshift(State.activeTrip);
-      State.saveTrips();
-      Utils.toast(`Trip saved · ${State.activeTrip.distanceKm.toFixed(1)} km`, 'good');
-      State.activeTrip = null;
-    } else {
-      State.activeTrip = {
-        id: Utils.uid(),
-        startedAt: new Date().toISOString(),
-        destId: State.data.activeDestId,
-        distanceKm: 0,
-        maxSpeed: 0,
-      };
-      Utils.toast('Trip started', 'good');
-    }
-    this.updateTripButton();
-  },
-
-  updateTripButton() {
-    const btn = document.getElementById('trip-toggle');
-    if (State.activeTrip) { btn.textContent = '■ End trip'; btn.style.background = 'var(--red)'; btn.style.color = '#fff'; btn.style.borderColor = 'var(--red)'; }
-    else { btn.textContent = '▶ Start trip'; btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }
-  },
-
-  // ---------- settings sync ----------
-
-  syncSettings() {
-    // Theme
-    document.querySelectorAll('[data-theme]').forEach(b =>
-      b.classList.toggle('active', b.dataset.theme === State.settings.theme));
-    // Sound
-    document.querySelectorAll('[data-sound]').forEach(b =>
-      b.classList.toggle('active', b.dataset.sound === State.settings.sound));
-    // Toggles
-    document.getElementById('t-smart').classList.toggle('on', State.settings.smart);
-    document.getElementById('t-side').classList.toggle('on', State.settings.announceSide);
-    document.getElementById('t-rotate').classList.toggle('on', State.settings.rotateMap);
-    document.getElementById('t-autobackup').classList.toggle('on', State.settings.autoBackup);
-    // Inputs
-    document.getElementById('i-cluster').value = State.settings.clusterMeters;
-    document.getElementById('i-over').value    = State.settings.overBy;
-    // Speed alert mode
-    document.querySelectorAll('[data-speed]').forEach(b =>
-      b.classList.toggle('active', b.dataset.speed === State.settings.speedAlertMode));
-    // GitHub fields
-    document.getElementById('i-gh-token').value = State.gh.token || '';
-    document.getElementById('i-gh-repo').value  = State.gh.repo || '';
-    document.getElementById('i-gh-path').value  = State.gh.path || '';
-    // Backup status
-    this.updateBackupStatus();
-    // Trip button
-    this.updateTripButton();
-  },
-
-  applyTheme() {
-    let t = State.settings.theme;
-    if (t === 'auto') {
-      const h = new Date().getHours();
-      t = (h >= 6 && h < 18) ? 'light' : 'dark';
-    }
-    document.body.setAttribute('data-theme', t);
-    document.querySelector('meta[name="theme-color"]').setAttribute('content', t === 'dark' ? '#0c0a09' : '#f5f1e8');
-  },
-
-  // ---------- backup ----------
-
-  updateBackupStatus() {
-    const el = document.getElementById('backup-status');
-    if (!el) return;
-    if (!State.gh.token || !State.gh.repo) {
-      el.textContent = 'Set token & repo to enable backup';
-      return;
-    }
-    if (!State.lastBackup) {
-      el.textContent = State.settings.autoBackup ? 'Auto-backup on · no backup yet' : 'No backup yet';
-      return;
-    }
-    const ageMin = Math.floor((Date.now() - State.lastBackup) / 60000);
-    el.textContent = ageMin < 1 ? 'Last backup: just now'
-                    : ageMin < 60 ? `Last backup: ${ageMin} min ago`
-                    : `Last backup: ${Math.floor(ageMin / 60)} hr ago`;
-  },
-};
-
-// ============================================================
-// 8. BACKUP — push JSON to a GitHub file via Contents API
-// ============================================================
-
-const Backup = {
-  /** Hash current state — used to skip auto-backup if nothing changed. */
-  hash() {
-    const s = JSON.stringify({ d: State.data, t: State.trips, st: State.settings });
-    let h = 0;
-    for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-    return h;
-  },
-
-  /** Push to GitHub. Returns true on success. */
-  async push(opts = {}) {
-    if (!State.gh.token || !State.gh.repo || !State.gh.path) {
-      if (!opts.silent) Utils.toast('Set token/repo/path first', 'bad');
-      return false;
-    }
-    try {
-      const apiBase = `https://api.github.com/repos/${State.gh.repo}/contents/${State.gh.path}`;
-      const headers = {
-        'Authorization': 'token ' + State.gh.token,
-        'Accept': 'application/vnd.github+json',
-      };
-      // Find existing SHA so we update, not create-conflict
-      let sha = null;
-      try {
-        const r = await fetch(apiBase, { headers });
-        if (r.ok) sha = (await r.json()).sha;
-      } catch (e) {}
-
-      const payload = JSON.stringify({
-        version: 17,
-        exportedAt: new Date().toISOString(),
-        data: State.data,
-        settings: State.settings,
-        trips: State.trips,
-      }, null, 2);
-      const b64 = btoa(unescape(encodeURIComponent(payload)));
-      const body = {
-        message: (opts.silent ? 'Auto-backup ' : 'Backup ') + new Date().toISOString(),
-        content: b64,
-      };
-      if (sha) body.sha = sha;
-
-      const resp = await fetch(apiBase, {
-        method: 'PUT', headers, body: JSON.stringify(body),
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        if (!opts.silent) Utils.toast('Backup failed: ' + (err.message || resp.status), 'bad');
-        return false;
-      }
-      State.lastBackup = Date.now();
-      State.lastBackupHash = this.hash();
-      UI.updateBackupStatus();
-      if (!opts.silent) Utils.toast('Backed up ✓', 'good');
-      return true;
-    } catch (e) {
-      if (!opts.silent) Utils.toast('Backup error', 'bad');
-      return false;
-    }
-  },
-
-  /** Auto-backup tick: skip if no changes or no creds. */
-  async tryAuto() {
-    if (!State.settings.autoBackup) return;
-    if (!State.gh.token || !State.gh.repo) return;
-    const h = this.hash();
-    if (h === State.lastBackupHash) return;
-    await this.push({ silent: true });
-  },
-
-  start() {
-    this.stop();
-    State.backupTimer = setInterval(() => this.tryAuto(), 5 * 60 * 1000);
-  },
-  stop() {
-    if (State.backupTimer) { clearInterval(State.backupTimer); State.backupTimer = null; }
-  },
-};
-
-// ============================================================
-// 9. WIRING — connect all DOM events
-// ============================================================
-
-function wire() {
-
-  // ----- top bar -----
-  document.getElementById('btn-settings').onclick = () => { UI.syncSettings(); UI.openModal('m-settings'); };
-
-  // ----- route bar -----
-  document.getElementById('btn-route').onclick = () => { UI.renderRoutesList(); UI.openModal('m-routes'); };
-  document.getElementById('btn-route-menu').onclick = () => { UI.renderRoutesList(); UI.openModal('m-routes'); };
-
-  // ----- action row -----
-  document.getElementById('btn-capture').onclick = () => UI.openCaptureMenu();
-  document.getElementById('btn-go').onclick = () => State.mode === 'idle' ? GPS.start() : GPS.stop();
-  document.getElementById('btn-demo').onclick = () => State.mode === 'demo' ? GPS.stop() : GPS.demo();
-
-  // ----- map overlay -----
-  document.getElementById('btn-fit').onclick = () => Map.fitAll();
-  document.getElementById('btn-recenter').onclick = () => Map.recenter();
-  document.getElementById('follow-pill').onclick = () => {
-    State.followMap = !State.followMap;
-    UI.updateFollowPill();
-    if (State.followMap && State.pos) Map.recenter();
-  };
-
-  // ----- capture menu -----
-  document.querySelectorAll('[data-cap]').forEach(b =>
-    b.onclick = () => UI.beginCapture(b.dataset.cap)
-  );
-
-  // ----- side picker -----
-  document.querySelectorAll('[data-side]').forEach(b =>
-    b.onclick = () => {
-      if (State.pendingCapture && b.dataset.side !== 'none') {
-        State.pendingCapture.side = b.dataset.side;
-      }
-      UI.closeAllModals();
-      if (State.pendingCapture) UI.finalizeCapture();
-    }
-  );
-
-  // ----- limit custom -----
-  document.getElementById('limit-save').onclick = () => {
-    const v = +document.getElementById('limit-custom').value;
-    if (!v || v < 10 || v > 250) { Utils.toast('Invalid limit', 'bad'); return; }
-    State.pendingCapture.limit = v;
-    State.pendingCapture.name = `Speed → ${v}`;
-    UI.closeAllModals();
-    UI.finalizeCapture();
-  };
-
-  // ----- other (custom name) -----
-  document.getElementById('other-save').onclick = () => {
-    const v = document.getElementById('other-name').value.trim();
-    if (!v) { Utils.toast('Enter a name', 'bad'); return; }
-    State.pendingCapture.name = v;
-    UI.closeAllModals();
-    UI.finalizeCapture();
-  };
-
-  // ----- point editor -----
-  document.getElementById('e-type').onchange = () => UI.togglePEFields();
-  document.querySelectorAll('#e-side-opts button').forEach(b =>
-    b.onclick = () => document.querySelectorAll('#e-side-opts button').forEach(x => x.classList.toggle('active', x === b))
-  );
-  document.querySelectorAll('#e-status-opts button').forEach(b =>
-    b.onclick = () => document.querySelectorAll('#e-status-opts button').forEach(x => x.classList.toggle('active', x === b))
-  );
-  document.getElementById('e-save').onclick = () => UI.savePoint();
-  document.getElementById('e-delete').onclick = () => UI.deletePoint();
-  document.getElementById('e-gmap').onclick = () => {
-    const lat = document.getElementById('e-lat').value;
-    const lng = document.getElementById('e-lng').value;
-    if (lat && lng) window.open(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`, '_blank');
-  };
-
-  // ----- destinations modal -----
-  document.getElementById('route-add').onclick = () => UI.openDestEditor(null);
-  document.querySelectorAll('[data-retab]').forEach(b =>
-    b.onclick = () => UI.setRouteTab(b.dataset.retab)
-  );
-  document.getElementById('re-here-grab').onclick = () => {
-    if (!State.pos) { Utils.toast('Start GPS first', 'bad'); return; }
-    document.getElementById('re-lat').value = +State.pos.lat.toFixed(5);
-    document.getElementById('re-lng').value = +State.pos.lng.toFixed(5);
-    UI.setRouteTab('latlng');
-    Utils.toast('Coords filled', 'good');
-  };
-  document.getElementById('re-save').onclick = () => UI.saveDest();
-  document.getElementById('re-delete').onclick = () => UI.deleteDest();
-
-  // ----- settings -----
-  document.querySelectorAll('[data-theme]').forEach(b =>
-    b.onclick = () => { State.settings.theme = b.dataset.theme; State.saveSettings(); UI.applyTheme(); UI.syncSettings(); }
-  );
-  document.querySelectorAll('[data-sound]').forEach(b =>
-    b.onclick = () => { State.settings.sound = b.dataset.sound; State.saveSettings(); UI.syncSettings(); Audio.ensure(); if (b.dataset.sound !== 'off') Audio.beep('petrol'); }
-  );
-  document.querySelectorAll('[data-speed]').forEach(b =>
-    b.onclick = () => { State.settings.speedAlertMode = b.dataset.speed; State.saveSettings(); UI.syncSettings(); }
-  );
-  document.getElementById('t-smart').onclick    = () => { State.settings.smart = !State.settings.smart; State.saveSettings(); UI.syncSettings(); };
-  document.getElementById('t-side').onclick     = () => { State.settings.announceSide = !State.settings.announceSide; State.saveSettings(); UI.syncSettings(); };
-  document.getElementById('t-rotate').onclick   = () => { State.settings.rotateMap = !State.settings.rotateMap; State.saveSettings(); UI.syncSettings(); };
-  document.getElementById('t-autobackup').onclick = () => {
-    State.settings.autoBackup = !State.settings.autoBackup;
-    State.saveSettings();
-    UI.syncSettings();
-    if (State.settings.autoBackup) Backup.start(); else Backup.stop();
-  };
-  document.getElementById('i-cluster').onchange = e => { const v = +e.target.value; if (v >= 0) { State.settings.clusterMeters = v; State.saveSettings(); } };
-  document.getElementById('i-over').onchange    = e => { const v = +e.target.value; if (v >= 0) { State.settings.overBy = v; State.saveSettings(); } };
-  document.getElementById('i-gh-token').onchange = e => { State.gh.token = e.target.value.trim(); State.saveGh(); UI.updateBackupStatus(); };
-  document.getElementById('i-gh-repo').onchange  = e => { State.gh.repo = e.target.value.trim(); State.saveGh(); UI.updateBackupStatus(); };
-  document.getElementById('i-gh-path').onchange  = e => { State.gh.path = e.target.value.trim() || 'road-alert.json'; State.saveGh(); };
-
-  document.getElementById('btn-backup-now').onclick = () => Backup.push();
-  document.getElementById('trip-toggle').onclick = () => UI.toggleTrip();
-  document.getElementById('trip-list').onclick = () => { UI.renderTripsList(); UI.openModal('m-trips'); };
-
-  document.getElementById('btn-audit').onclick    = () => { UI.renderAuditList(); UI.openModal('m-audit'); };
-  document.getElementById('btn-disabled').onclick = () => { UI.renderDisabledList(); UI.openModal('m-disabled'); };
-  document.getElementById('btn-export').onclick   = () => exportJson();
-  document.getElementById('btn-import').onclick   = () => document.getElementById('import-file').click();
-  document.getElementById('import-file').onchange = e => importJson(e);
-  document.getElementById('btn-edit-json').onclick = () => {
-    document.getElementById('json-text').value = JSON.stringify(State.data, null, 2);
-    UI.openModal('m-json');
-  };
-  document.getElementById('btn-json-save').onclick = () => {
-    try {
-      const parsed = JSON.parse(document.getElementById('json-text').value);
-      if (!Array.isArray(parsed.points) || !Array.isArray(parsed.destinations)) throw new Error('Need points[] and destinations[]');
-      State.data = parsed;
-      State.saveData();
-      UI.closeAllModals();
-      Utils.toast('Saved', 'good');
-    } catch (e) { Utils.toast(e.message, 'bad'); }
-  };
-  document.getElementById('btn-json-copy').onclick = async () => {
-    const ta = document.getElementById('json-text');
-    try { await navigator.clipboard.writeText(ta.value); Utils.toast('Copied'); }
-    catch (e) { ta.select(); document.execCommand('copy'); Utils.toast('Copied'); }
-  };
-  document.getElementById('btn-export-trips').onclick = () => {
-    downloadFile(`road-alert-trips-${Date.now()}.json`, JSON.stringify(State.trips, null, 2));
-  };
-  document.getElementById('btn-clear-trips').onclick = () => {
-    if (!confirm('Clear all trips?')) return;
-    State.trips = [];
-    State.saveTrips();
-    UI.renderTripsList();
-  };
-
-  // ----- modal close buttons -----
-  document.querySelectorAll('[data-close]').forEach(b =>
-    b.onclick = () => UI.closeAllModals()
-  );
-
-  // ----- backdrop click closes modal -----
-  document.querySelectorAll('.modal').forEach(m =>
-    m.addEventListener('click', e => {
-      if (e.target === m) UI.closeAllModals();
-    })
-  );
-
-  // ----- keep screen awake when tab becomes visible -----
-  document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && (State.mode === 'gps' || State.mode === 'demo')) {
-      GPS.requestWakeLock();
-    }
   });
-}
-
-// ============================================================
-// 10. IMPORT / EXPORT
-// ============================================================
-
-function downloadFile(name, content) {
-  const blob = new Blob([content], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-function exportJson() {
-  downloadFile(`road-alert-${Date.now()}.json`,
-    JSON.stringify({ data: State.data, settings: State.settings, trips: State.trips }, null, 2));
-  Utils.toast('Exported', 'good');
-}
-
-function importJson(e) {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = JSON.parse(reader.result);
-      // Accept either {data,settings,trips} or just a data object
-      if (parsed.data && Array.isArray(parsed.data.points)) {
-        State.data = parsed.data;
-        if (parsed.settings) State.settings = { ...State.settings, ...parsed.settings };
-        if (Array.isArray(parsed.trips)) State.trips = parsed.trips;
-      } else if (Array.isArray(parsed.points)) {
-        State.data = parsed;
-      } else throw new Error('Unrecognized file format');
-      State.saveData();
-      State.saveSettings();
-      State.saveTrips();
-      UI.render();
-      UI.applyTheme();
-      Map.updatePoints();
-      Utils.toast('Imported', 'good');
-    } catch (err) { Utils.toast(err.message, 'bad'); }
-  };
-  reader.readAsText(file);
-  e.target.value = '';
-}
-
-// ============================================================
-// 11. BOOT
-// ============================================================
-
-function boot() {
-  // Apply saved theme first to avoid flash
-  UI.applyTheme();
-  // Wire all DOM events
-  wire();
-  // Initial render
-  UI.render();
-  UI.updateFollowPill();
-  // Bring up the map (Leaflet may still be loading)
-  Map.init();
-  // Auto-backup loop
-  if (State.settings.autoBackup) Backup.start();
-  // Auto-update theme on the hour (in case "auto" mode hits sunset)
-  setInterval(() => { if (State.settings.theme === 'auto') UI.applyTheme(); }, 60 * 60 * 1000);
-}
-
-// Wait for DOM + Leaflet
-if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', boot);
-} else {
-  boot();
-}
+})();
 </script>
+
+<script defer src="js/app-core.js?v=22.57"></script>
+<script defer src="js/app-ui.js?v=22.57"></script>
 
 </body>
 </html>

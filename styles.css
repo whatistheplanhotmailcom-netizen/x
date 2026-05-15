@@ -61,21 +61,25 @@ body {
   height: 100vh; height: 100dvh;
   padding: 8px;
   display: grid;
-  /* v22.14 FIX: the 1fr row must align with .map-wrap so the map fills
-     remaining vertical space. v22.12 added a .diag-strip child between
-     route-bar and stats, which shifted the 1fr from map → stats and made
-     the stats area HUGE while squishing the map.
-     Children, in order:
+  /* v22.58: 2-column layout. Left column = main content stack, right column
+     (56px) = timeline rail spanning from destination bar to actions.
+     Row meaning unchanged:
        1. .topbar             auto
        2. .route-bar          auto
-       3. .diag-strip         auto   ← added v22.12
+       3. .diag-strip         auto
        4. .stats              auto
-       5. .map-wrap           1fr    ← THE map should grow
+       5. .map-wrap           1fr    ← map grows
        6. .actions            auto
-       7. status line (text)  auto */
+       7. status line         auto */
+  grid-template-columns: 1fr 56px;
   grid-template-rows: auto auto auto auto 1fr auto auto;
   gap: 8px;
+  column-gap: 6px;
   position: relative;
+}
+/* All existing children stay in column 1 */
+.topbar, .route-bar, .diag-strip, .stats, .map-wrap, .actions, .status-line {
+  grid-column: 1;
 }
 
 /* TOP BAR */
@@ -134,7 +138,7 @@ body {
 /* ROUTE BAR */
 .route-bar {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 1fr;
   gap: 6px;
 }
 /* v22.12: tiny live diagnostic strip — easy to glance at while driving */
@@ -156,12 +160,53 @@ body {
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }
+
+/* v22.58: TIMELINE RAIL — vertical strip of recent captures on the right.
+   Lives in column 2 of the .app grid; spans destination-bar row to actions row. */
+.timeline-rail {
+  grid-column: 2;
+  grid-row: 2 / 7;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  font-family: ui-monospace, monospace;
+  min-height: 0;
+}
+.timeline-entry {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 6px 2px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10px;
+  color: var(--ink-2);
+  line-height: 1.2;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.timeline-entry:last-child { border-bottom: none; }
+.timeline-entry:active { background: var(--surface-2); }
+.timeline-entry .em { font-size: 18px; line-height: 1; margin-bottom: 2px; }
+.timeline-entry .lbl { font-weight: 700; color: var(--ink); text-transform: uppercase; letter-spacing: 0.04em; }
+.timeline-entry .ago { color: var(--amber-2); margin-top: 2px; }
+.timeline-empty {
+  padding: 16px 4px;
+  text-align: center;
+  color: var(--ink-3);
+  font-size: 9px;
+  font-style: italic;
+}
 .route-current {
   appearance: none;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 6px 14px;
+  padding: 5px 12px;
   text-align: left;
   cursor: pointer;
   display: flex;
@@ -170,22 +215,10 @@ body {
   font: inherit;
   color: var(--amber-2);
   font-weight: 700;
-  font-size: 15px;
+  font-size: 13px;
 }
 .route-current:active { background: var(--surface-2); }
 .route-current .arrow { color: var(--amber); }
-.route-menu {
-  appearance: none;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  width: 56px;
-  cursor: pointer;
-  font-size: 18px;
-  color: var(--ink-2);
-  letter-spacing: 2px;
-}
-.route-menu:active { background: var(--surface-2); }
 
 /* STATS ROW */
 .stats {
@@ -630,8 +663,8 @@ body {
   border: 1px solid var(--line-2);
   background: var(--surface);
   color: var(--ink);
-  font: 700 14px ui-monospace, monospace;
-  padding: 14px 16px;
+  font: 700 13px ui-monospace, monospace;
+  padding: 10px 16px;
   border-radius: 10px;
   cursor: pointer;
   display: flex;

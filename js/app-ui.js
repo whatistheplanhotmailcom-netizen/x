@@ -393,6 +393,44 @@ const UI = {
     this.renderStatusLine();
     this.renderDisabledCount();
     this.renderDiagStrip(); // v22.12
+    this.renderTimeline(); // v22.58
+  },
+
+  /** v22.58: render the right-side captured-points timeline rail.
+   *  Reuses Utils.emoji / Utils.typeLabel / Utils.fmtAgo from app-core.js.
+   *  Each entry shows emoji + short type label + abbreviated time-ago.
+   *  Tap an entry → opens the point editor (same as map-marker popup). */
+  renderTimeline() {
+    const rail = document.getElementById('timeline-rail');
+    if (!rail) return;
+    const pts = State.activePoints()
+      .filter(p => p.status !== 'no')
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+      .slice(0, 50);
+    if (!pts.length) {
+      rail.innerHTML = '<div class="timeline-empty">No captures yet</div>';
+      return;
+    }
+    rail.innerHTML = pts.map(p => {
+      const short = (Utils.typeLabel(p.type) || '').split(' ')[0].slice(0, 4);
+      const ago = p.createdAt
+        ? Utils.fmtAgo(p.createdAt)
+            .replace(' ago', '')
+            .replace(' minutes', 'm').replace(' minute', 'm')
+            .replace(' hours', 'h').replace(' hour', 'h')
+            .replace(' days', 'd').replace(' day', 'd')
+            .replace(' seconds', 's').replace(' second', 's')
+            .replace('just now', 'now')
+        : '';
+      return `<div class="timeline-entry" data-tl-edit="${Utils.escapeHtml(p.id)}">
+        <span class="em">${Utils.emoji(p.type, p.subtype)}</span>
+        <span class="lbl">${Utils.escapeHtml(short)}</span>
+        <span class="ago">${Utils.escapeHtml(ago)}</span>
+      </div>`;
+    }).join('');
+    rail.querySelectorAll('[data-tl-edit]').forEach(el => {
+      el.onclick = () => UI.openPointEditor(el.dataset.tlEdit);
+    });
   },
 
   /** v22.37: GPS health indicator — multi-state strip.
@@ -1297,7 +1335,6 @@ function wire() {
     );
   };
   document.getElementById('btn-route').onclick = () => { UI.renderRoutesList(); UI.openModal('m-routes'); };
-  document.getElementById('btn-route-menu').onclick = () => { UI.renderRoutesList(); UI.openModal('m-routes'); };
   document.getElementById('btn-capture').onclick = () => UI.openCaptureMenu();
   document.getElementById('btn-go').onclick = () => {
     if (State.mode !== 'idle') { GPS.stop(); return; }

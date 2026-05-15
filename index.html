@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=22.57">
+<link rel="stylesheet" href="styles.css?v=22.58">
 </head>
 <body data-theme="light">
 
@@ -47,7 +47,6 @@
       <span class="arrow">→</span>
       <span id="route-name">Pick a destination</span>
     </button>
-    <button class="route-menu" id="btn-route-menu" title="Switch route">⋯</button>
   </div>
 
   <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->
@@ -91,6 +90,9 @@
       <button class="map-btn" id="btn-nav" title="Auto-rotate (heading up)">🧭</button>
     </div>
   </div>
+
+  <!-- TIMELINE RAIL — vertical strip of recent captures, right side -->
+  <aside class="timeline-rail" id="timeline-rail" aria-label="Recent captures"></aside>
 
   <!-- ACTIONS -->
   <div class="actions">
@@ -517,8 +519,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=22.57"></script>
-<script defer src="js/app-ui.js?v=22.57"></script>
+<script defer src="js/app-core.js?v=22.58"></script>
+<script defer src="js/app-ui.js?v=22.58"></script>
 
 </body>
 </html>

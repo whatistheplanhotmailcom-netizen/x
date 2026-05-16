@@ -532,22 +532,24 @@ const UI = {
     const aheadList = (typeof Alerts !== 'undefined') ? Alerts.ahead() : [];
     const aheadIds = new globalThis.Map();
     aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
+    // v22.62: each entry shows live straight-line distance from current GPS
+    // pos to the point. Compact format ("450m" / "2.3k" / "12k") so it fits
+    // in the 72px rail. "—" when GPS is off.
+    const myPos = State.pos;
     rail.innerHTML = pts.map(p => {
       const short = (Utils.typeLabel(p.type) || '').split(' ')[0].slice(0, 4);
-      const ago = p.createdAt
-        ? Utils.fmtAgo(p.createdAt)
-            .replace(' ago', '')
-            .replace(' minutes', 'm').replace(' minute', 'm')
-            .replace(' hours', 'h').replace(' hour', 'h')
-            .replace(' days', 'd').replace(' day', 'd')
-            .replace(' seconds', 's').replace(' second', 's')
-            .replace('just now', 'now')
-        : '';
+      let distText = '—';
+      if (myPos) {
+        const km = Utils.distKm(myPos, p);
+        if (km < 1) distText = Math.round(km * 1000) + 'm';
+        else if (km < 10) distText = km.toFixed(1) + 'k';
+        else distText = Math.round(km) + 'k';
+      }
       const aheadCls = aheadIds.has(p.id) ? ' ahead-' + aheadIds.get(p.id) : '';
       return `<div class="timeline-entry${aheadCls}" data-tl-edit="${Utils.escapeHtml(p.id)}">
         <span class="em">${Utils.emoji(p.type, p.subtype)}</span>
         <span class="lbl">${Utils.escapeHtml(short)}</span>
-        <span class="ago">${Utils.escapeHtml(ago)}</span>
+        <span class="dist">${Utils.escapeHtml(distText)}</span>
       </div>`;
     }).join('');
     rail.querySelectorAll('[data-tl-edit]').forEach(el => {

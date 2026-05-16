@@ -129,9 +129,9 @@ const Storage = {
       autoBackup: false,
       // v22.6: new settings
       flashStartM: 500,        // start flashing Next-ahead border at this distance
-      // v22.54: toggle for auto-rotation (heading-up). Off by default — user
-      // taps 🧭 to enable. Survives across sessions.
-      navMode: false,
+      // v22.54: toggle for auto-rotation (heading-up). Defaults ON (v22.64).
+      // Survives across sessions; tap the 🧭 button on the map to toggle.
+      navMode: true,
       // v22.56: long-press on map captures a point at that location. OFF by
       // default to prevent accidental captures while panning/zooming.
       longPressCapture: false,
@@ -176,6 +176,21 @@ const Storage = {
           }
           localStorage.setItem('roadAlert.v22.3.orphansMigrated', '1');
         } catch (e) { console.warn('orphan migration', e); }
+      }
+      // v22.64: heading-up rotation is now the default. Flip existing
+      // users' navMode to true once. They can still turn it off via the
+      // 🧭 button on the map — we only force the new default a single
+      // time, then their preference sticks.
+      if (!localStorage.getItem('roadAlert.v22.64.navModeDefault')) {
+        try {
+          const s = this.load(this.KEYS.settings, null);
+          if (s && s.navMode !== true) {
+            s.navMode = true;
+            this.save(this.KEYS.settings, s);
+            console.log('v22.64: navMode set to true (heading-up rotation default)');
+          }
+          localStorage.setItem('roadAlert.v22.64.navModeDefault', '1');
+        } catch (e) { console.warn('navMode default migration', e); }
       }
       return;
     }

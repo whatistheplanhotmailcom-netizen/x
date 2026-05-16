@@ -523,23 +523,18 @@ const UI = {
     const rail = document.getElementById('tools-rail');
     if (!rail) return;
 
-    // v22.65: when GPS is on, sort entries by nearest distance using
-    // Alerts.ahead() — which also filters out passed/disabled points and
-    // does a direction-aware check via the active destination. Fallback to
-    // chronological sort when GPS is off (or no destination).
+    // v22.66: simple distance sort — order ALL active points by how far
+    // they are from the current GPS position, nearest first. No direction
+    // filtering, no destination-based "ahead" check — just raw distance.
+    // Falls back to chronological order when GPS is off.
     const myPos = State.pos;
     let pts;
-    if (myPos && typeof Alerts !== 'undefined' && Alerts.ahead) {
-      pts = Alerts.ahead().slice(0, 50);
-      // If Alerts.ahead returns empty (e.g. no destination), still show
-      // something useful — fall back to all active points by distance.
-      if (!pts.length) {
-        pts = State.activePoints()
-          .filter(p => p.status !== 'no')
-          .map(p => ({ ...p, dist: Utils.distKm(myPos, p) }))
-          .sort((a, b) => a.dist - b.dist)
-          .slice(0, 50);
-      }
+    if (myPos) {
+      pts = State.activePoints()
+        .filter(p => p.status !== 'no')
+        .map(p => ({ ...p, dist: Utils.distKm(myPos, p) }))
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, 50);
     } else {
       pts = State.activePoints()
         .filter(p => p.status !== 'no')
@@ -592,11 +587,9 @@ const UI = {
     });
 
     // v22.65: auto-scroll the rail back to top whenever the focused
-    // (closest) point shifts to a new one. Since the list is sorted by
-    // distance ascending, the focused entry is always pts[0] — putting
-    // scrollTop at 0 keeps the new closest visible at the top center
-    // of the rail. We only scroll on a focus CHANGE so manual scrolling
-    // (to peek at further points) isn't snapped back every tick.
+    // (closest) point shifts to a new one. Only fires on focus CHANGE
+    // so manual scrolling to peek at further entries isn't snapped back
+    // every tick.
     const focusedId = pts[0] && pts[0].id;
     if (focusedId && this._lastFocusedTimelineId !== focusedId) {
       this._lastFocusedTimelineId = focusedId;

@@ -227,54 +227,50 @@ body {
   font-style: italic;
 }
 
-/* v22.61: ahead-rank flashing for sidebar timeline entries. The previous
-   version used outline + extending box-shadow which the rail's overflow-y:auto
-   was clipping (per CSS spec, overflow-y:auto forces overflow-x to behave the
-   same). Redesigned to use only effects that live INSIDE the entry's box:
-   strong background fill + scale + text-color invert.
+/* v22.65: distance-tier coloring on sidebar entries. Each entry gets a
+   tier-* class based on its straight-line distance from current GPS:
+     tier-far   (>= proximityStartM, default 1000 m)  →  green
+     tier-mid   (between finalM and startM)            →  orange
+     tier-near  (< finalM, default 200 m)              →  red
+   The ahead-1/2/3 rank classes add flash + heartbeat ON TOP of the
+   tier color, so the focused entry flashes in its own tier color
+   (green-far → orange-mid → red-near as you close in). */
 
-   ahead-1 = focused/closest. Persistent amber background; flashes to solid
-             amber + dark text + slight scale on every proximity ping.
-   ahead-2 / ahead-3 = next-up. Background pulses between two amber tints
-                       in a continuous breathing animation. */
+/* Tier base fills + dist text color */
+.timeline-entry.tier-far  { background: rgba(34,197,94,0.15); }
+.timeline-entry.tier-far  .dist { color: #16a34a; }
+.timeline-entry.tier-mid  { background: rgba(245,158,11,0.22); }
+.timeline-entry.tier-mid  .dist { color: var(--amber-2); }
+.timeline-entry.tier-near { background: rgba(239,68,68,0.28); }
+.timeline-entry.tier-near .dist { color: var(--red); }
+
+/* Ahead-1 (closest): flashes solid tier color on every proximity ping */
 .timeline-entry.ahead-1 {
-  background: rgba(245,158,11,0.28);
   font-weight: 800;
-  color: var(--ink);
   transition: background 0.10s linear, transform 0.10s linear, color 0.10s linear;
   position: relative;
   z-index: 5;
 }
-.timeline-entry.ahead-1 .lbl,
-.timeline-entry.ahead-1 .ago {
-  color: var(--ink);
-}
-.timeline-entry.ahead-1.flash-on {
-  background: #f59e0b;
-  transform: scale(1.06);
-}
+.timeline-entry.ahead-1.flash-on { transform: scale(1.06); }
 .timeline-entry.ahead-1.flash-on,
 .timeline-entry.ahead-1.flash-on .lbl,
-.timeline-entry.ahead-1.flash-on .ago {
-  color: #0c0a09;
-}
-.timeline-entry.ahead-2 {
-  background: rgba(245,158,11,0.14);
-  animation: tl-pulse 1.4s ease-in-out infinite;
-  position: relative;
-  z-index: 4;
-}
-.timeline-entry.ahead-3 {
-  background: rgba(245,158,11,0.08);
-  animation: tl-pulse 1.8s ease-in-out infinite;
-  opacity: 0.95;
-  position: relative;
-  z-index: 4;
-}
-@keyframes tl-pulse {
-  0%, 100% { background: rgba(245,158,11,0.08); }
-  50%      { background: rgba(245,158,11,0.36); }
-}
+.timeline-entry.ahead-1.flash-on .dist { color: #0c0a09; }
+.timeline-entry.ahead-1.tier-far.flash-on  { background: #22c55e; }
+.timeline-entry.ahead-1.tier-mid.flash-on  { background: #f59e0b; }
+.timeline-entry.ahead-1.tier-near.flash-on { background: #ef4444; }
+
+/* Ahead-2 / Ahead-3 (next-up): continuous heartbeat in tier color */
+.timeline-entry.ahead-2.tier-far,
+.timeline-entry.ahead-3.tier-far  { animation: tl-pulse-far  1.4s ease-in-out infinite; }
+.timeline-entry.ahead-2.tier-mid,
+.timeline-entry.ahead-3.tier-mid  { animation: tl-pulse-mid  1.4s ease-in-out infinite; }
+.timeline-entry.ahead-2.tier-near,
+.timeline-entry.ahead-3.tier-near { animation: tl-pulse-near 1.4s ease-in-out infinite; }
+.timeline-entry.ahead-3 { animation-delay: 0.4s; opacity: 0.92; }
+
+@keyframes tl-pulse-far  { 0%,100% { background: rgba(34,197,94,0.10);  } 50% { background: rgba(34,197,94,0.40);  } }
+@keyframes tl-pulse-mid  { 0%,100% { background: rgba(245,158,11,0.12); } 50% { background: rgba(245,158,11,0.42); } }
+@keyframes tl-pulse-near { 0%,100% { background: rgba(239,68,68,0.18);  } 50% { background: rgba(239,68,68,0.48);  } }
 .route-current {
   appearance: none;
   background: var(--surface);

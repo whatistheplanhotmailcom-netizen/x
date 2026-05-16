@@ -514,47 +514,74 @@ const UI = {
    *  Reuses Utils.emoji / Utils.typeLabel / Utils.fmtAgo from app-core.js.
    *  Each entry shows emoji + short type label + abbreviated time-ago.
    *  Tap an entry → opens the point editor (same as map-marker popup). */
+  // v22.65: remember which point was at the top of the sidebar last
+  // render, so we can smooth-scroll back to top when the focused (closest)
+  // point shifts to a new one.
+  _lastFocusedTimelineId: null,
+
   renderTimeline() {
     const rail = document.getElementById('tools-rail');
     if (!rail) return;
-    const pts = State.activePoints()
-      .filter(p => p.status !== 'no')
-      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
-      .slice(0, 50);
+
+    // v22.65: when GPS is on, sort entries by nearest distance using
+    // Alerts.ahead() — which also filters out passed/disabled points and
+    // does a direction-aware check via the active destination. Fallback to
+    // chronological sort when GPS is off (or no destination).
+    const myPos = State.pos;
+    let pts;
+    if (myPos && typeof Alerts !== 'undefined' && Alerts.ahead) {
+      pts = Alerts.ahead().slice(0, 50);
+      // If Alerts.ahead returns empty (e.g. no destination), still show
+      // something useful — fall back to all active points by distance.
+      if (!pts.length) {
+        pts = State.activePoints()
+          .filter(p => p.status !== 'no')
+          .map(p => ({ ...p, dist: Utils.distKm(myPos, p) }))
+          .sort((a, b) => a.dist - b.dist)
+          .slice(0, 50);
+      }
+    } else {
+      pts = State.activePoints()
+        .filter(p => p.status !== 'no')
+        .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
+        .slice(0, 50);
+    }
+
     if (!pts.length) {
       rail.innerHTML = '<div class="timeline-empty">No captures yet</div>';
+      this._lastFocusedTimelineId = null;
       return;
     }
-    // v22.60: bake ahead-rank class into each entry on render so the
-    // sidebar mirrors the map markers' flash/pulse. MapView.updateAheadRanks
-    // also patches these classes on every GPS tick to keep them in sync
-    // when the focused point changes between full re-renders.
+
+    // v22.60: bake ahead-rank class so the sidebar mirrors the map markers'
+    // flash/pulse. MapView.updateAheadRanks also patches these every tick.
     const aheadList = (typeof Alerts !== 'undefined') ? Alerts.ahead() : [];
     const aheadIds = new globalThis.Map();
     aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
-    // v22.63: each entry shows live straight-line distance from current GPS
-    // pos to the point. Format fits in the 72px rail:
-    //   < 1 km   -> "450m"
-    //   < 10 km  -> "2.3km"
-    //   >= 10 km -> "12km"
-    // When GPS is off, shows "no GPS" in dim grey so you can tell at a
-    // glance whether the value is missing because of GPS or for another
-    // reason.
-    const myPos = State.pos;
+
+    // v22.65: distance tier thresholds align with proximity ping bands.
+    const startM = +State.settings.proximityStartM || 1000;
+    const finalM = startM * 0.2;
+
     rail.innerHTML = pts.map(p => {
       const short = (Utils.typeLabel(p.type) || '').split(' ')[0].slice(0, 4);
-      let distText, distCls = '';
+      let distText, distCls = '', tierCls = '';
       if (myPos) {
-        const km = Utils.distKm(myPos, p);
-        if (km < 1) distText = Math.round(km * 1000) + 'm';
+        const km = (p.dist != null) ? p.dist : Utils.distKm(myPos, p);
+        const distM = km * 1000;
+        if (km < 1) distText = Math.round(distM) + 'm';
         else if (km < 10) distText = km.toFixed(1) + 'km';
         else distText = Math.round(km) + 'km';
+        // Tier color: green far, orange mid, red near
+        if (distM < finalM) tierCls = ' tier-near';
+        else if (distM < startM) tierCls = ' tier-mid';
+        else tierCls = ' tier-far';
       } else {
         distText = 'no GPS';
         distCls = ' no-gps';
       }
       const aheadCls = aheadIds.has(p.id) ? ' ahead-' + aheadIds.get(p.id) : '';
-      return `<div class="timeline-entry${aheadCls}" data-tl-edit="${Utils.escapeHtml(p.id)}">
+      return `<div class="timeline-entry${aheadCls}${tierCls}" data-tl-edit="${Utils.escapeHtml(p.id)}">
         <span class="em">${Utils.emoji(p.type, p.subtype)}</span>
         <span class="lbl">${Utils.escapeHtml(short)}</span>
         <span class="dist${distCls}">${Utils.escapeHtml(distText)}</span>
@@ -563,6 +590,22 @@ const UI = {
     rail.querySelectorAll('[data-tl-edit]').forEach(el => {
       el.onclick = () => UI.openPointEditor(el.dataset.tlEdit);
     });
+
+    // v22.65: auto-scroll the rail back to top whenever the focused
+    // (closest) point shifts to a new one. Since the list is sorted by
+    // distance ascending, the focused entry is always pts[0] — putting
+    // scrollTop at 0 keeps the new closest visible at the top center
+    // of the rail. We only scroll on a focus CHANGE so manual scrolling
+    // (to peek at further points) isn't snapped back every tick.
+    const focusedId = pts[0] && pts[0].id;
+    if (focusedId && this._lastFocusedTimelineId !== focusedId) {
+      this._lastFocusedTimelineId = focusedId;
+      try {
+        rail.scrollTo({ top: 0, behavior: 'smooth' });
+      } catch (e) {
+        rail.scrollTop = 0;
+      }
+    }
   },
 
   /** v22.37: GPS health indicator — multi-state strip.

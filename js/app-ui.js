@@ -156,6 +156,16 @@ const MapView = {
       inner.classList.remove('ahead-1', 'ahead-2', 'ahead-3');
       if (aheadIds.has(pid)) inner.classList.add('ahead-' + aheadIds.get(pid));
     });
+    // v22.60: keep sidebar timeline entries in sync. Same class names →
+    // CSS handles the visual mirroring (flash on ahead-1, heartbeat on 2/3).
+    const rail = document.getElementById('tools-rail');
+    if (rail) {
+      rail.querySelectorAll('.timeline-entry').forEach(el => {
+        el.classList.remove('ahead-1', 'ahead-2', 'ahead-3');
+        const pid = el.dataset.tlEdit;
+        if (pid && aheadIds.has(pid)) el.classList.add('ahead-' + aheadIds.get(pid));
+      });
+    }
   },
 
   /** Open a popup near a marker. We render edit/delete buttons and wire
@@ -515,6 +525,13 @@ const UI = {
       rail.innerHTML = '<div class="timeline-empty">No captures yet</div>';
       return;
     }
+    // v22.60: bake ahead-rank class into each entry on render so the
+    // sidebar mirrors the map markers' flash/pulse. MapView.updateAheadRanks
+    // also patches these classes on every GPS tick to keep them in sync
+    // when the focused point changes between full re-renders.
+    const aheadList = (typeof Alerts !== 'undefined') ? Alerts.ahead() : [];
+    const aheadIds = new globalThis.Map();
+    aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
     rail.innerHTML = pts.map(p => {
       const short = (Utils.typeLabel(p.type) || '').split(' ')[0].slice(0, 4);
       const ago = p.createdAt
@@ -526,7 +543,8 @@ const UI = {
             .replace(' seconds', 's').replace(' second', 's')
             .replace('just now', 'now')
         : '';
-      return `<div class="timeline-entry" data-tl-edit="${Utils.escapeHtml(p.id)}">
+      const aheadCls = aheadIds.has(p.id) ? ' ahead-' + aheadIds.get(p.id) : '';
+      return `<div class="timeline-entry${aheadCls}" data-tl-edit="${Utils.escapeHtml(p.id)}">
         <span class="em">${Utils.emoji(p.type, p.subtype)}</span>
         <span class="lbl">${Utils.escapeHtml(short)}</span>
         <span class="ago">${Utils.escapeHtml(ago)}</span>

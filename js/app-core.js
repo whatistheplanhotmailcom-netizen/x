@@ -517,9 +517,10 @@ const Audio = {
     gain.connect(ctx.destination);
     osc.start(t);
     osc.stop(t + dur + 0.01);
-    // v22.34: visual flash on the focused (#1) marker, synced with this ping
+    // v22.34: visual flash on the focused (#1) marker, synced with this ping.
+    // v22.60: also flash the matching sidebar timeline entry for ahead-1.
     try {
-      const els = document.querySelectorAll('.ra-marker.ahead-1');
+      const els = document.querySelectorAll('.ra-marker.ahead-1, .timeline-entry.ahead-1');
       els.forEach(el => {
         el.classList.add('flash-on');
         setTimeout(() => el.classList.remove('flash-on'), 140);

@@ -212,6 +212,60 @@ body {
   font-size: 9px;
   font-style: italic;
 }
+
+/* v22.60: same ahead-rank flashing as the map markers, but applied to
+   the sidebar timeline entries. ahead-1 = focused/closest (hard on/off
+   flash, synced with the proximity ping). ahead-2 / ahead-3 = next-up
+   (continuous heartbeat pulse). All amber. */
+.timeline-entry.ahead-1 {
+  outline: 2px solid #f59e0b;
+  outline-offset: -1px;
+  background: rgba(245,158,11,0.10);
+  box-shadow: 0 0 0 2px rgba(245,158,11,0.4), 0 0 12px 4px rgba(245,158,11,0.55);
+  position: relative;
+  z-index: 5;
+  transition: transform 0.10s linear, box-shadow 0.10s linear, filter 0.10s linear;
+}
+.timeline-entry.ahead-1.flash-on {
+  outline-color: #fbbf24;
+  background: rgba(245,158,11,0.22);
+  box-shadow: 0 0 0 4px rgba(245,158,11,0.9), 0 0 18px 8px rgba(245,158,11,0.95);
+  transform: scale(1.05);
+  filter: brightness(1.4);
+}
+.timeline-entry.ahead-2,
+.timeline-entry.ahead-3 {
+  outline: 2px solid #f59e0b;
+  outline-offset: -1px;
+  background: rgba(245,158,11,0.07);
+  box-shadow: 0 0 0 2px rgba(245,158,11,0.3), 0 0 8px 3px rgba(245,158,11,0.45);
+  animation: tl-heartbeat 1.4s ease-in-out infinite;
+  position: relative;
+  z-index: 4;
+}
+.timeline-entry.ahead-3 {
+  outline-width: 1px;
+  animation-duration: 1.8s;
+  opacity: 0.92;
+}
+@keyframes tl-heartbeat {
+  0%, 100% {
+    box-shadow: 0 0 0 2px rgba(245,158,11,0.3), 0 0 8px 3px rgba(245,158,11,0.45);
+    transform: scale(1);
+  }
+  20% {
+    box-shadow: 0 0 0 4px rgba(245,158,11,0.6), 0 0 14px 6px rgba(245,158,11,0.85);
+    transform: scale(1.04);
+  }
+  40% {
+    box-shadow: 0 0 0 3px rgba(245,158,11,0.4), 0 0 10px 4px rgba(245,158,11,0.6);
+    transform: scale(1.02);
+  }
+  60% {
+    box-shadow: 0 0 0 4px rgba(245,158,11,0.55), 0 0 12px 5px rgba(245,158,11,0.78);
+    transform: scale(1.03);
+  }
+}
 .route-current {
   appearance: none;
   background: var(--surface);

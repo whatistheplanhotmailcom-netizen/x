@@ -322,7 +322,13 @@ const MapView = {
       if (delta > 180) delta = 360 - delta;
       if (now - this._lastBearingAt > 150 && delta > 1) {
         try {
-          this.m.setBearing(-this._smoothedHeading);
+          // v22.69 FIX: setBearing(B) makes compass direction B "up" on the
+          // map (per MapLibre docs). For heading-up navigation we want the
+          // user's heading direction at the top, so bearing = heading.
+          // Previous versions used -heading, which rotated the map OPPOSITE
+          // to travel direction — hence the long-standing "rotation doesn't
+          // work" reports.
+          this.m.setBearing(this._smoothedHeading);
           this._lastBearingApplied = this._smoothedHeading;
           this._lastBearingAt = now;
         } catch (e) {
@@ -1563,7 +1569,8 @@ function wire() {
       // If we already have a heading, rotate immediately rather than waiting
       // for the next GPS tick
       if (MapView.m && MapView._smoothedHeading != null) {
-        try { MapView.m.setBearing(-MapView._smoothedHeading); } catch (e) {}
+        // v22.69 FIX: positive bearing — see MapView.update comment.
+        try { MapView.m.setBearing(MapView._smoothedHeading); } catch (e) {}
       }
     } else {
       // Snap back to north when turning off

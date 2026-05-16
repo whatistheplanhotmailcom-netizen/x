@@ -192,6 +192,22 @@ const Storage = {
           localStorage.setItem('roadAlert.v22.64.navModeDefault', '1');
         } catch (e) { console.warn('navMode default migration', e); }
       }
+      // v22.69: re-run navMode default once. The rotation direction was
+      // bugged (setBearing(-heading)) through v22.68, so users may have
+      // toggled it off thinking it was broken. Reset to true once so they
+      // see the corrected behavior. After this runs, their preference
+      // (toggled via the 🧭 button) sticks for good.
+      if (!localStorage.getItem('roadAlert.v22.69.navModeRefresh')) {
+        try {
+          const s = this.load(this.KEYS.settings, null);
+          if (s && s.navMode !== true) {
+            s.navMode = true;
+            this.save(this.KEYS.settings, s);
+            console.log('v22.69: navMode reset to true (rotation direction fix)');
+          }
+          localStorage.setItem('roadAlert.v22.69.navModeRefresh', '1');
+        } catch (e) { console.warn('navMode refresh migration', e); }
+      }
       return;
     }
     // Try v17 first, then v8

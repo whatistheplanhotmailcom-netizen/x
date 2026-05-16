@@ -202,6 +202,29 @@ body {
 }
 .timeline-entry:last-child { border-bottom: none; }
 .timeline-entry:active { background: var(--surface-2); }
+/* v22.74: small × delete button on each sidebar entry. Positioned in the
+   top-right corner of the entry; tap to delete (with confirm). */
+.timeline-entry { position: relative; }
+.tl-x {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  background: transparent;
+  border: none;
+  color: var(--ink-3);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 50%;
+  z-index: 6;
+  display: grid;
+  place-items: center;
+}
+.tl-x:active { background: var(--red); color: #fff; }
 .timeline-entry .em { font-size: 14px; line-height: 1; margin-bottom: 2px; }
 .timeline-entry .lbl {
   font-weight: 700;

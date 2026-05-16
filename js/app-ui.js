@@ -202,20 +202,25 @@ const MapView = {
         this._activePopup = null;
         UI.openPointEditor(id);
       };
-      if (delBtn) delBtn.onclick = () => {
+      if (delBtn) delBtn.onclick = async () => {
+        // v22.74: use the in-app confirm modal (window.confirm is blocked
+        // on some mobile browsers and silently returns false).
         const id = delBtn.getAttribute('data-del');
-        if (!confirm('Delete this point?')) return;
-        State.data.points = State.data.points.filter(p => p.id !== id);
+        const p = State.data.points.find(x => x.id === id);
+        const label = p ? (p.name || Utils.typeLabel(p.type)) : 'point';
+        const ok = await UI.confirm(`Delete ${label}?`, { title: 'Delete point' });
+        if (!ok) return;
+        State.data.points = State.data.points.filter(x => x.id !== id);
         State.alertedMarkers.delete(id);
         State.lastDistByPoint.delete(id);
         State.passedPoints.delete(id);
         State.saveData();
         try { popup.remove(); } catch (e) {}
         this._activePopup = null;
-        // Remove the marker from the map directly (no full rebuild needed)
         const mk = this._pointMarkers.get(id);
         if (mk) { mk.remove(); this._pointMarkers.delete(id); }
-        Utils.toast('Deleted');
+        UI.renderTimeline();
+        Utils.toast(`Deleted ${label}`, 'good');
       };
     }, 50);
   },
@@ -648,14 +653,41 @@ const UI = {
         distCls = ' no-gps';
       }
       const aheadCls = aheadIds.has(p.id) ? ' ahead-' + aheadIds.get(p.id) : '';
-      return `<div class="timeline-entry${aheadCls}${tierCls}" data-tl-edit="${Utils.escapeHtml(p.id)}">
+      const pid = Utils.escapeHtml(p.id);
+      return `<div class="timeline-entry${aheadCls}${tierCls}" data-tl-edit="${pid}">
+        <button class="tl-x" data-tl-del="${pid}" title="Delete">×</button>
         <span class="em">${Utils.emoji(p.type, p.subtype)}</span>
         <span class="lbl">${Utils.escapeHtml(short)}</span>
         <span class="dist${distCls}">${Utils.escapeHtml(distText)}</span>
       </div>`;
     }).join('');
+    // v22.74: separate handlers for edit-tap vs delete-tap, with the
+    // delete button stopping propagation so it doesn't open the editor.
+    rail.querySelectorAll('.tl-x').forEach(el => {
+      el.onclick = async (ev) => {
+        ev.stopPropagation();
+        const id = el.dataset.tlDel;
+        const p = State.data.points.find(x => x.id === id);
+        if (!p) return;
+        const label = p.name || Utils.typeLabel(p.type);
+        const ok = await UI.confirm(`Delete ${label}?`, { title: 'Delete point' });
+        if (!ok) return;
+        State.data.points = State.data.points.filter(x => x.id !== id);
+        State.alertedMarkers.delete(id);
+        State.lastDistByPoint.delete(id);
+        State.passedPoints.delete(id);
+        State.saveData();
+        if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
+        UI.renderTimeline();
+        Utils.toast(`Deleted ${label}`, 'good');
+      };
+    });
     rail.querySelectorAll('[data-tl-edit]').forEach(el => {
-      el.onclick = () => UI.openPointEditor(el.dataset.tlEdit);
+      el.onclick = (ev) => {
+        // Skip if the user actually tapped the × delete button
+        if (ev.target.classList && ev.target.classList.contains('tl-x')) return;
+        UI.openPointEditor(el.dataset.tlEdit);
+      };
     });
 
     // v22.65: auto-scroll the rail back to top whenever the focused
@@ -874,6 +906,37 @@ const UI = {
     // v22.39: if no capture is in flight, clear the map-tap location
     // override so a stale long-press doesn't leak into the next capture.
     if (!State.pendingCapture) State.captureLocationOverride = null;
+  },
+
+  /** v22.74: in-app confirm dialog. Returns a Promise that resolves to
+   *  true (OK) or false (Cancel / dismiss). Native window.confirm() is
+   *  silently blocked on some mobile browsers (especially iOS Safari with
+   *  certain privacy settings), which made every Delete return false
+   *  without ever showing UI. This replaces it with a real modal we own.
+   *  Drop-in: const ok = await UI.confirm('Delete this point?'); */
+  confirm(message, opts) {
+    return new Promise((resolve) => {
+      const modal = document.getElementById('m-confirm');
+      const titleEl = document.getElementById('confirm-title');
+      const msgEl = document.getElementById('confirm-message');
+      const okBtn = document.getElementById('confirm-ok-btn');
+      const cancelBtn = document.getElementById('confirm-cancel-btn');
+      const closeBtn = modal.querySelector('.modal-close');
+      titleEl.textContent = (opts && opts.title) || 'Confirm';
+      msgEl.textContent = message || 'Are you sure?';
+      okBtn.textContent = (opts && opts.okLabel) || 'Delete';
+      const cleanup = (result) => {
+        okBtn.onclick = null;
+        cancelBtn.onclick = null;
+        closeBtn.onclick = null;
+        modal.classList.remove('open');
+        resolve(result);
+      };
+      okBtn.onclick = () => cleanup(true);
+      cancelBtn.onclick = () => cleanup(false);
+      closeBtn.onclick = () => cleanup(false);
+      modal.classList.add('open');
+    });
   },
 
   /** v22.10: build the natural-language description of a point for voice. */
@@ -1219,15 +1282,26 @@ const UI = {
     this.closeAllModals();
   },
 
-  deletePoint() {
-    if (!confirm('Delete this point?')) return;
-    State.data.points = State.data.points.filter(p => p.id !== State.editingPointId);
-    State.alertedMarkers.delete(State.editingPointId);
-    State.lastDistByPoint.delete(State.editingPointId);
-    State.passedPoints.delete(State.editingPointId);
+  /** v22.74: in-app confirm + explicit force-refresh of map + sidebar.
+   *  Previous version used native window.confirm() which Safari/iOS can
+   *  silently block, making Delete look broken. */
+  async deletePoint() {
+    const id = State.editingPointId;
+    if (!id) { Utils.toast('No point selected', 'bad'); return; }
+    const p = State.data.points.find(x => x.id === id);
+    const label = p ? (p.name || Utils.typeLabel(p.type)) : 'point';
+    const ok = await UI.confirm(`Delete ${label}?`, { title: 'Delete point' });
+    if (!ok) return;
+    State.data.points = State.data.points.filter(x => x.id !== id);
+    State.alertedMarkers.delete(id);
+    State.lastDistByPoint.delete(id);
+    State.passedPoints.delete(id);
+    State.editingPointId = null;
     State.saveData();
     this.closeAllModals();
-    Utils.toast('Deleted');
+    if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
+    this.renderTimeline();
+    Utils.toast(`Deleted ${label}`, 'good');
   },
 
   renderRoutesList() {

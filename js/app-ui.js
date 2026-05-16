@@ -481,25 +481,34 @@ const MapView = {
   /** v22.72: one-shot single-tap pick mode for setting a destination.
    *  Attaches a click handler to the map that fires once, captures the
    *  tapped coords, then re-opens the destination editor with them.
-   *  Auto-cancels after 30 seconds if the user doesn't tap. */
+   *  Auto-cancels after 30 seconds if the user doesn't tap.
+   *  v22.73: preserves the editing context — if the user was editing an
+   *  existing destination, picking a new map location updates THAT dest
+   *  instead of silently switching to "Add new". */
   beginDestinationPickMode() {
     if (!this.m) { Utils.toast('Map not ready', 'bad'); return; }
     if (this._destPickActive) return;
     this._destPickActive = true;
+    const editingIdSnap = State.editingDestId; // v22.73: capture before close
+    let clickHandler;
     const cleanup = () => {
       this._destPickActive = false;
-      try { this.m.off('click', clickHandler); } catch (e) {}
+      try { if (clickHandler) this.m.off('click', clickHandler); } catch (e) {}
       if (this._destPickTimer) { clearTimeout(this._destPickTimer); this._destPickTimer = null; }
     };
-    const clickHandler = (e) => {
+    clickHandler = (e) => {
       if (!this._destPickActive) return;
       cleanup();
-      UI.openDestEditor(null, {
+      UI.openDestEditor(editingIdSnap, {
         lat: +e.lngLat.lat.toFixed(5),
         lng: +e.lngLat.lng.toFixed(5),
       });
     };
-    this.m.on('click', clickHandler);
+    // v22.73: small delay so the modal-close tap can't immediately register
+    // as a map pick on some touch browsers (event propagation race).
+    setTimeout(() => {
+      if (this._destPickActive) this.m.on('click', clickHandler);
+    }, 200);
     this._destPickTimer = setTimeout(() => {
       if (this._destPickActive) {
         Utils.toast('Pick cancelled — no tap within 30s', 'bad');
@@ -1269,8 +1278,11 @@ const UI = {
     const d = id ? State.data.destinations.find(x => x.id === id) : null;
     document.getElementById('re-title').textContent = d ? 'Edit destination' : 'Add destination';
     document.getElementById('re-name').value = d ? d.name : '';
-    document.getElementById('re-lat').value = d ? d.lat : (prefilledCoords ? prefilledCoords.lat : '');
-    document.getElementById('re-lng').value = d ? d.lng : (prefilledCoords ? prefilledCoords.lng : '');
+    // v22.73: prefilledCoords WIN over the stored dest coords. Previous
+    // logic ignored picked-map coords when editing an existing dest, so
+    // "edit dest, pick new map location" silently kept the old coords.
+    document.getElementById('re-lat').value = prefilledCoords ? prefilledCoords.lat : (d ? d.lat : '');
+    document.getElementById('re-lng').value = prefilledCoords ? prefilledCoords.lng : (d ? d.lng : '');
     document.getElementById('re-delete').style.display = d ? 'block' : 'none';
 
     const dis = document.getElementById('re-coords-display');
@@ -1759,6 +1771,33 @@ function wire() {
   document.getElementById('re-pickmap-go').onclick = () => {
     UI.closeAllModals();
     MapView.beginDestinationPickMode();
+  };
+  // v22.73: copy "lat, lng" together to clipboard. Format matches what
+  // Google Maps / Waze / message apps accept in a search box.
+  document.getElementById('re-copy').onclick = async () => {
+    const lat = document.getElementById('re-lat').value;
+    const lng = document.getElementById('re-lng').value;
+    if (!lat || !lng) { Utils.toast('No coords to copy', 'bad'); return; }
+    const text = `${lat}, ${lng}`;
+    try {
+      await navigator.clipboard.writeText(text);
+      Utils.toast(`Copied: ${text}`, 'good');
+    } catch (e) {
+      // Fallback for browsers without clipboard API (e.g. older Safari)
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+        Utils.toast(`Copied: ${text}`, 'good');
+      } catch (e2) {
+        Utils.toast('Copy failed', 'bad');
+      }
+    }
   };
   document.getElementById('re-save').onclick = () => UI.saveDest();
   document.getElementById('re-delete').onclick = () => UI.deleteDest();

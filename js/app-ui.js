@@ -478,6 +478,37 @@ const MapView = {
     UI.openDestEditor(null, { lat: +latlng.lat.toFixed(5), lng: +latlng.lng.toFixed(5) });
   },
 
+  /** v22.72: one-shot single-tap pick mode for setting a destination.
+   *  Attaches a click handler to the map that fires once, captures the
+   *  tapped coords, then re-opens the destination editor with them.
+   *  Auto-cancels after 30 seconds if the user doesn't tap. */
+  beginDestinationPickMode() {
+    if (!this.m) { Utils.toast('Map not ready', 'bad'); return; }
+    if (this._destPickActive) return;
+    this._destPickActive = true;
+    const cleanup = () => {
+      this._destPickActive = false;
+      try { this.m.off('click', clickHandler); } catch (e) {}
+      if (this._destPickTimer) { clearTimeout(this._destPickTimer); this._destPickTimer = null; }
+    };
+    const clickHandler = (e) => {
+      if (!this._destPickActive) return;
+      cleanup();
+      UI.openDestEditor(null, {
+        lat: +e.lngLat.lat.toFixed(5),
+        lng: +e.lngLat.lng.toFixed(5),
+      });
+    };
+    this.m.on('click', clickHandler);
+    this._destPickTimer = setTimeout(() => {
+      if (this._destPickActive) {
+        Utils.toast('Pick cancelled — no tap within 30s', 'bad');
+        cleanup();
+      }
+    }, 30000);
+    Utils.toast('Tap anywhere on the map to set the destination', 'good');
+  },
+
   startCaptureAt(latlng) {
     if (!latlng || latlng.lat == null || latlng.lng == null) return;
     // v22.56: respect the long-press toggle (off by default). When off,
@@ -1245,7 +1276,7 @@ const UI = {
     const dis = document.getElementById('re-coords-display');
     if (prefilledCoords) {
       dis.style.display = 'flex';
-      dis.textContent = `Tapped: ${prefilledCoords.lat}, ${prefilledCoords.lng}`;
+      dis.textContent = `Coords: ${prefilledCoords.lat}, ${prefilledCoords.lng}`;
       this.setRouteTab('latlng');
     } else if (d) {
       dis.style.display = 'flex';
@@ -1255,8 +1286,50 @@ const UI = {
       dis.style.display = 'none';
       this.setRouteTab('here');
     }
+    // v22.72: refresh the "From points" list each time the editor opens.
+    this.renderFromPointsList();
     document.getElementById('m-routes').classList.remove('open');
     this.openModal('m-route-edit');
+  },
+
+  /** v22.72: render the captured-points list inside the "From points" tab
+   *  of the destination editor. Tapping a row fills the lat/lng fields
+   *  with that point's coords and switches the editor to the Lat/Lng tab. */
+  renderFromPointsList() {
+    const list = document.getElementById('re-from-points');
+    if (!list) return;
+    const pts = State.data.points
+      .filter(p => p.status !== 'no')
+      .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+    if (!pts.length) {
+      list.innerHTML = '<div class="empty">No captured points yet.</div>';
+      return;
+    }
+    list.innerHTML = pts.map(p => `
+      <div class="list-row" data-from-pt="${Utils.escapeHtml(p.id)}" style="cursor:pointer;">
+        <div class="em">${Utils.emoji(p.type, p.subtype)}</div>
+        <div class="info">
+          <div class="name">${Utils.escapeHtml(p.name)}</div>
+          <div class="meta">${Utils.escapeHtml(Utils.typeLabel(p.type))} · ${p.lat.toFixed(4)}, ${p.lng.toFixed(4)}</div>
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('[data-from-pt]').forEach(el => {
+      el.onclick = () => {
+        const id = el.dataset.fromPt;
+        const p = State.data.points.find(x => x.id === id);
+        if (!p) return;
+        document.getElementById('re-lat').value = p.lat;
+        document.getElementById('re-lng').value = p.lng;
+        const dis = document.getElementById('re-coords-display');
+        if (dis) {
+          dis.style.display = 'flex';
+          dis.textContent = `Coords: ${p.lat.toFixed(5)}, ${p.lng.toFixed(5)} (from ${p.name})`;
+        }
+        UI.setRouteTab('latlng');
+        Utils.toast(`Coords from ${p.name}`, 'good');
+      };
+    });
   },
 
   setRouteTab(name) {
@@ -1680,6 +1753,12 @@ function wire() {
     document.getElementById('re-lng').value = +State.pos.lng.toFixed(5);
     UI.setRouteTab('latlng');
     Utils.toast('Coords filled', 'good');
+  };
+  // v22.72: "Pick on map" — closes the dialog, listens for the next tap
+  // on the map, re-opens the editor with the tapped coords prefilled.
+  document.getElementById('re-pickmap-go').onclick = () => {
+    UI.closeAllModals();
+    MapView.beginDestinationPickMode();
   };
   document.getElementById('re-save').onclick = () => UI.saveDest();
   document.getElementById('re-delete').onclick = () => UI.deleteDest();

@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="X">
-<title>X v22.71</title>
+<title>X v22.72</title>
 
 <link rel="manifest" href='data:application/json,{"name":"X","short_name":"X","start_url":".","display":"standalone","background_color":"%23f5f1e8","theme_color":"%23f5f1e8","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 192 192%22%3E%3Crect width=%22192%22 height=%22192%22 fill=%22%23f5f1e8%22/%3E%3Ccircle cx=%2296%22 cy=%2296%22 r=%2240%22 fill=%22none%22 stroke=%22%23ef4444%22 stroke-width=%2210%22/%3E%3Ctext x=%2296%22 y=%22112%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-weight=%22800%22 font-size=%2240%22 fill=%22%231c1917%22%3E120%3C/text%3E%3C/svg%3E","sizes":"192x192","type":"image/svg+xml"}]}'>
 
@@ -26,7 +26,7 @@
     <div class="brand">
       <span class="dot"></span>
       <span>X</span>
-      <span class="version">v22.71</span>
+      <span class="version">v22.72</span>
     </div>
     <span class="topbar-spacer"></span>
     <div class="topbar-actions">
@@ -108,7 +108,7 @@
     <span><strong id="status-mode">Idle</strong></span>
     <span><strong id="status-gps">—</strong></span>
     <span id="status-pts">0 pts</span>
-    <!-- v22.71: auto-backup heartbeat — green "✓ updated Xm ago" when on -->
+    <!-- v22.72: auto-backup heartbeat — green "✓ updated Xm ago" when on -->
     <span id="status-backup"></span>
   </div>
 </div>
@@ -313,7 +313,8 @@
     <div class="tabs" id="re-tabs">
       <button class="tab active" data-retab="here">Here</button>
       <button class="tab" data-retab="latlng">Lat/Lng</button>
-      <button class="tab" data-retab="tap">Tap map</button>
+      <button class="tab" data-retab="pickmap">Pick map</button>
+      <button class="tab" data-retab="frompts">From points</button>
     </div>
     <div data-pane="here" class="re-pane">
       <div class="row" style="font-size:12px;color:var(--ink-2);">Use current GPS position. Start GPS first to get a fix.</div>
@@ -323,8 +324,16 @@
       <div class="row"><span class="label">Lat</span><input type="number" id="re-lat" step="0.00001"></div>
       <div class="row"><span class="label">Lng</span><input type="number" id="re-lng" step="0.00001"></div>
     </div>
-    <div data-pane="tap" class="re-pane" style="display:none;">
-      <div class="row" style="font-size:12px;color:var(--ink-2);">Close this dialog, then long-press the map. Coordinates fill in automatically.</div>
+    <!-- v22.72: single-tap pick mode on the map. Closes dialog, listens for
+         the next tap on the map, re-opens with coords prefilled. -->
+    <div data-pane="pickmap" class="re-pane" style="display:none;">
+      <div class="row" style="font-size:12px;color:var(--ink-2);">Hide this dialog and tap a location on the map. The next tap fills in coordinates automatically.</div>
+      <button class="btn" id="re-pickmap-go">📍 Start picking on map</button>
+    </div>
+    <!-- v22.72: pick from existing captured points list. -->
+    <div data-pane="frompts" class="re-pane" style="display:none;">
+      <div class="row" style="font-size:12px;color:var(--ink-2);">Pick a captured point to use its coordinates.</div>
+      <div class="list" id="re-from-points" style="max-height:32vh;overflow-y:auto;"></div>
     </div>
     <div class="row" id="re-coords-display" style="display:none;font-family:ui-monospace,monospace;font-size:11px;color:var(--ink-2);"></div>
     <div style="display:flex;gap:6px;">
@@ -453,7 +462,7 @@
     <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="btn" id="btn-test-sound">🔊 Sound check</button>
 
-    <!-- v22.71: bottom-of-page close button — gives users an escape from
+    <!-- v22.72: bottom-of-page close button — gives users an escape from
          the long Settings page without scrolling back to the top × -->
     <div class="section-title" style="margin-top:12px;">&nbsp;</div>
     <button class="btn btn-go" data-close style="font-size:15px;padding:14px;">← Done</button>

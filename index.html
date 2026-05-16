@@ -77,7 +77,7 @@
     </div>
   </div>
 
-  <!-- MAP ROW — map + right-side tools rail in a 2-column grid -->
+  <!-- MAP ROW — map + actions on the left, tools rail on the right (spans both rows) -->
   <div class="map-row">
     <!-- MAP -->
     <div class="map-wrap">
@@ -93,14 +93,14 @@
       </div>
     </div>
 
-    <!-- TOOLS RAIL — vertical strip of recent captures, sits beside the map -->
-    <aside class="tools-rail" id="tools-rail" aria-label="Recent captures"></aside>
-  </div>
+    <!-- ACTIONS — sit below the map in column 1 -->
+    <div class="actions">
+      <button class="btn btn-capture" id="btn-capture">📷 Capture</button>
+      <button class="btn btn-go" id="btn-go">▶ Start GPS</button>
+    </div>
 
-  <!-- ACTIONS -->
-  <div class="actions">
-    <button class="btn btn-capture" id="btn-capture">📷 Capture</button>
-    <button class="btn btn-go" id="btn-go">▶ Start GPS</button>
+    <!-- TOOLS RAIL — vertical strip on the right, spans map + actions rows -->
+    <aside class="tools-rail" id="tools-rail" aria-label="Recent captures"></aside>
   </div>
 
   <!-- STATUS LINE -->

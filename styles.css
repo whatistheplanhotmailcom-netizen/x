@@ -61,32 +61,36 @@ body {
   height: 100vh; height: 100dvh;
   padding: 8px;
   display: grid;
-  /* v22.58: single-column outer grid. The map + tools rail get their
-     own 2-column .map-row wrapper so the rail only sits beside the map,
-     not above (topbar/route/diag/stats stay full width) and not below
-     (actions stay full width).
-     Children, in order:
+  /* v22.58: single-column outer grid. .map-row now contains map + actions
+     + tools rail; the rail extends from the top of the map down to the
+     bottom of the action buttons.
+     Rows:
        1. .topbar             auto
        2. .route-bar          auto
        3. .diag-strip         auto
        4. .stats              auto
-       5. .map-row            1fr   ← map + tools rail live here
-       6. .actions            auto
-       7. status line         auto */
-  grid-template-rows: auto auto auto auto 1fr auto auto;
+       5. .map-row            1fr   ← map + actions + rail live here
+       6. status line         auto */
+  grid-template-rows: auto auto auto auto 1fr auto;
   gap: 8px;
   position: relative;
 }
 
-/* v22.58: map sits beside a slim vertical tools rail. The rail starts
-   at the top edge of the map and ends at the bottom edge of the map. */
+/* v22.58: 2-column × 2-row grid.
+     col 1 row 1 = .map-wrap (1fr — fills vertical space)
+     col 1 row 2 = .actions  (auto)
+     col 2 rows 1-2 = .tools-rail (spans both rows on the right) */
 .map-row {
   display: grid;
   grid-template-columns: 1fr 72px;
+  grid-template-rows: 1fr auto;
   gap: 6px;
   align-items: stretch;
   min-height: 0;
 }
+.map-row .map-wrap   { grid-column: 1; grid-row: 1; }
+.map-row .actions    { grid-column: 1; grid-row: 2; }
+.map-row .tools-rail { grid-column: 2; grid-row: 1 / 3; }
 
 /* TOP BAR */
 .topbar {
@@ -663,7 +667,8 @@ body {
 /* ACTIONS */
 .actions {
   display: grid;
-  grid-template-columns: 1fr 1.4fr;
+  /* v22.58: Capture is wider, Start GPS narrower. */
+  grid-template-columns: 1.4fr 1fr;
   gap: 6px;
 }
 .btn {

@@ -532,24 +532,32 @@ const UI = {
     const aheadList = (typeof Alerts !== 'undefined') ? Alerts.ahead() : [];
     const aheadIds = new globalThis.Map();
     aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
-    // v22.62: each entry shows live straight-line distance from current GPS
-    // pos to the point. Compact format ("450m" / "2.3k" / "12k") so it fits
-    // in the 72px rail. "—" when GPS is off.
+    // v22.63: each entry shows live straight-line distance from current GPS
+    // pos to the point. Format fits in the 72px rail:
+    //   < 1 km   -> "450m"
+    //   < 10 km  -> "2.3km"
+    //   >= 10 km -> "12km"
+    // When GPS is off, shows "no GPS" in dim grey so you can tell at a
+    // glance whether the value is missing because of GPS or for another
+    // reason.
     const myPos = State.pos;
     rail.innerHTML = pts.map(p => {
       const short = (Utils.typeLabel(p.type) || '').split(' ')[0].slice(0, 4);
-      let distText = '—';
+      let distText, distCls = '';
       if (myPos) {
         const km = Utils.distKm(myPos, p);
         if (km < 1) distText = Math.round(km * 1000) + 'm';
-        else if (km < 10) distText = km.toFixed(1) + 'k';
-        else distText = Math.round(km) + 'k';
+        else if (km < 10) distText = km.toFixed(1) + 'km';
+        else distText = Math.round(km) + 'km';
+      } else {
+        distText = 'no GPS';
+        distCls = ' no-gps';
       }
       const aheadCls = aheadIds.has(p.id) ? ' ahead-' + aheadIds.get(p.id) : '';
       return `<div class="timeline-entry${aheadCls}" data-tl-edit="${Utils.escapeHtml(p.id)}">
         <span class="em">${Utils.emoji(p.type, p.subtype)}</span>
         <span class="lbl">${Utils.escapeHtml(short)}</span>
-        <span class="dist">${Utils.escapeHtml(distText)}</span>
+        <span class="dist${distCls}">${Utils.escapeHtml(distText)}</span>
       </div>`;
     }).join('');
     rail.querySelectorAll('[data-tl-edit]').forEach(el => {

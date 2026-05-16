@@ -203,13 +203,22 @@ body {
 .timeline-entry:last-child { border-bottom: none; }
 .timeline-entry:active { background: var(--surface-2); }
 .timeline-entry .em { font-size: 14px; line-height: 1; margin-bottom: 2px; }
-.timeline-entry .lbl { font-weight: 700; color: var(--ink); text-transform: uppercase; letter-spacing: 0.04em; }
+.timeline-entry .lbl {
+  font-weight: 700;
+  color: var(--ink);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 9px;
+}
 .timeline-entry .dist {
   color: var(--amber-2);
-  margin-top: 2px;
-  font-weight: 700;
+  margin-top: 3px;
+  font-weight: 800;
+  font-size: 11px;
   font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
+.timeline-entry .dist.no-gps { color: var(--ink-3); font-weight: 600; font-size: 9px; }
 .timeline-empty {
   padding: 16px 4px;
   text-align: center;

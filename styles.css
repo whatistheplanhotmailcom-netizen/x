@@ -795,22 +795,42 @@ body {
   padding-bottom: calc(16px + env(safe-area-inset-bottom));
   box-shadow: 0 -8px 24px rgba(0,0,0,0.3);
 }
+/* v22.67: modal head sticks to the top of the scrollable modal card so the
+   close button stays in reach when the user scrolls through long modals
+   (e.g. Settings). Background fill prevents content from showing through. */
 .modal-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  position: sticky;
+  top: -16px;
+  margin: -16px -16px 0;
+  padding: 16px 16px 10px;
+  background: var(--bg);
+  z-index: 10;
+  border-bottom: 1px solid var(--line);
 }
 .modal-title { font-weight: 700; font-size: 16px; }
+/* v22.67: bigger, higher-contrast close button. Uses an SVG-like × that
+   renders identically across browsers — some mobile browsers were not
+   rendering the smaller 16px × glyph reliably. */
 .modal-close {
   appearance: none;
   background: var(--surface);
-  border: 1px solid var(--line);
-  color: var(--ink-2);
-  width: 32px; height: 32px;
+  border: 1px solid var(--line-2);
+  color: var(--ink);
+  width: 40px; height: 40px;
   border-radius: 50%;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  flex-shrink: 0;
 }
+.modal-close:active { background: var(--surface-2); transform: scale(0.94); }
 .section-title {
   font-size: 10px;
   letter-spacing: 0.14em;

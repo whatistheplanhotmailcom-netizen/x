@@ -274,6 +274,9 @@ const State = {
   followMap: true,
   speedAlertWasOver: false,
   lastSpeedAlertZone: null,
+  // v22.68: track the last limit we ANNOUNCED out loud, so we only speak
+  // when the effective limit changes (entering a new zone).
+  lastAnnouncedLimit: null,
   backupTimer: null,
   lastBackup: null,
   lastBackupHash: null,
@@ -613,6 +616,7 @@ const GPS = {
     State.autoAnnouncedAhead.clear(); // v22.16: clear auto-announce history
     State.speedAlertWasOver = false;
     State.lastSpeedAlertZone = null;
+    State.lastAnnouncedLimit = null; // v22.68: re-announce limit on new session
     State.speedBuffer = [];
     State.lastTripCaptureId = null; // v22.10: reset for new trip
     State.alertsFiredThisTrip = 0; // v22.12: reset alert counter for new trip
@@ -774,10 +778,10 @@ const GPS = {
       let bearingDeg = Math.atan2(y, x) * 180 / Math.PI;
       if (bearingDeg < 0) bearingDeg += 360;
       // Only trust the computed heading if the position delta is large
-      // enough that we're not just GPS-jitter wobbling — at least 3m moved.
-      // v22.53: was 5m, lowered to catch slower movement
+      // enough that we're not just GPS-jitter wobbling.
+      // v22.68: 3m -> 1m, so rotation kicks in even at very slow rolls.
       const movedM = Utils.distKm(prevPos, State.pos) * 1000;
-      if (movedM > 3) {
+      if (movedM > 1) {
         State.prevHeading = bearingDeg;
         State.heading = bearingDeg;
         State.headingSource = 'derived';
@@ -807,18 +811,21 @@ const GPS = {
    5. ALERTS — threshold crossing
    ============================================================ */
 const Alerts = {
-  /** Currently effective speed limit (km/h). Manual override wins. */
+  /** Currently effective speed limit (km/h). Manual override wins.
+   *  v22.68: proximity-based, cross-destination lookup. We look at every
+   *  speed_change point across ALL destinations within 3 km of the user
+   *  and take the closest one as "the zone we're in". This means a limit
+   *  captured while driving from A → B applies again when driving B → A:
+   *  same road, same physical sign, same limit. */
   currentLimit() {
     if (State.manualLimit != null) return State.manualLimit;
-    const dest = State.activeDest();
-    if (!dest || !State.pos) return null;
-    const myDist = Utils.distKm(State.pos, dest);
-    const behind = State.activePoints()
+    if (!State.pos) return null;
+    const candidates = State.data.points
       .filter(p => p.type === 'speed_change' && typeof p.limit === 'number' && p.status !== 'no')
-      .map(p => ({ p, dToDest: Utils.distKm(p, dest) }))
-      .filter(x => x.dToDest > myDist - 0.05)
-      .sort((a, b) => a.dToDest - b.dToDest);
-    return behind.length ? behind[0].p.limit : null;
+      .map(p => ({ p, dKm: Utils.distKm(State.pos, p) }))
+      .filter(x => x.dKm < 3)
+      .sort((a, b) => a.dKm - b.dKm);
+    return candidates.length ? candidates[0].p.limit : null;
   },
 
   /** Points relevant for the "Next ahead" display + alert checking */
@@ -969,6 +976,20 @@ const Alerts = {
       }
     } else {
       Audio.updateProximityPing(null, null);
+    }
+
+    // v22.68: announce the speed limit out loud whenever the effective
+    // zone changes. Triggers on every transition (entering a new zone
+    // captured in either direction). Skips when sound is off or voice
+    // is disabled; manualLimit changes also trigger it (user just set it).
+    const curLimit = this.currentLimit();
+    if (curLimit !== State.lastAnnouncedLimit) {
+      State.lastAnnouncedLimit = curLimit;
+      if (curLimit != null &&
+          State.settings.sound !== 'off' &&
+          State.settings.voiceGender !== 'none') {
+        Audio.say(`Speed limit ${curLimit}`);
+      }
     }
 
     this.checkSpeed();

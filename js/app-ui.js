@@ -296,7 +296,9 @@ const MapView = {
     const navOn = !!State.settings.navMode;
 
     // Build smoothed heading regardless — used immediately when nav toggles on
-    if (State.speedMps > 1.5 && State.heading != null && !isNaN(State.heading)) {
+    // v22.68: lowered from 1.5 m/s (5.4 km/h) to 0.5 m/s (1.8 km/h) so
+    // rotation activates as soon as the car is rolling, not only at speed.
+    if (State.speedMps > 0.5 && State.heading != null && !isNaN(State.heading)) {
       this._headingBuf.push(State.heading);
       if (this._headingBuf.length > 3) this._headingBuf.shift();
       let sx = 0, sy = 0;
@@ -508,6 +510,30 @@ const UI = {
     this.renderDisabledCount();
     this.renderDiagStrip(); // v22.12
     this.renderTimeline(); // v22.58
+    this.updateBackupTicker(); // v22.68
+  },
+
+  /** v22.68: bottom-of-screen auto-backup heartbeat. Hidden when
+   *  auto-backup is off or GitHub isn't configured. Shows green
+   *  "✓ updated Xm ago" once a successful backup has happened. */
+  updateBackupTicker() {
+    const el = document.getElementById('status-backup');
+    if (!el) return;
+    if (!State.settings.autoBackup || !State.gh.token || !State.gh.repo) {
+      el.textContent = '';
+      el.className = '';
+      return;
+    }
+    if (!State.lastBackup) {
+      el.textContent = '↻ backup pending';
+      el.className = 'off';
+      return;
+    }
+    const min = Math.floor((Date.now() - State.lastBackup) / 60000);
+    if (min < 1)         el.textContent = '✓ updated just now';
+    else if (min < 60)   el.textContent = `✓ updated ${min}m ago`;
+    else                 el.textContent = `✓ updated ${Math.floor(min / 60)}h ago`;
+    el.className = '';
   },
 
   /** v22.58: render the right-side captured-points timeline rail.

@@ -766,6 +766,10 @@ body {
 .status-line strong { color: var(--ink-2); margin-right: 3px; }
 .status-line .live { color: var(--green); }
 .status-line .demo { color: var(--cyan); }
+/* v22.68: auto-backup ticker on the main status line. */
+.status-line #status-backup { color: var(--green); font-weight: 700; }
+.status-line #status-backup.off { color: var(--ink-3); font-weight: 400; }
+.status-line #status-backup.fail { color: var(--red); font-weight: 700; }
 
 /* MODALS - improved backdrop visibility */
 .modal {

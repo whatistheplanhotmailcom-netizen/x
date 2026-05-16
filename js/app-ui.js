@@ -1656,6 +1656,19 @@ function wire() {
     const lng = document.getElementById('e-lng').value;
     if (lat && lng) window.open(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`, '_blank');
   };
+  // v22.71: promote the edited point's location to a new destination.
+  // Doesn't modify or delete the point — opens the destination editor
+  // pre-filled with the point's coords so the user just names it.
+  document.getElementById('e-add-dest').onclick = () => {
+    const lat = +document.getElementById('e-lat').value;
+    const lng = +document.getElementById('e-lng').value;
+    if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+      Utils.toast('Invalid coordinates', 'bad');
+      return;
+    }
+    UI.closeAllModals();
+    UI.openDestEditor(null, { lat: +lat.toFixed(5), lng: +lng.toFixed(5) });
+  };
 
   document.getElementById('route-add').onclick = () => UI.openDestEditor(null);
   document.querySelectorAll('[data-retab]').forEach(b =>

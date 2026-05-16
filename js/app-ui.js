@@ -1023,6 +1023,19 @@ const UI = {
       this.closeAllModals();
       return;
     }
+    // v22.70: "Destination" is a special capture type — it doesn't create
+    // a point in State.data.points. Instead, open the destination editor
+    // with the current GPS coords prefilled. The user names it, saves,
+    // and a new destination is added (becomes active if none was set).
+    if (type === 'destination') {
+      this.closeAllModals();
+      State.captureLocationOverride = null;
+      this.openDestEditor(null, {
+        lat: +loc.lat.toFixed(5),
+        lng: +loc.lng.toFixed(5),
+      });
+      return;
+    }
     if (!State.data.activeDestId) {
       Utils.toast('Pick a destination before capturing', 'bad');
       this.closeAllModals();

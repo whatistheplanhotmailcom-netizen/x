@@ -960,6 +960,7 @@ body {
 .cap-btn.t-speed_change  { border-color: #0891b2; }
 .cap-btn.t-gate          { border-color: #7c3aed; }
 .cap-btn.t-traffic_light { border-color: #16a34a; }
+.cap-btn.t-destination   { border-color: var(--green-2); }
 .cap-btn.t-other         { border-color: #57534e; }
 
 /* SHEET BUTTONS */

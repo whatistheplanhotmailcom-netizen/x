@@ -1611,6 +1611,9 @@ const UI = {
     // v22.33: proximity ping start distance
     document.getElementById('i-proximity-start').value = State.settings.proximityStartM || 1000;
     document.getElementById('t-proximity').classList.toggle('on', State.settings.proximityPing !== false);
+    // v22.76: here-now announcement settings
+    document.getElementById('i-here-speed').value = State.settings.hereSpeedThreshold || 100;
+    document.getElementById('i-here-repeat').value = State.settings.hereRepeatCount || 2;
     document.querySelectorAll('[data-speed]').forEach(b =>
       b.classList.toggle('active', b.dataset.speed === State.settings.speedAlertMode));
     document.getElementById('i-gh-token').value = State.gh.token || '';
@@ -1983,6 +1986,23 @@ function wire() {
       const mid = Math.round(v * 0.5);
       const final = Math.round(v * 0.2);
       Utils.toast(`Ping bands: ${v}m → ${mid}m → ${final}m`, 'good');
+    }
+  };
+  // v22.76: here-now announcement — speed threshold + repeat count
+  document.getElementById('i-here-speed').onchange = e => {
+    const v = Math.round(+e.target.value);
+    if (v >= 20 && v <= 300) {
+      State.settings.hereSpeedThreshold = v;
+      State.saveSettings();
+      Utils.toast(`Here ring: ≥${v} km/h → 100m, else → 50m`, 'good');
+    }
+  };
+  document.getElementById('i-here-repeat').onchange = e => {
+    const v = Math.round(+e.target.value);
+    if (v >= 1 && v <= 10) {
+      State.settings.hereRepeatCount = v;
+      State.saveSettings();
+      Utils.toast(`Here-now × ${v}`, 'good');
     }
   };
   document.getElementById('i-gh-token').onchange = e => { State.gh.token = e.target.value.trim(); State.saveGh(); UI.updateBackupStatus(); };

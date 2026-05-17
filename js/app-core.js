@@ -144,6 +144,10 @@ const Storage = {
       // v22.33: distance (meters) where proximity ping starts. Mid + final bands
       // scale to half + 20% of this (e.g. 1000 → 500 → 200).
       proximityStartM: 1000,
+      // v22.76: "Name is here" voice announcement. Speed threshold decides
+      // the distance ring: at/above threshold uses 100m, below uses 50m.
+      hereSpeedThreshold: 100,  // km/h
+      hereRepeatCount: 2,       // how many times the announcement repeats (1-10)
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest
@@ -284,6 +288,9 @@ const State = {
   // v22.16: point IDs that have been auto-announced as "next-ahead" this trip,
   // so we don't repeat the same announcement on every tick.
   autoAnnouncedAhead: new Set(),
+  // v22.76: point IDs that have had the "X is here" announcement fired
+  // this trip. Cleared on each GPS.start so a fresh session re-announces.
+  hereAnnouncedPoints: new Set(),
 
   wakeLock: null,
   activeTrip: null,
@@ -630,6 +637,7 @@ const GPS = {
     State.minDistByPoint.clear(); // v22.15: reset passed-detection tracker
     State.passedPoints.clear();
     State.autoAnnouncedAhead.clear(); // v22.16: clear auto-announce history
+    State.hereAnnouncedPoints.clear(); // v22.76: clear here-now history
     State.speedAlertWasOver = false;
     State.lastSpeedAlertZone = null;
     State.lastAnnouncedLimit = null; // v22.68: re-announce limit on new session
@@ -891,6 +899,31 @@ const Alerts = {
         return;
       }
       const meters = distKm * 1000;
+
+      // v22.76: "Name is here" voice announcement. Fires once per (point, trip)
+      // when the user is within a speed-dependent distance ring:
+      //   speed >= hereSpeedThreshold -> 100m
+      //   speed <  hereSpeedThreshold -> 50m
+      // Repeats N times by concatenating the phrase into a single utterance,
+      // so the speech engine handles the pauses naturally without
+      // cancel/re-speak races.
+      const _speedKmh = State.speedMps * 3.6;
+      const _hereSpeedT = +State.settings.hereSpeedThreshold || 100;
+      const _hereRingM = _speedKmh >= _hereSpeedT ? 100 : 50;
+      if (meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
+        State.hereAnnouncedPoints.add(p.id);
+        const reps = Math.max(1, Math.min(10, +State.settings.hereRepeatCount || 2));
+        const name = p.name || Utils.typeLabel(p.type);
+        const text = Array(reps).fill(`${name} is here`).join('. ');
+        if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
+          Audio.say(text);
+        }
+        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+        State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
+        State.lastAlertAt = Date.now();
+        State.lastAlertText = name + ' is here';
+      }
+
       const prevMeters = State.lastDistByPoint.get(p.id);
 
       // v22.15 FIX: track the minimum distance ever seen for this point this

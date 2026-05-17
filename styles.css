@@ -1186,3 +1186,49 @@ body {
   .speedo-val.three-digit { font-size: 26px; padding: 12px 4px; }
   .next-dist { font-size: 18px; }
 }
+
+/* v22.75: ultra-compact layout for very short viewports — car-screen
+   browsers in landscape, iPhone in landscape, etc. Triggers below 600px
+   tall. iPhone in PORTRAIT is 750+ px tall so it's unaffected. */
+@media (max-height: 600px) {
+  .app { gap: 4px; padding: 4px; }
+  /* Topbar slimmer */
+  .topbar { padding: 2px 4px 0; gap: 6px; }
+  .icon-btn { width: 28px; height: 28px; font-size: 12px; border-radius: 6px; }
+  .brand { font-size: 12px; gap: 4px; }
+  .brand .dot { width: 10px; height: 10px; }
+  .brand .version { font-size: 9px; }
+  /* Destination + diag strips compact */
+  .route-current { padding: 3px 10px; font-size: 12px; }
+  .diag-strip { font-size: 9px; padding: 2px 5px; line-height: 1.2; }
+  /* Speed + Next-ahead cards much smaller */
+  .stat-card { padding: 4px 6px; }
+  .stat-label { font-size: 9px; margin-bottom: 2px; }
+  .sign { width: 48px; height: 48px; border-width: 3px; }
+  .sign-value { font-size: 20px; }
+  .sign-label { display: none; }
+  .speedo-val { font-size: 22px; padding: 6px 4px; }
+  .speedo-val.three-digit { font-size: 18px; padding: 8px 4px; }
+  .speedo-unit { font-size: 8px; }
+  .next-name { font-size: 12px; }
+  .next-meta { font-size: 9px; }
+  .next-dist { font-size: 14px; margin-top: 2px; }
+  .next-dist .unit { font-size: 9px; }
+  .next-empty { font-size: 10px; padding: 4px 0; }
+  /* Map can be smaller too */
+  .map-wrap { min-height: 100px; }
+  /* Action buttons compact but still touch-friendly */
+  .btn { padding: 6px 10px; font-size: 11px; }
+  /* Sidebar a touch narrower so map gets more horizontal room */
+  .map-row { grid-template-columns: 1fr 60px; gap: 4px; }
+  .timeline-entry { padding: 4px 1px; }
+  .timeline-entry .em { font-size: 12px; }
+  .timeline-entry .lbl { font-size: 8px; }
+  .timeline-entry .dist { font-size: 10px; }
+  .tl-x { width: 14px; height: 14px; font-size: 12px; }
+  /* Status line tiny */
+  .status-line { font-size: 9px; padding: 0 2px; gap: 6px; }
+  /* Map overlay buttons smaller so they don't eat the small map */
+  .map-btn { width: 30px; height: 30px; font-size: 12px; }
+  .follow-pill { padding: 2px 7px; font-size: 9px; }
+}

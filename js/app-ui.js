@@ -1615,6 +1615,19 @@ const UI = {
   finalizeCapture() {
     const c = State.pendingCapture;
     if (!c) return;
+    // v22.91: auto-fill the v22.91 schema fields for speed_change + cameras.
+    // User can edit them via the Edit Point modal afterwards.
+    const camTypes = new Set(['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera']);
+    if (c.type === 'speed_change' || camTypes.has(c.type)) {
+      // Cameras default directional, speed_change non-directional (per spec)
+      c.directional = camTypes.has(c.type);
+      c.roadType = Speed.inferRoadTypeFromRollingSpeed(State.avgSpeedKmh());
+      c.captureBearing = State.avgHeading();
+      c.updatedAt = c.createdAt || new Date().toISOString();
+      if (c.type === 'speed_change' && typeof c.limit === 'number') {
+        c.speedLimit = c.limit;
+      }
+    }
     const nearby = State.data.points.find(p =>
       p.type === c.type && p.destId === c.destId && Utils.distKm(p, c) * 1000 < 100
     );
@@ -1669,17 +1682,32 @@ const UI = {
       b.classList.toggle('active', b.dataset.side === (p.side || '')));
     document.querySelectorAll('#e-status-opts button').forEach(b =>
       b.classList.toggle('active', b.dataset.status === (p.status || 'active')));
+    // v22.91: load directional / roadType / captureBearing into the new rows
+    const t = document.getElementById('t-directional');
+    if (t) t.classList.toggle('on', !!p.directional);
+    document.querySelectorAll('#e-roadtype-opts button').forEach(b =>
+      b.classList.toggle('active', b.dataset.roadtype === (p.roadType || 'unknown')));
+    const cbEl = document.getElementById('e-capbearing-val');
+    if (cbEl) cbEl.textContent = (typeof p.captureBearing === 'number') ? p.captureBearing.toFixed(0) + '°' : '—';
     this.togglePEFields();
     this.openModal('m-edit');
   },
 
   togglePEFields() {
     const t = document.getElementById('e-type').value;
-    document.getElementById('e-limit-row').style.display = t === 'speed_change' ? 'flex' : 'none';
-    // v22.25: pole + spider speed cams also have a side
-    const hasSide = t === 'speed_camera' || t === 'mobile_camera' ||
-                    t === 'pole_camera' || t === 'spider_camera';
-    document.getElementById('e-side-row').style.display  = hasSide ? 'flex' : 'none';
+    const isSpeedChange = t === 'speed_change';
+    const isCamera = t === 'speed_camera' || t === 'mobile_camera' ||
+                     t === 'pole_camera' || t === 'spider_camera';
+    document.getElementById('e-limit-row').style.display = isSpeedChange ? 'flex' : 'none';
+    document.getElementById('e-side-row').style.display  = isCamera ? 'flex' : 'none';
+    // v22.91: directional + roadType + captureBearing rows are relevant
+    // for speed_change AND any camera (any 'speed-related' point).
+    const speedish = isSpeedChange || isCamera;
+    const rows = ['e-directional-row', 'e-roadtype-row', 'e-capbearing-row'];
+    rows.forEach(rid => {
+      const el = document.getElementById(rid);
+      if (el) el.style.display = speedish ? 'flex' : 'none';
+    });
   },
 
   savePoint() {
@@ -1690,11 +1718,18 @@ const UI = {
     p.lat = +document.getElementById('e-lat').value || p.lat;
     p.lng = +document.getElementById('e-lng').value || p.lng;
     const lim = document.getElementById('e-limit').value;
-    if (lim && p.type === 'speed_change') p.limit = +lim; else delete p.limit;
+    if (lim && p.type === 'speed_change') { p.limit = +lim; p.speedLimit = +lim; }
+    else { delete p.limit; delete p.speedLimit; }
     const sideBtn = document.querySelector('#e-side-opts button.active');
     if (sideBtn) { if (sideBtn.dataset.side) p.side = sideBtn.dataset.side; else delete p.side; }
     const statBtn = document.querySelector('#e-status-opts button.active');
     if (statBtn) p.status = statBtn.dataset.status;
+    // v22.91: directional + roadType (captureBearing is read-only; clear via dedicated button)
+    const td = document.getElementById('t-directional');
+    p.directional = !!(td && td.classList.contains('on'));
+    const rtBtn = document.querySelector('#e-roadtype-opts button.active');
+    p.roadType = rtBtn ? rtBtn.dataset.roadtype : (p.roadType || 'unknown');
+    p.updatedAt = new Date().toISOString();
     State.saveData();
     Utils.toast('Saved', 'good');
     this.closeAllModals();
@@ -2288,6 +2323,21 @@ function wire() {
   document.querySelectorAll('#e-status-opts button').forEach(b =>
     b.onclick = () => document.querySelectorAll('#e-status-opts button').forEach(x => x.classList.toggle('active', x === b))
   );
+  // v22.91: directional toggle + road-type picker + captureBearing clear
+  document.getElementById('t-directional').onclick = () => {
+    const t = document.getElementById('t-directional');
+    t.classList.toggle('on');
+  };
+  document.querySelectorAll('#e-roadtype-opts button').forEach(b =>
+    b.onclick = () => document.querySelectorAll('#e-roadtype-opts button').forEach(x => x.classList.toggle('active', x === b))
+  );
+  document.getElementById('e-capbearing-clear').onclick = () => {
+    const p = State.data.points.find(x => x.id === State.editingPointId);
+    if (!p) return;
+    p.captureBearing = null;
+    document.getElementById('e-capbearing-val').textContent = '—';
+    Utils.toast('Capture bearing cleared', 'good');
+  };
   document.getElementById('e-save').onclick = () => UI.savePoint();
   document.getElementById('e-delete').onclick = () => UI.deletePoint();
   document.getElementById('e-gmap').onclick = () => {

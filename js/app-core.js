@@ -132,6 +132,236 @@ function logEvent(type, message, level) {
 }
 
 /* ============================================================
+   0c. SPEED — v22.91
+   Pure-math helpers + scoring engine for road-aware speed-limit alerts.
+   Storage.migrate calls Speed.migrateSpeedPoints to extend the schema
+   of existing saved points; Alerts.currentLimit + Alerts.tick use
+   Speed.scoreSpeedPoint + Speed.shouldAlert for road-aware filtering.
+   Pure functions are easy to test in isolation; the only stateful bits
+   are the in-memory _lastAlerted map (cleared on page reload) and the
+   rolling speed/heading histories on State.
+   ============================================================ */
+const Speed = {
+  /** Shortest-arc angular difference between two compass bearings,
+   *  return in degrees [0, 180]. angleDiff(350, 10) === 20. */
+  angleDiff(a, b) {
+    let d = Math.abs(a - b) % 360;
+    return d > 180 ? 360 - d : d;
+  },
+
+  /** Initial-bearing FROM (lat1,lng1) TO (lat2,lng2), degrees [0, 360). */
+  bearingBetween(lat1, lng1, lat2, lng2) {
+    const φ1 = lat1 * Math.PI / 180;
+    const φ2 = lat2 * Math.PI / 180;
+    const Δλ = (lng2 - lng1) * Math.PI / 180;
+    const y = Math.sin(Δλ) * Math.cos(φ2);
+    const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+    let b = Math.atan2(y, x) * 180 / Math.PI;
+    if (b < 0) b += 360;
+    return b;
+  },
+
+  /** GPS heading is noisy below ~10 km/h (stationary jitter, slow walks). */
+  isHeadingReliable(speedKmh) {
+    return typeof speedKmh === 'number' && speedKmh >= 10;
+  },
+
+  /** True if userHeading is within `tolerance` (default 45°) of pointBearing. */
+  headingMatches(userHeading, pointBearing, tolerance) {
+    if (userHeading == null || pointBearing == null) return false;
+    return Speed.angleDiff(userHeading, pointBearing) <= (tolerance == null ? 45 : tolerance);
+  },
+
+  /** Returns true if the point is roughly in front of the user (≤90° off
+   *  the user's heading vector). Returns null if heading is unavailable. */
+  isPointAhead(userLat, userLng, userHeading, pointLat, pointLng) {
+    if (userHeading == null) return null;
+    const b = Speed.bearingBetween(userLat, userLng, pointLat, pointLng);
+    return Speed.angleDiff(userHeading, b) <= 90;
+  },
+
+  /** Rolling-speed-based road type guess.
+   *  highway ≥ 80 km/h, city ≥ 30, otherwise unknown.
+   *  Returns 'unknown' for null/insufficient data (caller treats neutral). */
+  inferRoadTypeFromRollingSpeed(avgSpeedKmh) {
+    if (avgSpeedKmh == null || isNaN(avgSpeedKmh)) return 'unknown';
+    if (avgSpeedKmh >= 80) return 'highway';
+    if (avgSpeedKmh >= 30) return 'city';
+    return 'unknown';
+  },
+
+  /** Configurable alert radius based on the point's stored roadType.
+   *  Highway points need more lead time; city points are tighter. */
+  getAlertRadius(point) {
+    const t = point && point.roadType;
+    if (t === 'highway') return 400;
+    if (t === 'city')    return 200;
+    return 300; // unknown / missing
+  },
+
+  /** Confidence score for whether a point should alert NOW, given the
+   *  user's current state. Returns { score, distance, reasons } —
+   *  score >= 60 means the alert SHOULD fire (subject to hysteresis).
+   *  reasons[] is a human-readable trace for the debug panel.
+   *
+   *  Components (per spec):
+   *    +35  inside the road-type-specific alert radius
+   *    +25  point is ahead of user (or low-speed/no-heading neutral grant)
+   *    +25  heading matches captureBearing (or non-directional / neutral)
+   *    +10  road-type match (or unknown-on-either-side neutral)
+   *    + 5  road-name match (TODO — no geocoder yet)
+   *
+   *  Hard fails: outside radius (return 0) OR point clearly behind user
+   *  when speed >= 10 and heading is known (return 0). */
+  scoreSpeedPoint(u, p) {
+    const reasons = [];
+    let score = 0;
+    const distKm = Utils.distKm({ lat: u.lat, lng: u.lng }, p);
+    const distM = distKm * 1000;
+    const radius = Speed.getAlertRadius(p);
+
+    if (distM > radius) {
+      return { score: 0, distance: distM, reasons: ['outside radius (' + Math.round(distM) + 'm > ' + radius + 'm)'] };
+    }
+    score += 35;
+    reasons.push('in radius +35');
+
+    // AHEAD CHECK
+    if (u.speedKmh != null && u.speedKmh < 10) {
+      // Low speed → bearing is unreliable, auto-grant
+      score += 25;
+      reasons.push('low speed → ahead +25 (neutral)');
+    } else if (u.heading == null) {
+      // No heading data → auto-grant, don't penalize
+      score += 25;
+      reasons.push('no heading → ahead +25 (neutral)');
+    } else {
+      const bTo = Speed.bearingBetween(u.lat, u.lng, p.lat, p.lng);
+      const dAhead = Speed.angleDiff(u.heading, bTo);
+      if (dAhead > 90) {
+        return { score: 0, distance: distM, reasons: ['behind user (' + dAhead.toFixed(0) + '° off)'] };
+      }
+      score += 25;
+      reasons.push('ahead +25');
+    }
+
+    // HEADING MATCH (only meaningful for directional points)
+    if (!p.directional) {
+      score += 25;
+      reasons.push('non-directional → heading +25');
+    } else if (u.speedKmh != null && u.speedKmh < 10) {
+      score += 25;
+      reasons.push('low speed → heading +25 (neutral)');
+    } else if (u.heading == null) {
+      score += 25;
+      reasons.push('no heading → heading +25 (neutral)');
+    } else if (p.captureBearing == null) {
+      score += 25;
+      reasons.push('no captureBearing → heading +25 (neutral)');
+    } else {
+      const dH = Speed.angleDiff(u.heading, p.captureBearing);
+      if (dH <= 45) {
+        score += 25;
+        reasons.push('heading match (' + dH.toFixed(0) + '°) +25');
+      } else {
+        reasons.push('heading mismatch (' + dH.toFixed(0) + '°)');
+      }
+    }
+
+    // ROAD TYPE (neutral when either side is unknown)
+    const userRT = Speed.inferRoadTypeFromRollingSpeed(u.avgSpeedKmh);
+    if (!p.roadType || p.roadType === 'unknown' || userRT === 'unknown' || userRT === p.roadType) {
+      score += 10;
+      reasons.push('roadType ok (+10)');
+    } else {
+      reasons.push('roadType mismatch (user=' + userRT + ', point=' + p.roadType + ')');
+    }
+
+    // ROAD NAME (+5) — needs reverse geocoding, not implemented in this pass.
+
+    return { score, distance: distM, reasons };
+  },
+
+  /** Search all candidate points and return the best-scoring match
+   *  (score >= 60), or null. Caller is responsible for hysteresis. */
+  findBestSpeedPoint(userState, points) {
+    let best = null;
+    for (const p of points) {
+      if (!p || p.status === 'no') continue;
+      if (p.type !== 'speed_change') continue;
+      const limit = (typeof p.speedLimit === 'number') ? p.speedLimit
+                  : (typeof p.limit === 'number') ? p.limit : null;
+      if (limit == null) continue;
+      const r = Speed.scoreSpeedPoint(userState, p);
+      if (r.score >= 60 && (!best || r.score > best.score)) {
+        best = { point: p, limit, score: r.score, distance: r.distance, reasons: r.reasons };
+      }
+    }
+    return best;
+  },
+
+  /** In-memory per-point hysteresis. Map<pointId, { t, lat, lng }>.
+   *  NOT persisted — fresh page reload starts clean (per user spec). */
+  _lastAlerted: new Map(),
+
+  /** True if the point is allowed to alert right now:
+   *    - never alerted → yes
+   *    - last alert > 30 seconds ago → yes
+   *    - user has moved > 500 m from last-alert position → yes
+   *    - otherwise → no (suppressed) */
+  shouldAlert(point, userLat, userLng) {
+    const rec = this._lastAlerted.get(point.id);
+    if (!rec) return true;
+    if ((Date.now() - rec.t) / 1000 > 30) return true;
+    const movedKm = Utils.distKm({ lat: userLat, lng: userLng }, { lat: rec.lat, lng: rec.lng });
+    if (movedKm > 0.5) return true;
+    return false;
+  },
+
+  /** Record that we just fired an alert for this point at the given
+   *  user position. Pairs with shouldAlert. */
+  recordAlert(point, userLat, userLng) {
+    this._lastAlerted.set(point.id, { t: Date.now(), lat: userLat, lng: userLng });
+  },
+
+  /** Extend old saved points with the v22.91 schema fields in place.
+   *  Cameras default directional=true; speed_change defaults false.
+   *  Returns how many records were touched (for logging). */
+  migrateSpeedPoints(points) {
+    if (!Array.isArray(points)) return 0;
+    let touched = 0;
+    const camTypes = new Set(['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera']);
+    for (const p of points) {
+      if (p.type !== 'speed_change' && !camTypes.has(p.type)) continue;
+      let changed = false;
+      if (p.directional === undefined) {
+        p.directional = camTypes.has(p.type); // cameras directional by default
+        changed = true;
+      }
+      if (p.roadType === undefined) {
+        p.roadType = 'unknown';
+        changed = true;
+      }
+      if (p.captureBearing === undefined) {
+        p.captureBearing = null;
+        changed = true;
+      }
+      if (p.updatedAt === undefined) {
+        p.updatedAt = p.createdAt || new Date().toISOString();
+        changed = true;
+      }
+      // speedLimit alias for speed_change (kept alongside legacy `limit`).
+      if (p.type === 'speed_change' && typeof p.limit === 'number' && p.speedLimit === undefined) {
+        p.speedLimit = p.limit;
+        changed = true;
+      }
+      if (changed) touched++;
+    }
+    return touched;
+  },
+};
+
+/* ============================================================
    1. STORAGE
    ============================================================ */
 const Storage = {
@@ -268,6 +498,21 @@ const Storage = {
           localStorage.setItem('roadAlert.v22.69.navModeRefresh', '1');
         } catch (e) { console.warn('navMode refresh migration', e); }
       }
+      // v22.91: extend speed-point schema — adds directional, roadType,
+      // captureBearing, updatedAt, speedLimit alias. One-time per device.
+      if (!localStorage.getItem('roadAlert.v22.91.speedPointsMigrated')) {
+        try {
+          const d = this.load(this.KEYS.data);
+          if (d && Array.isArray(d.points)) {
+            const n = Speed.migrateSpeedPoints(d.points);
+            if (n > 0) {
+              this.save(this.KEYS.data, d);
+              console.log('v22.91: extended schema on', n, 'speed-related points');
+            }
+          }
+          localStorage.setItem('roadAlert.v22.91.speedPointsMigrated', '1');
+        } catch (e) { console.warn('speed-point migration', e); }
+      }
       return;
     }
     // Try v17 first, then v8
@@ -335,6 +580,13 @@ const State = {
   prevHeading: null,
   uTurnTicks: 0,
   speedBuffer: [],
+  // v22.91: rolling histories for road-type inference + heading averaging.
+  //   speedHistory:   { t, kmh } entries within the last 30 seconds
+  //   headingHistory: { t, deg } entries within the last 10 seconds
+  // Both reset at GPS.start. Used by Speed.scoreSpeedPoint and by capture
+  // auto-fill (captureBearing). Not persisted.
+  speedHistory: [],
+  headingHistory: [],
   manualLimit: null, // user override via tap on sign
   // v22: threshold-crossing alerts
   // Map: pointId -> Set of marker meters already fired
@@ -389,6 +641,33 @@ const State = {
     const id = this.data.activeDestId;
     if (!id) return []; // No active destination → show nothing on the map
     return this.data.points.filter(p => p.destId === id);
+  },
+
+  /** v22.91: rolling-average current speed (km/h) over the last 30 seconds.
+   *  Returns null if we don't have at least 10 samples (≈ 10 s of data).
+   *  null = "insufficient history → caller should treat as unknown". */
+  avgSpeedKmh() {
+    const n = this.speedHistory.length;
+    if (n < 10) return null;
+    let sum = 0;
+    for (const e of this.speedHistory) sum += e.kmh;
+    return sum / n;
+  },
+
+  /** v22.91: rolling vector-averaged heading over the last 10 seconds.
+   *  Returns null if we have fewer than 3 samples. Used to seed
+   *  captureBearing when saving a new speed_change point. */
+  avgHeading() {
+    const n = this.headingHistory.length;
+    if (n < 3) return null;
+    let sx = 0, sy = 0;
+    for (const e of this.headingHistory) {
+      sx += Math.cos(e.deg * Math.PI / 180);
+      sy += Math.sin(e.deg * Math.PI / 180);
+    }
+    let avg = Math.atan2(sy / n, sx / n) * 180 / Math.PI;
+    if (avg < 0) avg += 360;
+    return avg;
   },
 
   /** All points without a destination assignment (for orphan management). */
@@ -704,6 +983,9 @@ const GPS = {
     State.lastSpeedAlertZone = null;
     State.lastAnnouncedLimit = null; // v22.68: re-announce limit on new session
     State.speedBuffer = [];
+    State.speedHistory = []; // v22.91: clear rolling histories on each GPS session
+    State.headingHistory = [];
+    if (Speed && Speed._lastAlerted) Speed._lastAlerted.clear(); // fresh hysteresis
     State.lastTripCaptureId = null; // v22.10: reset for new trip
     State.alertsFiredThisTrip = 0; // v22.12: reset alert counter for new trip
     // v22.36: reset U-turn detection state
@@ -898,6 +1180,17 @@ const GPS = {
 
     if (State.speedMps * 3.6 > 350) State.speedMps = 0;
 
+    // v22.91: feed the rolling speed history (≤ 30 s window). Used by
+    // Speed.inferRoadTypeFromRollingSpeed so road-type scoring isn't
+    // tricked by a single bad sample (e.g. traffic jam on a highway).
+    {
+      const _now = Date.now();
+      State.speedHistory.push({ t: _now, kmh: State.speedMps * 3.6 });
+      while (State.speedHistory.length && _now - State.speedHistory[0].t > 30000) {
+        State.speedHistory.shift();
+      }
+    }
+
     if (pos.coords.heading != null && !isNaN(pos.coords.heading) && State.speedMps > 1) {
       // v22.36: U-turn detection — check angular delta vs last heading.
       // Circular subtraction so 350° → 20° gives a small delta, not 330°.
@@ -919,6 +1212,11 @@ const GPS = {
       State.prevHeading = pos.coords.heading;
       State.heading = pos.coords.heading;
       State.headingSource = 'gps';
+      // v22.91: feed rolling heading history (≤ 10s window)
+      { const _now = Date.now();
+        State.headingHistory.push({ t: _now, deg: State.heading });
+        while (State.headingHistory.length && _now - State.headingHistory[0].t > 10000) State.headingHistory.shift();
+      }
     } else if (prevPos && State.speedMps > 1) {
       // v22.52: iOS Safari often doesn't provide coords.heading reliably.
       // Compute heading from position delta as a fallback — always works
@@ -939,6 +1237,11 @@ const GPS = {
         State.prevHeading = bearingDeg;
         State.heading = bearingDeg;
         State.headingSource = 'derived';
+        // v22.91: feed rolling heading history (≤ 10s window)
+        { const _now = Date.now();
+          State.headingHistory.push({ t: _now, deg: State.heading });
+          while (State.headingHistory.length && _now - State.headingHistory[0].t > 10000) State.headingHistory.shift();
+        }
       }
     }
 
@@ -966,20 +1269,47 @@ const GPS = {
    ============================================================ */
 const Alerts = {
   /** Currently effective speed limit (km/h). Manual override wins.
-   *  v22.68: proximity-based, cross-destination lookup. We look at every
-   *  speed_change point across ALL destinations within 3 km of the user
-   *  and take the closest one as "the zone we're in". This means a limit
-   *  captured while driving from A → B applies again when driving B → A:
-   *  same road, same physical sign, same limit. */
+   *  v22.91: primary lookup uses Speed.findBestSpeedPoint — a confidence
+   *  score combining distance + ahead + heading + roadType. Score >= 60
+   *  triggers an alert (subject to hysteresis in Alerts.tick).
+   *  PROXIMITY FALLBACK preserves v22.68 behavior so the LIMIT card
+   *  isn't blank while you're driving BETWEEN two speed-change points
+   *  — closest point within 3 km wins as the visible value even if
+   *  it doesn't pass the alert threshold. */
   currentLimit() {
     if (State.manualLimit != null) return State.manualLimit;
     if (!State.pos) return null;
+    const userState = {
+      lat: State.pos.lat,
+      lng: State.pos.lng,
+      heading: State.heading,
+      speedKmh: (State.speedMps || 0) * 3.6,
+      avgSpeedKmh: State.avgSpeedKmh(),
+    };
+    const best = Speed.findBestSpeedPoint(userState, State.data.points);
+    if (best) return best.limit;
+    // Fallback: closest speed_change within 3km
     const candidates = State.data.points
-      .filter(p => p.type === 'speed_change' && typeof p.limit === 'number' && p.status !== 'no')
-      .map(p => ({ p, dKm: Utils.distKm(State.pos, p) }))
-      .filter(x => x.dKm < 3)
+      .filter(p => p.type === 'speed_change' && p.status !== 'no')
+      .map(p => ({ p, dKm: Utils.distKm(State.pos, p), lim: typeof p.speedLimit === 'number' ? p.speedLimit : p.limit }))
+      .filter(x => typeof x.lim === 'number' && x.dKm < 3)
       .sort((a, b) => a.dKm - b.dKm);
-    return candidates.length ? candidates[0].p.limit : null;
+    return candidates.length ? candidates[0].lim : null;
+  },
+
+  /** v22.91: helper used by Alerts.tick. Like currentLimit but returns
+   *  the FULL match (point + score + reasons) so the caller can apply
+   *  hysteresis at the per-point level. Null if no point scores >= 60. */
+  bestScoredSpeedPoint() {
+    if (!State.pos) return null;
+    const userState = {
+      lat: State.pos.lat,
+      lng: State.pos.lng,
+      heading: State.heading,
+      speedKmh: (State.speedMps || 0) * 3.6,
+      avgSpeedKmh: State.avgSpeedKmh(),
+    };
+    return Speed.findBestSpeedPoint(userState, State.data.points);
   },
 
   /** Points relevant for the "Next ahead" display + alert checking */
@@ -1165,17 +1495,33 @@ const Alerts = {
       Audio.updateProximityPing(null, null);
     }
 
-    // v22.68: announce the speed limit out loud whenever the effective
-    // zone changes. Triggers on every transition (entering a new zone
-    // captured in either direction). Skips when sound is off or voice
-    // is disabled; manualLimit changes also trigger it (user just set it).
-    const curLimit = this.currentLimit();
-    if (curLimit !== State.lastAnnouncedLimit) {
-      State.lastAnnouncedLimit = curLimit;
-      if (curLimit != null &&
-          State.settings.sound !== 'off' &&
-          State.settings.voiceGender !== 'none') {
-        Audio.say(`Speed limit ${curLimit}`);
+    // v22.68 / v22.91: announce speed limit on zone change.
+    // Primary path: a scored speed_change point with score >= 60
+    // → announce its limit (subject to Speed.shouldAlert hysteresis).
+    // Fallback path: manualLimit change → simple value compare.
+    // The hysteresis is per-point (in memory, cleared on page reload).
+    const best = this.bestScoredSpeedPoint();
+    if (best && best.point && best.point.id) {
+      const limit = best.limit;
+      if (limit !== State.lastAnnouncedLimit &&
+          Speed.shouldAlert(best.point, State.pos.lat, State.pos.lng)) {
+        State.lastAnnouncedLimit = limit;
+        Speed.recordAlert(best.point, State.pos.lat, State.pos.lng);
+        if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
+          Audio.say(`Speed limit ${limit}`);
+        }
+        logEvent('ALERT', `Speed limit ${limit} (score ${best.score}, ${Math.round(best.distance)}m)`, 'ok');
+      }
+    } else {
+      // No scored alert candidate — fall back to currentLimit (proximity)
+      const curLimit = this.currentLimit();
+      if (curLimit !== State.lastAnnouncedLimit) {
+        State.lastAnnouncedLimit = curLimit;
+        if (curLimit != null &&
+            State.settings.sound !== 'off' &&
+            State.settings.voiceGender !== 'none') {
+          Audio.say(`Speed limit ${curLimit}`);
+        }
       }
     }
 

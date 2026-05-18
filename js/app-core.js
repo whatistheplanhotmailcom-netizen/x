@@ -759,7 +759,18 @@ const GPS = {
         // Android absolute orientation: alpha is degrees CCW from north
         h = (360 - e.alpha) % 360;
       }
-      if (h != null) State.deviceHeading = h;
+      if (h != null) {
+        State.deviceHeading = h;
+        // v22.85: drive map rotation from compass events too, not just
+        // GPS ticks — so the map rotates as the user turns the phone
+        // even before Start GPS is tapped.
+        if (typeof MapView !== 'undefined' && MapView._applyNavRotation) {
+          MapView._applyNavRotation();
+        }
+        if (typeof UI !== 'undefined' && UI && MapView && MapView._updateLocationTriangle) {
+          MapView._updateLocationTriangle();
+        }
+      }
     };
     if (typeof DeviceOrientationEvent.requestPermission === 'function') {
       // iOS 13+: needs a user gesture before requestPermission resolves.

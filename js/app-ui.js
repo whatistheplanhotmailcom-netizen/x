@@ -336,33 +336,17 @@ const MapView = {
       this.currentMarker.setLngLat([State.pos.lng, State.pos.lat]);
     }
 
-    // v22.54: auto-rotation runs ONLY when nav mode is on (via 🧭 button).
-    // When off, map stays north-up.
-    const navOn = !!State.settings.navMode;
+    // v22.85: nav-mode rotation now lives in MapView._applyNavRotation
+    // and is called from BOTH this GPS tick path AND the device
+    // orientation event listener (in GPS.setupDeviceOrientation), so the
+    // map rotates as the user turns the phone — even before they tap
+    // Start GPS. Previously rotation only fired from this update(), which
+    // returns early when State.pos is null, so heading updates without GPS
+    // produced no rotation. Triangle worked because it listens to map
+    // events; map didn't rotate because update() never ran.
+    this._applyNavRotation();
 
-    // v22.84 FIX: feed the smoothing buffer from the SAME "best heading"
-    // source the triangle uses — compass first, GPS second. The old
-    // (State.speedMps > 0.5 && State.heading) gate meant the buffer
-    // stayed empty whenever the user wasn't moving OR was using compass
-    // instead of GPS heading. Result: _smoothedHeading was null, the
-    // setBearing call never fired, mapBearing stuck at 0.
-    const bestHeading = this._getBestHeading();
-    if (bestHeading != null) {
-      this._headingBuf.push(bestHeading);
-      if (this._headingBuf.length > 3) this._headingBuf.shift();
-      let sx = 0, sy = 0;
-      for (const x of this._headingBuf) {
-        sx += Math.cos(x * Math.PI / 180);
-        sy += Math.sin(x * Math.PI / 180);
-      }
-      let avg = Math.atan2(sy / this._headingBuf.length, sx / this._headingBuf.length) * 180 / Math.PI;
-      if (avg < 0) avg += 360;
-      this._smoothedHeading = avg;
-    }
-
-    // v22.79: rotation diagnostic — pushed to the debug log instead of
-    // the main-screen toast (which cluttered the driving UI). Tap the 🐛
-    // button in the topbar to see entries. Throttled to every ~3 seconds.
+    // Throttled diagnostic — every ~3 seconds.
     try {
       const mapB = this.m ? this.m.getBearing() : null;
       if (!this._lastDiagAt || Date.now() - this._lastDiagAt > 3000) {
@@ -375,41 +359,7 @@ const MapView = {
       }
     } catch (e) {}
 
-    if (navOn && this._smoothedHeading != null) {
-      // v22.54: use setBearing directly. v22.53 used jumpTo and the diagnostic
-      // showed mapb stuck at 0 — possibly because jumpTo with only `bearing`
-      // and `center` together was being ignored or partially applied.
-      // setBearing is the simplest, most direct call.
-      const now = Date.now();
-      const last = this._lastBearingApplied;
-      let delta = (last == null) ? 999 : Math.abs(this._smoothedHeading - last);
-      if (delta > 180) delta = 360 - delta;
-      if (now - this._lastBearingAt > 150 && delta > 1) {
-        try {
-          // v22.84: easeTo({bearing, duration:300, essential:true}) instead
-          // of setBearing. Animated rotation looks smoother on a phone in
-          // a car mount; new easeTo calls cancel the previous animation
-          // gracefully, so the 150ms throttle creates a continuous
-          // tween from one heading to the next. essential:true bypasses
-          // prefers-reduced-motion which would otherwise skip the
-          // animation entirely on some devices.
-          this.m.easeTo({
-            bearing: this._smoothedHeading,
-            duration: 300,
-            essential: true,
-          });
-          this._lastBearingApplied = this._smoothedHeading;
-          this._lastBearingAt = now;
-        } catch (e) {
-          logEvent('MAP', 'easeTo bearing error: ' + (e && e.message || e), 'err');
-        }
-      }
-      // Still pan to user when following (separate from rotation)
-      if (State.followMap) {
-        try { this.m.setCenter([State.pos.lng, State.pos.lat]); } catch (e) {}
-      }
-    } else if (State.followMap) {
-      // No rotation — just pan to user
+    if (State.followMap) {
       try { this.m.setCenter([State.pos.lng, State.pos.lat]); } catch (e) {}
     }
 
@@ -494,6 +444,82 @@ const MapView = {
       return State.heading;
     }
     return null;
+  },
+
+  /** v22.85: apply nav-mode rotation. Extracted from MapView.update so
+   *  it can also be called directly from the device-orientation event
+   *  listener — that way the map starts rotating the instant the user
+   *  turns the phone, without waiting for a GPS fix. Self-contained:
+   *  reads State, reads getBestHeading, runs through the smoothing
+   *  buffer + throttle + dead-zone, then easeTo's the camera bearing.
+   *
+   *  No-op when:
+   *    - Map isn't ready (!this.m || !this._mapLoaded)
+   *    - Nav-mode is OFF (logs a one-shot hint every 5s)
+   *    - No heading source available (compass and GPS both null)
+   *
+   *  Logs a verification entry 300ms after each easeTo call so the
+   *  debug panel can confirm map.getBearing() actually changed. */
+  _applyNavRotation() {
+    if (!this.m || !this._mapLoaded) return;
+    const navOn = !!State.settings.navMode;
+    if (!navOn) {
+      // Throttled hint — every 5 seconds — so the user knows WHY the
+      // map isn't rotating if they expected it to.
+      if (!this._lastNavOffHintAt || Date.now() - this._lastNavOffHintAt > 5000) {
+        this._lastNavOffHintAt = Date.now();
+        logEvent('MAP', 'navMode=OFF — tap 🧭 to enable heading-up rotation');
+      }
+      return;
+    }
+    const bestHeading = this._getBestHeading();
+    if (bestHeading == null) {
+      if (!this._lastNoHeadingHintAt || Date.now() - this._lastNoHeadingHintAt > 5000) {
+        this._lastNoHeadingHintAt = Date.now();
+        logEvent('MAP', 'navMode=ON but no heading source yet (waiting for compass or GPS movement)');
+      }
+      return;
+    }
+    // Vector-averaged smoothing across last 3 readings
+    this._headingBuf.push(bestHeading);
+    if (this._headingBuf.length > 3) this._headingBuf.shift();
+    let sx = 0, sy = 0;
+    for (const x of this._headingBuf) {
+      sx += Math.cos(x * Math.PI / 180);
+      sy += Math.sin(x * Math.PI / 180);
+    }
+    let avg = Math.atan2(sy / this._headingBuf.length, sx / this._headingBuf.length) * 180 / Math.PI;
+    if (avg < 0) avg += 360;
+    this._smoothedHeading = avg;
+
+    // Throttle + dead-zone
+    const now = Date.now();
+    const last = this._lastBearingApplied;
+    let delta = (last == null) ? 999 : Math.abs(this._smoothedHeading - last);
+    if (delta > 180) delta = 360 - delta;
+    if (now - this._lastBearingAt <= 150 || delta <= 1) return;
+
+    // Apply rotation
+    try {
+      const targetBearing = this._smoothedHeading;
+      this.m.easeTo({
+        bearing: targetBearing,
+        duration: 300,
+        essential: true,
+      });
+      this._lastBearingApplied = targetBearing;
+      this._lastBearingAt = now;
+      // Verification log per user spec — runs after the animation should
+      // have started so we can confirm getBearing() actually moved.
+      setTimeout(() => {
+        try {
+          const mb = this.m.getBearing();
+          logEvent('MAP', `after nav rotate mapBearing=${mb.toFixed(1)} heading=${targetBearing.toFixed(1)}`);
+        } catch (e) {}
+      }, 320);
+    } catch (e) {
+      logEvent('MAP', 'easeTo bearing error: ' + (e && e.message || e), 'err');
+    }
   },
 
   _updateLocationTriangle() {

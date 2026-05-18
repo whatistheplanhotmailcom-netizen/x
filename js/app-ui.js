@@ -82,6 +82,10 @@ const MapView = {
         // Snap bearing to north when within this many degrees on user-stop.
         // 0 means never snap — we want auto-rotate to "stick" at any bearing.
         bearingSnap: 0,
+        // v22.80: explicit maxPitch so the 60° we apply in setPitchMode is
+        // unambiguously within bounds. (MapLibre 5.x default is 85; setting
+        // explicitly anyway in case a future version changes the default.)
+        maxPitch: 85,
         // Show zoom controls
         attributionControl: { compact: true },
         // Performance: lower the device pixel ratio cap on iOS to keep WebGL fast
@@ -425,40 +429,54 @@ const MapView = {
     });
   },
 
-  /** v22.78: Smoothly transition between 2D top-down and 3D navigation
-   *  perspective. ON tilts the camera to 60° and reduces zoom by 0.5
-   *  (clamped to min 10) for better forward visibility. OFF restores the
-   *  pre-pitch zoom and snaps pitch back to 0. center and bearing are
-   *  preserved by easeTo (only the keys we pass are touched), so this
-   *  doesn't fight nav-mode rotation or break follow mode.
-   *  opts.duration overrides the default 800 ms animation. */
+  /** v22.78 / hardened in v22.80: switch between 2D top-down and 3D
+   *  navigation perspective.
+   *
+   *  ON  → easeTo({ pitch: 60, zoom: zoomBefore-0.5, duration: 800 })
+   *  OFF → easeTo({ pitch: 0,  zoom: zoomBefore,     duration: 800 })
+   *
+   *  Belt-and-suspenders: we ALSO call setPitch() immediately so even if
+   *  easeTo's pitch param is silently ignored by a particular MapLibre
+   *  build, the camera state is still updated. The easeTo animates;
+   *  setPitch makes the underlying state correct on the next frame.
+   *
+   *  center and bearing are not passed to easeTo, so MapLibre preserves
+   *  them — doesn't fight nav-mode rotation or follow-mode panning.
+   *
+   *  Logs the before/after pitch via logEvent so the debug panel shows
+   *  whether the call actually took effect. */
   setPitchMode(on, opts) {
-    if (!this.m) return;
+    if (!this.m) {
+      logEvent('MAP', 'setPitchMode called but map not ready', 'err');
+      return;
+    }
     opts = opts || {};
     const dur = opts.duration != null ? opts.duration : 800;
+    const before = this.m.getPitch();
     try {
       if (on) {
         if (this._zoomBeforePitch == null) {
           this._zoomBeforePitch = this.m.getZoom();
         }
         const targetZoom = Math.max(10, this._zoomBeforePitch - 0.5);
-        this.m.easeTo({
-          pitch: 60,
-          zoom: targetZoom,
-          duration: dur,
-        });
+        this.m.easeTo({ pitch: 60, zoom: targetZoom, duration: dur });
+        try { this.m.setPitch(60); } catch (e) {}  // belt
       } else {
         const restoredZoom = this._zoomBeforePitch != null
           ? this._zoomBeforePitch
           : this.m.getZoom() + 0.5;
         this._zoomBeforePitch = null;
-        this.m.easeTo({
-          pitch: 0,
-          zoom: restoredZoom,
-          duration: dur,
-        });
+        this.m.easeTo({ pitch: 0, zoom: restoredZoom, duration: dur });
+        try { this.m.setPitch(0); } catch (e) {}   // belt
       }
-    } catch (e) { console.warn('setPitchMode error:', e); }
+      // Update button label inside the method so every call path (boot
+      // restore, click handler, programmatic) ends with the right text.
+      const btn = document.getElementById('btn-pitch');
+      if (btn) btn.textContent = on ? '2D' : '3D';
+      logEvent('MAP', `Pitch ${on ? 'ON' : 'OFF'} (${Math.round(before)}° → ${on ? 60 : 0}°)`, 'ok');
+    } catch (e) {
+      logEvent('MAP', 'setPitchMode error: ' + (e && e.message || e), 'err');
+    }
   },
 
   /** v22.58: fetch a driving route from current GPS pos → active destination
@@ -1871,14 +1889,15 @@ function wire() {
     }
   };
 
-  // v22.78: 3D pitch toggle — smoothly tilts camera to 60° and back.
+  // v22.78 / refactor v22.80: 3D pitch toggle. The label swap and the
+  // event log both live INSIDE MapView.setPitchMode now, so every code
+  // path (this click, boot-restore, programmatic) stays in sync.
   document.getElementById('btn-pitch').onclick = () => {
     State.settings.pitchMode = !State.settings.pitchMode;
     State.saveSettings();
     document.getElementById('btn-pitch').classList.toggle('on', State.settings.pitchMode);
     MapView.setPitchMode(State.settings.pitchMode);
     Utils.toast(State.settings.pitchMode ? '3D perspective' : '2D top-down', 'good');
-    logEvent('MAP', '3D ' + (State.settings.pitchMode ? 'ON' : 'OFF'));
   };
 
   document.getElementById('follow-pill').onclick = () => {
@@ -2324,8 +2343,12 @@ function boot() {
     if (navBtn) navBtn.classList.toggle('on', !!State.settings.navMode);
     // v22.78: restore 3D button state. The actual camera pitch is applied
     // inside MapView.init's 'load' handler once the map is ready.
+    // v22.80: also set the label so it reads correctly before the map loads.
     const pitchBtn = document.getElementById('btn-pitch');
-    if (pitchBtn) pitchBtn.classList.toggle('on', !!State.settings.pitchMode);
+    if (pitchBtn) {
+      pitchBtn.classList.toggle('on', !!State.settings.pitchMode);
+      pitchBtn.textContent = State.settings.pitchMode ? '2D' : '3D';
+    }
     if (State.settings.autoBackup) Backup.start();
     setInterval(() => { if (State.settings.theme === 'auto') UI.applyTheme(); }, 60 * 60 * 1000);
     // v22: driving safety reminder, once per device

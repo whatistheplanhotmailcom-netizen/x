@@ -198,6 +198,8 @@ const Storage = {
       // to ~60° for a navigation perspective. Toggled via the 3D button on
       // the map overlay; survives across sessions.
       pitchMode: false,
+      // v22.83: show the top-right compass control on the map. Default on.
+      showCompass: true,
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest

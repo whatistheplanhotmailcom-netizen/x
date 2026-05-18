@@ -130,14 +130,16 @@ const MapView = {
       // v22.82: also re-rotate the directional triangle on every map
       // bearing change so the arrow always points to true real-world
       // heading regardless of which way the map is facing.
-      this.m.on('rotate', () => {
+      // v22.83: subscribe to 'move' and 'pitch' too — covers any code
+      // path that touches bearing without firing a pure rotate event.
+      const onMapMove = () => {
         UI.updateCompass();
         MapView._updateLocationTriangle();
-      });
-      this.m.on('rotateend', () => {
-        UI.updateCompass();
-        MapView._updateLocationTriangle();
-      });
+      };
+      this.m.on('rotate', onMapMove);
+      this.m.on('rotateend', onMapMove);
+      this.m.on('move', onMapMove);
+      this.m.on('pitch', onMapMove);
 
       // Wait for style+tiles to load before drawing points (otherwise markers
       // attach to a non-ready map and may not render).
@@ -735,19 +737,52 @@ const UI = {
     el.className = '';
   },
 
-  /** v22.81: rotate the compass rose to reflect the CURRENT map bearing,
-   *  read directly from the MapLibre map instance (not from State or
-   *  any cached value). Inverse rotation: when the map shows east as
-   *  "up" (bearing 90), north is to the LEFT of the screen, so the rose
-   *  rotates -90° → red N tip ends up on the left side of the dial.
-   *  Called from the 'rotate' and 'rotateend' map events. */
+  /** v22.81 / hardened in v22.83: rotate the compass rose to reflect the
+   *  CURRENT map bearing, read directly from the MapLibre map instance
+   *  (never from State, never from GPS). Subscribed to rotate / move /
+   *  pitch events so any code path that changes bearing keeps it in sync.
+   *
+   *  Inverse rotation: when the map shows east as "up" (bearing 90),
+   *  true north is to the LEFT of the screen, so the rose rotates -90°
+   *  → the red N tip ends up on the left side of the dial.
+   *
+   *  Also handles the show/hide setting: if showCompass is false, the
+   *  button has hidden=true and pointer-events disabled. No rotation
+   *  work is done while hidden. */
   updateCompass() {
+    const btn = document.getElementById('btn-compass');
+    if (!btn) return;
+    // v22.83: visibility toggle. Apply on every call so the toggle from
+    // Settings takes effect on the very next event tick.
+    const visible = State.settings.showCompass !== false;
+    btn.hidden = !visible;
+    if (!visible) return;
     const rose = document.getElementById('compass-rose');
     if (!rose || !MapView.m) return;
     let bearing;
     try { bearing = MapView.m.getBearing(); } catch (e) { return; }
     if (typeof bearing !== 'number' || isNaN(bearing)) return;
-    rose.style.transform = `rotate(${-bearing}deg)`;
+    // Use setProperty so the transform is explicitly applied (defensive
+    // against any future CSS rule that might shadow the inline style).
+    rose.style.setProperty('transform', `rotate(${-bearing}deg)`);
+    // Throttled diagnostic — every ~3s so the debug panel doesn't flood
+    // during nav-mode rotation (which fires many rotate events/sec).
+    if (!this._lastCompassLogAt || Date.now() - this._lastCompassLogAt > 3000) {
+      this._lastCompassLogAt = Date.now();
+      logEvent('MAP', `Compass bearing=${bearing.toFixed(1)}`);
+    }
+  },
+
+  /** v22.83: flip the show/hide setting, persist, and apply immediately. */
+  toggleCompass() {
+    State.settings.showCompass = State.settings.showCompass === false ? true : false;
+    State.saveSettings();
+    const btn = document.getElementById('btn-compass');
+    if (btn) btn.hidden = !State.settings.showCompass;
+    UI.syncSettings();
+    UI.updateCompass();
+    logEvent('MAP', 'Compass ' + (State.settings.showCompass ? 'ON' : 'OFF'));
+    Utils.toast('Compass ' + (State.settings.showCompass ? 'on' : 'off'), 'good');
   },
 
   /** v22.79: render the debug log modal contents. Newest at top — Logger
@@ -1788,6 +1823,9 @@ const UI = {
       b.classList.toggle('active', b.dataset.voice === State.settings.voiceGender));
     document.getElementById('t-side').classList.toggle('on', State.settings.announceSide);
     document.getElementById('t-autobackup').classList.toggle('on', State.settings.autoBackup);
+    // v22.83: compass show/hide toggle reflects the saved setting
+    const tCompass = document.getElementById('t-compass');
+    if (tCompass) tCompass.classList.toggle('on', State.settings.showCompass !== false);
     document.getElementById('markers-chips') && UI.renderMarkerChips();
     document.getElementById('i-over').value = State.settings.overBy;
     // v22.6: new alert settings
@@ -2144,6 +2182,8 @@ function wire() {
     b.onclick = () => { State.settings.speedAlertMode = b.dataset.speed; State.saveSettings(); UI.syncSettings(); }
   );
   document.getElementById('t-side').onclick = () => { State.settings.announceSide = !State.settings.announceSide; State.saveSettings(); UI.syncSettings(); };
+  // v22.83: compass show/hide toggle
+  document.getElementById('t-compass').onclick = () => UI.toggleCompass();
   document.getElementById('t-autobackup').onclick = () => {
     State.settings.autoBackup = !State.settings.autoBackup;
     State.saveSettings(); UI.syncSettings();
@@ -2445,6 +2485,11 @@ function boot() {
       pitchBtn.classList.toggle('on', !!State.settings.pitchMode);
       pitchBtn.textContent = State.settings.pitchMode ? '2D' : '3D';
     }
+    // v22.83: apply the compass visibility setting from storage. The
+    // updateCompass call inside MapView's load handler will then style
+    // the rose correctly once the map is ready.
+    const compassBtn = document.getElementById('btn-compass');
+    if (compassBtn) compassBtn.hidden = State.settings.showCompass === false;
     if (State.settings.autoBackup) Backup.start();
     setInterval(() => { if (State.settings.theme === 'auto') UI.applyTheme(); }, 60 * 60 * 1000);
     // v22: driving safety reminder, once per device

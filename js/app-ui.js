@@ -124,6 +124,12 @@ const MapView = {
       });
       this.m.on('touchend touchmove dragstart', () => clearTimeout(this.longPressTimer));
 
+      // v22.81: keep the on-screen compass synced with the actual map
+      // bearing. 'rotate' fires continuously during easeTo/setBearing,
+      // 'rotateend' is a safety net for the final position.
+      this.m.on('rotate', () => UI.updateCompass());
+      this.m.on('rotateend', () => UI.updateCompass());
+
       // Wait for style+tiles to load before drawing points (otherwise markers
       // attach to a non-ready map and may not render).
       this.m.on('load', () => {
@@ -135,6 +141,8 @@ const MapView = {
         if (State.settings.pitchMode) {
           this.setPitchMode(true, { duration: 0 });
         }
+        // v22.81: initial compass sync once the map has a real bearing.
+        UI.updateCompass();
       });
 
       // Resize after a tick so the canvas matches the actual container size
@@ -665,6 +673,21 @@ const UI = {
     else if (min < 60)   el.textContent = `✓ updated ${min}m ago`;
     else                 el.textContent = `✓ updated ${Math.floor(min / 60)}h ago`;
     el.className = '';
+  },
+
+  /** v22.81: rotate the compass rose to reflect the CURRENT map bearing,
+   *  read directly from the MapLibre map instance (not from State or
+   *  any cached value). Inverse rotation: when the map shows east as
+   *  "up" (bearing 90), north is to the LEFT of the screen, so the rose
+   *  rotates -90° → red N tip ends up on the left side of the dial.
+   *  Called from the 'rotate' and 'rotateend' map events. */
+  updateCompass() {
+    const rose = document.getElementById('compass-rose');
+    if (!rose || !MapView.m) return;
+    let bearing;
+    try { bearing = MapView.m.getBearing(); } catch (e) { return; }
+    if (typeof bearing !== 'number' || isNaN(bearing)) return;
+    rose.style.transform = `rotate(${-bearing}deg)`;
   },
 
   /** v22.79: render the debug log modal contents. Newest at top — Logger
@@ -1860,6 +1883,16 @@ function wire() {
   document.getElementById('confirm-start').onclick = () => UI.doStart();
   document.getElementById('btn-fit').onclick = () => MapView.fitAll();
   document.getElementById('btn-recenter').onclick = () => MapView.recenter();
+
+  // v22.81: compass tap → reset bearing to north (animated). Reads the
+  // current bearing straight from the map for the log entry so we know
+  // what was actually displayed at the moment of the reset.
+  document.getElementById('btn-compass').onclick = () => {
+    if (!MapView.m) return;
+    const wasBearing = MapView.m.getBearing();
+    MapView.m.easeTo({ bearing: 0, duration: 500 });
+    logEvent('MAP', `Compass reset (was ${wasBearing.toFixed(1)}° → 0°)`);
+  };
 
   // v22.54: nav-mode toggle — turns auto-rotation on/off
   document.getElementById('btn-nav').onclick = () => {

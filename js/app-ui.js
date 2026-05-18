@@ -340,11 +340,15 @@ const MapView = {
     // When off, map stays north-up.
     const navOn = !!State.settings.navMode;
 
-    // Build smoothed heading regardless — used immediately when nav toggles on
-    // v22.68: lowered from 1.5 m/s (5.4 km/h) to 0.5 m/s (1.8 km/h) so
-    // rotation activates as soon as the car is rolling, not only at speed.
-    if (State.speedMps > 0.5 && State.heading != null && !isNaN(State.heading)) {
-      this._headingBuf.push(State.heading);
+    // v22.84 FIX: feed the smoothing buffer from the SAME "best heading"
+    // source the triangle uses — compass first, GPS second. The old
+    // (State.speedMps > 0.5 && State.heading) gate meant the buffer
+    // stayed empty whenever the user wasn't moving OR was using compass
+    // instead of GPS heading. Result: _smoothedHeading was null, the
+    // setBearing call never fired, mapBearing stuck at 0.
+    const bestHeading = this._getBestHeading();
+    if (bestHeading != null) {
+      this._headingBuf.push(bestHeading);
       if (this._headingBuf.length > 3) this._headingBuf.shift();
       let sx = 0, sy = 0;
       for (const x of this._headingBuf) {
@@ -382,17 +386,22 @@ const MapView = {
       if (delta > 180) delta = 360 - delta;
       if (now - this._lastBearingAt > 150 && delta > 1) {
         try {
-          // v22.69 FIX: setBearing(B) makes compass direction B "up" on the
-          // map (per MapLibre docs). For heading-up navigation we want the
-          // user's heading direction at the top, so bearing = heading.
-          // Previous versions used -heading, which rotated the map OPPOSITE
-          // to travel direction — hence the long-standing "rotation doesn't
-          // work" reports.
-          this.m.setBearing(this._smoothedHeading);
+          // v22.84: easeTo({bearing, duration:300, essential:true}) instead
+          // of setBearing. Animated rotation looks smoother on a phone in
+          // a car mount; new easeTo calls cancel the previous animation
+          // gracefully, so the 150ms throttle creates a continuous
+          // tween from one heading to the next. essential:true bypasses
+          // prefers-reduced-motion which would otherwise skip the
+          // animation entirely on some devices.
+          this.m.easeTo({
+            bearing: this._smoothedHeading,
+            duration: 300,
+            essential: true,
+          });
           this._lastBearingApplied = this._smoothedHeading;
           this._lastBearingAt = now;
         } catch (e) {
-          console.error('setBearing error', e);
+          logEvent('MAP', 'easeTo bearing error: ' + (e && e.message || e), 'err');
         }
       }
       // Still pan to user when following (separate from rotation)
@@ -472,15 +481,26 @@ const MapView = {
    *
    *  Logs throttled to once per 3 seconds to avoid spamming the debug
    *  panel on every tick. */
+  /** v22.84: single source of truth for "what direction is the user
+   *  actually facing". Both _updateLocationTriangle AND the nav-mode
+   *  map rotation in update() read from this so they can never disagree.
+   *  Compass first (works stationary), GPS heading second (more reliable
+   *  while moving), null if neither is available. */
+  _getBestHeading() {
+    if (typeof State.deviceHeading === 'number' && !isNaN(State.deviceHeading)) {
+      return State.deviceHeading;
+    }
+    if (typeof State.heading === 'number' && !isNaN(State.heading)) {
+      return State.heading;
+    }
+    return null;
+  },
+
   _updateLocationTriangle() {
     if (!this.currentMarkerEl) return;
     const tri = this.currentMarkerEl.querySelector('.ra-current-tri');
     if (!tri) return;
-    const heading = (typeof State.deviceHeading === 'number' && !isNaN(State.deviceHeading))
-      ? State.deviceHeading
-      : (typeof State.heading === 'number' && !isNaN(State.heading))
-        ? State.heading
-        : null;
+    const heading = this._getBestHeading();
     let mapBearing = 0;
     try { mapBearing = this.m ? this.m.getBearing() : 0; } catch (e) {}
     if (heading == null) {
@@ -491,7 +511,7 @@ const MapView = {
       const visualRot = heading - mapBearing;
       tri.style.transform = `translate(-50%, -50%) rotate(${visualRot}deg)`;
     }
-    // Throttled diagnostic
+    // Throttled diagnostic — every ~3s so debug panel doesn't flood
     if (!this._lastTriLogAt || Date.now() - this._lastTriLogAt > 3000) {
       this._lastTriLogAt = Date.now();
       const h = heading == null ? '—' : heading.toFixed(1);
@@ -2008,13 +2028,13 @@ function wire() {
       // If we already have a heading, rotate immediately rather than waiting
       // for the next GPS tick
       if (MapView.m && MapView._smoothedHeading != null) {
-        // v22.69 FIX: positive bearing — see MapView.update comment.
-        try { MapView.m.setBearing(MapView._smoothedHeading); } catch (e) {}
+        // v22.84: easeTo for a smooth flip-in, same as the update() loop.
+        try { MapView.m.easeTo({ bearing: MapView._smoothedHeading, duration: 500, essential: true }); } catch (e) {}
       }
     } else {
-      // Snap back to north when turning off
+      // Snap back to north when turning off — easeTo for smoothness.
       if (MapView.m) {
-        try { MapView.m.setBearing(0); } catch (e) {}
+        try { MapView.m.easeTo({ bearing: 0, duration: 500, essential: true }); } catch (e) {}
       }
       Utils.toast('Rotation: north up', 'good');
     }

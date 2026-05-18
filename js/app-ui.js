@@ -1,6 +1,75 @@
 /* ============================================================
    6. MAP
    ============================================================ */
+
+/** v22.88: available map style definitions. Each entry has an id
+ *  (persisted in State.settings.mapStyle), a display label, an emoji,
+ *  and a `style` field that's either a URL (MapLibre vector style JSON)
+ *  or an inline style object (for raster XYZ tile sources that aren't
+ *  served as MapLibre styles natively).
+ *
+ *  No API keys required — every source here is free public tiles. */
+const MAP_STYLES = [
+  {
+    id: 'liberty',
+    label: 'Default',
+    em: '🗺',
+    style: 'https://tiles.openfreemap.org/styles/liberty',
+  },
+  {
+    id: 'positron',
+    label: 'Light',
+    em: '☀',
+    style: 'https://tiles.openfreemap.org/styles/positron',
+  },
+  {
+    id: 'dark',
+    label: 'Dark',
+    em: '🌙',
+    style: 'https://tiles.openfreemap.org/styles/dark',
+  },
+  {
+    id: 'satellite',
+    label: 'Satellite',
+    em: '🛰️',
+    style: {
+      version: 8,
+      sources: {
+        'sat-tiles': {
+          type: 'raster',
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'Imagery © Esri',
+          maxzoom: 19,
+        },
+      },
+      layers: [{ id: 'sat-layer', type: 'raster', source: 'sat-tiles' }],
+    },
+  },
+  {
+    id: 'terrain',
+    label: 'Terrain',
+    em: '⛰️',
+    style: {
+      version: 8,
+      sources: {
+        'topo-tiles': {
+          type: 'raster',
+          tiles: [
+            'https://a.tile.opentopomap.org/{z}/{x}/{y}.png',
+            'https://b.tile.opentopomap.org/{z}/{x}/{y}.png',
+            'https://c.tile.opentopomap.org/{z}/{x}/{y}.png',
+          ],
+          tileSize: 256,
+          attribution: '© OpenTopoMap (CC-BY-SA)',
+          maxzoom: 17,
+        },
+      },
+      layers: [{ id: 'topo-layer', type: 'raster', source: 'topo-tiles' }],
+    },
+  },
+];
+
 const MapView = {
   m: null,
   currentMarker: null,
@@ -70,7 +139,10 @@ const MapView = {
       this.m = new maplibregl.Map({
         container: 'map',
         // OpenFreeMap Liberty style (OSM-based, no API key required)
-        style: 'https://tiles.openfreemap.org/styles/liberty',
+        // v22.88: use the persisted map style on first load (defaults to
+        // 'liberty'). User can switch via the 🗺 button on the map overlay.
+        style: (MAP_STYLES.find(s => s.id === (State.settings.mapStyle || 'liberty'))
+                || MAP_STYLES[0]).style,
         center: center,
         zoom: 13,
         bearing: 0,
@@ -165,25 +237,26 @@ const MapView = {
     }
   },
 
-  /** v22.51: build a DOM element for a captured point. The same .ra-marker
-   *  CSS from the Leaflet era works as long as MapLibre wraps our element.
-   *  v22.87: top-right .conf-badge shows the cumulative count of
-   *  confirmation feedback ({yes,no} answered after passing). Color reflects
-   *  the majority: green = mostly yes, red = mostly no, amber = tied. */
+  /** v22.51: build a DOM element for a captured point.
+   *  v22.87 / v22.88: top-right .conf-badge ALWAYS shows the cumulative
+   *  count of confirmation feedback ({yes,no} answered after passing).
+   *  Visible at 0 too (grey) so the user can see at a glance which points
+   *  have any feedback yet. Color reflects the majority once votes exist:
+   *  green = mostly yes, red = mostly no, amber = tied, grey = no votes. */
   _buildPointEl(p, classes) {
     const el = document.createElement('div');
     const sideHtml = p.side ? `<span class="side">${p.side === 'left' ? 'L' : 'R'}</span>` : '';
-    let confHtml = '';
-    if (Array.isArray(p.confirmations) && p.confirmations.length > 0) {
-      let yes = 0, no = 0;
+    let yes = 0, no = 0;
+    if (Array.isArray(p.confirmations)) {
       for (const c of p.confirmations) {
         if (c && c.value === 'yes') yes++;
         else if (c && c.value === 'no') no++;
       }
-      const total = p.confirmations.length;
-      const cls = yes > no ? 'conf-pos' : (no > yes ? 'conf-neg' : 'conf-neutral');
-      confHtml = `<span class="conf-badge ${cls}" title="${yes} yes / ${no} no">${total}</span>`;
     }
+    const total = yes + no;
+    let cls = 'conf-zero';
+    if (total > 0) cls = yes > no ? 'conf-pos' : (no > yes ? 'conf-neg' : 'conf-neutral');
+    const confHtml = `<span class="conf-badge ${cls}" title="${yes} yes / ${no} no">${total}</span>`;
     el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}</div>`;
     return el;
   },
@@ -608,6 +681,45 @@ const MapView = {
     }
   },
 
+  /** v22.88: switch the map's base style. Preserves center/zoom/bearing/
+   *  pitch (MapLibre's setStyle keeps the camera). Persists the choice
+   *  to State.settings.mapStyle so it survives reloads. Re-adds the
+   *  route line after the new style loads (style swap drops custom
+   *  sources/layers; markers added via maplibregl.Marker survive). */
+  setMapStyle(styleId) {
+    if (!this.m) return;
+    const def = MAP_STYLES.find(s => s.id === styleId);
+    if (!def) { logEvent('MAP', 'Unknown mapStyle: ' + styleId, 'err'); return; }
+    State.settings.mapStyle = styleId;
+    State.saveSettings();
+    try {
+      this.m.setStyle(def.style);
+      logEvent('MAP', `Style → ${def.label}`, 'ok');
+    } catch (e) {
+      logEvent('MAP', 'setStyle error: ' + (e && e.message || e), 'err');
+      return;
+    }
+    // Re-add custom sources/layers after the new style is in.
+    // Markers (current pos, captured points, destination) are DOM markers
+    // and persist automatically; only the route line source needs rebuilding.
+    this.m.once('style.load', () => {
+      const savedDestId = this._routeForDestId;
+      if (savedDestId) {
+        // Force a refetch so the line is redrawn on the new style.
+        this._routeForDestId = null;
+        try { this._fetchAndDrawRoute(); } catch (e) {}
+      }
+      // Re-apply 3D pitch if it was on (style swap may reset camera state on
+      // some MapLibre versions — defensive).
+      if (State.settings.pitchMode) {
+        try { this.m.setPitch(60); } catch (e) {}
+      }
+      // Compass needs a paint after style load so its rose orientation
+      // matches the (preserved) bearing.
+      UI.updateCompass();
+    });
+  },
+
   /** v22.58: fetch a driving route from current GPS pos → active destination
    *  via OSRM's free public router and draw it on the map. Idempotent:
    *  cached per destId, so it only runs once per (GPS session, destination).
@@ -848,6 +960,30 @@ const UI = {
    *  already unshifts new entries to index 0, so iteration order gives us
    *  the correct visual order without a sort. scrollTop = 0 keeps the
    *  newest visible (auto-scroll behavior). */
+  /** v22.88: paint the map-style picker rows. Currently-selected style
+   *  gets the .active class (amber background via existing .opts rule
+   *  on .sheet-btn? actually .sheet-btn doesn't have an active state by
+   *  default — we set border-color inline). Tap a row → setMapStyle. */
+  renderMapStyleList() {
+    const list = document.getElementById('mapstyle-list');
+    if (!list) return;
+    const current = State.settings.mapStyle || 'liberty';
+    list.innerHTML = MAP_STYLES.map(s => {
+      const sel = s.id === current;
+      const ring = sel ? 'border-color:var(--amber);background:var(--surface-2);' : '';
+      return `<button class="sheet-btn" data-mapstyle="${Utils.escapeHtml(s.id)}" style="${ring}">
+        <span class="em">${s.em}</span>${Utils.escapeHtml(s.label)}
+      </button>`;
+    }).join('');
+    list.querySelectorAll('[data-mapstyle]').forEach(b => {
+      b.onclick = () => {
+        MapView.setMapStyle(b.dataset.mapstyle);
+        UI.closeAllModals();
+        Utils.toast('Map: ' + (MAP_STYLES.find(s => s.id === b.dataset.mapstyle) || {}).label, 'good');
+      };
+    });
+  },
+
   renderDebugLog() {
     const list = document.getElementById('debug-log');
     const count = document.getElementById('debug-count');
@@ -2088,6 +2224,12 @@ function wire() {
     document.getElementById('btn-pitch').classList.toggle('on', State.settings.pitchMode);
     MapView.setPitchMode(State.settings.pitchMode);
     Utils.toast(State.settings.pitchMode ? '3D perspective' : '2D top-down', 'good');
+  };
+
+  // v22.88: map style switcher
+  document.getElementById('btn-mapstyle').onclick = () => {
+    UI.renderMapStyleList();
+    UI.openModal('m-mapstyle');
   };
 
   document.getElementById('follow-pill').onclick = () => {

@@ -805,6 +805,9 @@ body {
 }
 .ra-marker .conf-badge.conf-neg     { background: var(--red); }
 .ra-marker .conf-badge.conf-neutral { background: var(--amber); color: #0c0a09; }
+/* v22.88: badge visible even at 0 count — grey so it's unobtrusive but
+   still announces that confirmations exist as a feature. */
+.ra-marker .conf-badge.conf-zero    { background: var(--ink-3); color: #fff; opacity: 0.85; }
 /* v22.82: Google Maps-style directional triangle marker.
    .ra-current is now a wrapper holding two children:
      .ra-current-halo  - small blue dot + pulsing accuracy halo (always shown)

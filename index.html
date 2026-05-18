@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="X">
-<title>X v22.87</title>
+<title>X v22.88</title>
 
 <link rel="manifest" href='data:application/json,{"name":"X","short_name":"X","start_url":".","display":"standalone","background_color":"%23f5f1e8","theme_color":"%23f5f1e8","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 192 192%22%3E%3Crect width=%22192%22 height=%22192%22 fill=%22%23f5f1e8%22/%3E%3Ccircle cx=%2296%22 cy=%2296%22 r=%2240%22 fill=%22none%22 stroke=%22%23ef4444%22 stroke-width=%2210%22/%3E%3Ctext x=%2296%22 y=%22112%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-weight=%22800%22 font-size=%2240%22 fill=%22%231c1917%22%3E120%3C/text%3E%3C/svg%3E","sizes":"192x192","type":"image/svg+xml"}]}'>
 
@@ -26,7 +26,7 @@
     <div class="brand">
       <span class="dot"></span>
       <span>X</span>
-      <span class="version">v22.87</span>
+      <span class="version">v22.88</span>
     </div>
     <span class="topbar-spacer"></span>
     <div class="topbar-actions">
@@ -37,7 +37,7 @@
       <button class="icon-btn" id="btn-longpress" title="Long-press capture">🔒</button>
       <button class="icon-btn" id="btn-fit-top" title="Fit all">⛶</button>
       <button class="icon-btn" id="btn-recenter-top" title="Recenter">📍</button>
-      <!-- v22.87: debug log panel — tap to see timestamped event history -->
+      <!-- v22.88: debug log panel — tap to see timestamped event history -->
       <button class="icon-btn" id="btn-debug" title="Debug log">🐛</button>
       <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
     </div>
@@ -84,7 +84,7 @@
     <!-- MAP -->
     <div class="map-wrap">
       <div id="map"></div>
-      <!-- v22.87: compass control. Tap to reset bearing to 0 (north up).
+      <!-- v22.88: compass control. Tap to reset bearing to 0 (north up).
            Rose inside rotates inversely to map.getBearing() so the N
            indicator always points to actual north on screen. -->
       <button class="compass-btn" id="btn-compass" title="Reset to north" aria-label="Reset to north">
@@ -102,9 +102,11 @@
         <button class="map-btn" id="btn-fit" title="Fit all">⛶</button>
         <button class="map-btn" id="btn-recenter" title="Recenter">📍</button>
         <button class="map-btn" id="btn-nav" title="Auto-rotate (heading up)">🧭</button>
-        <!-- v22.87: 3D perspective toggle. Tilts camera ~60° forward + zoom -0.5.
-             v22.87: plain text label that swaps "3D" ↔ "2D" via JS. -->
+        <!-- v22.88: 3D perspective toggle. Tilts camera ~60° forward + zoom -0.5.
+             v22.88: plain text label that swaps "3D" ↔ "2D" via JS. -->
         <button class="map-btn" id="btn-pitch" title="2D / 3D view" style="font-size:11px;font-weight:800;">3D</button>
+        <!-- v22.88: map style switcher. Tap to pick Default / Satellite / Terrain / Light / Dark. -->
+        <button class="map-btn" id="btn-mapstyle" title="Map style">🗺</button>
       </div>
     </div>
 
@@ -123,7 +125,7 @@
     <span><strong id="status-mode">Idle</strong></span>
     <span><strong id="status-gps">—</strong></span>
     <span id="status-pts">0 pts</span>
-    <!-- v22.87: auto-backup heartbeat — green "✓ updated Xm ago" when on -->
+    <!-- v22.88: auto-backup heartbeat — green "✓ updated Xm ago" when on -->
     <span id="status-backup"></span>
   </div>
 </div>
@@ -339,19 +341,19 @@
       <div class="row"><span class="label">Lat</span><input type="number" id="re-lat" step="0.00001"></div>
       <div class="row"><span class="label">Lng</span><input type="number" id="re-lng" step="0.00001"></div>
     </div>
-    <!-- v22.87: single-tap pick mode on the map. Closes dialog, listens for
+    <!-- v22.88: single-tap pick mode on the map. Closes dialog, listens for
          the next tap on the map, re-opens with coords prefilled. -->
     <div data-pane="pickmap" class="re-pane" style="display:none;">
       <div class="row" style="font-size:12px;color:var(--ink-2);">Hide this dialog and tap a location on the map. The next tap fills in coordinates automatically.</div>
       <button class="btn" id="re-pickmap-go">📍 Start picking on map</button>
     </div>
-    <!-- v22.87: pick from existing captured points list. -->
+    <!-- v22.88: pick from existing captured points list. -->
     <div data-pane="frompts" class="re-pane" style="display:none;">
       <div class="row" style="font-size:12px;color:var(--ink-2);">Pick a captured point to use its coordinates.</div>
       <div class="list" id="re-from-points" style="max-height:32vh;overflow-y:auto;"></div>
     </div>
     <div class="row" id="re-coords-display" style="display:none;font-family:ui-monospace,monospace;font-size:11px;color:var(--ink-2);"></div>
-    <!-- v22.87: copy lat+lng together to clipboard in "lat, lng" format
+    <!-- v22.88: copy lat+lng together to clipboard in "lat, lng" format
          (compatible with Google Maps search, sharing via message, etc). -->
     <button class="btn" id="re-copy" title="Copy 'lat, lng' to clipboard">📋 Copy lat, lng</button>
     <div style="display:flex;gap:6px;">
@@ -378,7 +380,7 @@
         <button data-theme="dark">Night</button>
       </div>
     </div>
-    <!-- v22.87: compass show/hide toggle -->
+    <!-- v22.88: compass show/hide toggle -->
     <div class="row"><span class="label">Show compass</span><span class="toggle" id="t-compass"></span></div>
 
     <div class="section-title">Alerts</div>
@@ -451,7 +453,7 @@
     </div>
     <div class="row"><span class="label">Trigger when over by (km/h)</span><input type="number" id="i-over" min="0" max="50"></div>
 
-    <!-- v22.87: "Name is here" voice announcement when reaching a point -->
+    <!-- v22.88: "Name is here" voice announcement when reaching a point -->
     <div class="section-title">Here-now announcement</div>
     <div style="font-size:10px;color:var(--ink-3);padding:4px 6px;line-height:1.4;">
       Says "<em>name</em> is here" when you reach a captured point. At/above the speed threshold the trigger ring is 100 m; below it, 50 m.
@@ -490,7 +492,7 @@
     <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="btn" id="btn-test-sound">🔊 Sound check</button>
 
-    <!-- v22.87: bottom-of-page close button — gives users an escape from
+    <!-- v22.88: bottom-of-page close button — gives users an escape from
          the long Settings page without scrolling back to the top × -->
     <div class="section-title" style="margin-top:12px;">&nbsp;</div>
     <button class="btn btn-go" data-close style="font-size:15px;padding:14px;">← Done</button>
@@ -550,7 +552,7 @@
   </div>
 </div>
 
-<!-- v22.87: debug log panel — newest entries at top, in-memory only,
+<!-- v22.88: debug log panel — newest entries at top, in-memory only,
      capped at 200 rows by the Logger module in app-core.js. -->
 <div class="modal" id="m-debug">
   <div class="modal-card">
@@ -566,7 +568,20 @@
   </div>
 </div>
 
-<!-- v22.87: in-app confirm modal — native confirm() gets blocked on some
+<!-- v22.88: map style picker — list of available base styles -->
+<div class="modal" id="m-mapstyle">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title">Map style</div>
+      <button class="modal-close" data-close>×</button>
+    </div>
+    <div class="sheet-grid" id="mapstyle-list">
+      <!-- buttons rendered by UI.renderMapStyleList -->
+    </div>
+  </div>
+</div>
+
+<!-- v22.88: in-app confirm modal — native confirm() gets blocked on some
      mobile browsers, silently making every Delete return false. -->
 <div class="modal" id="m-confirm">
   <div class="modal-card" style="max-width:380px;">

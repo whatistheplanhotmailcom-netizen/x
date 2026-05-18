@@ -200,6 +200,10 @@ const Storage = {
       pitchMode: false,
       // v22.83: show the top-right compass control on the map. Default on.
       showCompass: true,
+      // v22.88: persisted map style id. See MAP_STYLES in app-ui.js for the
+      // available options ('liberty', 'positron', 'dark', 'satellite',
+      // 'terrain'). Default 'liberty' = the original street view.
+      mapStyle: 'liberty',
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest

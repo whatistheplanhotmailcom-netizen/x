@@ -166,12 +166,25 @@ const MapView = {
   },
 
   /** v22.51: build a DOM element for a captured point. The same .ra-marker
-   *  CSS from the Leaflet era works as long as MapLibre wraps our element. */
+   *  CSS from the Leaflet era works as long as MapLibre wraps our element.
+   *  v22.87: top-right .conf-badge shows the cumulative count of
+   *  confirmation feedback ({yes,no} answered after passing). Color reflects
+   *  the majority: green = mostly yes, red = mostly no, amber = tied. */
   _buildPointEl(p, classes) {
     const el = document.createElement('div');
-    // MapLibre wraps in .maplibregl-marker; our inner .ra-marker keeps existing styles
     const sideHtml = p.side ? `<span class="side">${p.side === 'left' ? 'L' : 'R'}</span>` : '';
-    el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}</div>`;
+    let confHtml = '';
+    if (Array.isArray(p.confirmations) && p.confirmations.length > 0) {
+      let yes = 0, no = 0;
+      for (const c of p.confirmations) {
+        if (c && c.value === 'yes') yes++;
+        else if (c && c.value === 'no') no++;
+      }
+      const total = p.confirmations.length;
+      const cls = yes > no ? 'conf-pos' : (no > yes ? 'conf-neg' : 'conf-neutral');
+      confHtml = `<span class="conf-badge ${cls}" title="${yes} yes / ${no} no">${total}</span>`;
+    }
+    el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}</div>`;
     return el;
   },
 

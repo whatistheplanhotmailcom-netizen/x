@@ -782,6 +782,29 @@ body {
   border: 2px solid var(--surface);
   display: grid; place-items: center;
 }
+/* v22.87: feedback-count badge at top-right of each marker. Color shows
+   the user's net feedback for that point:
+     green  = mostly "yes, still there"
+     red    = mostly "no, gone"
+     amber  = tied (equal yes/no votes) */
+.ra-marker .conf-badge {
+  position: absolute;
+  top: -6px; right: -6px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  background: var(--green);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  border-radius: 8px;
+  border: 2px solid var(--surface);
+  display: grid; place-items: center;
+  line-height: 1;
+  z-index: 2;
+  font-family: ui-monospace, monospace;
+}
+.ra-marker .conf-badge.conf-neg     { background: var(--red); }
+.ra-marker .conf-badge.conf-neutral { background: var(--amber); color: #0c0a09; }
 /* v22.82: Google Maps-style directional triangle marker.
    .ra-current is now a wrapper holding two children:
      .ra-current-halo  - small blue dot + pulsing accuracy halo (always shown)

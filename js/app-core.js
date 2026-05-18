@@ -1038,6 +1038,13 @@ const Alerts = {
       const _hereRingM = _speedKmh >= _hereSpeedT ? 100 : 50;
       if (meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
         State.hereAnnouncedPoints.add(p.id);
+        // v22.87: suppress the distance-marker announcements ("in 500m",
+        // "in 1km") for this point now that we're at it. They were
+        // continuing to fire alongside "is here" and the user reported
+        // them as repetitive noise.
+        const _firedMark = State.alertedMarkers.get(p.id) || new Set();
+        for (const _m of (State.settings.alertMarkersM || [2000, 1000, 500])) _firedMark.add(_m);
+        State.alertedMarkers.set(p.id, _firedMark);
         const reps = Math.max(1, Math.min(10, +State.settings.hereRepeatCount || 2));
         const name = p.name || Utils.typeLabel(p.type);
         const text = Array(reps).fill(`${name} is here`).join('. ');
@@ -1048,6 +1055,7 @@ const Alerts = {
         State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
         State.lastAlertAt = Date.now();
         State.lastAlertText = name + ' is here';
+        logEvent('ALERT', `here-now: ${name} @ ${Math.round(meters)}m (ring=${_hereRingM}m, ${reps}x)`, 'ok');
       }
 
       const prevMeters = State.lastDistByPoint.get(p.id);

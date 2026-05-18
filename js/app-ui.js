@@ -316,6 +316,28 @@ const MapView = {
       this._smoothedHeading = avg;
     }
 
+    // v22.77 DIAGNOSTIC: logged every tick, toasted every ~3 seconds. Lets
+    // the user see what's happening from their phone screen. Remove once
+    // we've identified which value is broken.
+    try {
+      const mapB = this.m ? this.m.getBearing() : null;
+      console.log('[ROT]', {
+        navOn: !!State.settings.navMode,
+        speedMps: State.speedMps,
+        heading: State.heading,
+        smoothed: this._smoothedHeading,
+        mapBearing: mapB,
+      });
+      if (!this._lastDiagAt || Date.now() - this._lastDiagAt > 3000) {
+        this._lastDiagAt = Date.now();
+        const navOnTxt = State.settings.navMode ? 'N1' : 'N0';
+        const hdg = State.heading == null ? '—' : Math.round(State.heading);
+        const smo = this._smoothedHeading == null ? '—' : Math.round(this._smoothedHeading);
+        const mb  = mapB == null ? '—' : Math.round(mapB);
+        Utils.toast(`${navOnTxt} hdg ${hdg} smo ${smo} mapb ${mb}`, 'good');
+      }
+    } catch (e) {}
+
     if (navOn && this._smoothedHeading != null) {
       // v22.54: use setBearing directly. v22.53 used jumpTo and the diagnostic
       // showed mapb stuck at 0 — possibly because jumpTo with only `bearing`

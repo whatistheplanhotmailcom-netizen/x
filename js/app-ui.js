@@ -127,8 +127,17 @@ const MapView = {
       // v22.81: keep the on-screen compass synced with the actual map
       // bearing. 'rotate' fires continuously during easeTo/setBearing,
       // 'rotateend' is a safety net for the final position.
-      this.m.on('rotate', () => UI.updateCompass());
-      this.m.on('rotateend', () => UI.updateCompass());
+      // v22.82: also re-rotate the directional triangle on every map
+      // bearing change so the arrow always points to true real-world
+      // heading regardless of which way the map is facing.
+      this.m.on('rotate', () => {
+        UI.updateCompass();
+        MapView._updateLocationTriangle();
+      });
+      this.m.on('rotateend', () => {
+        UI.updateCompass();
+        MapView._updateLocationTriangle();
+      });
 
       // Wait for style+tiles to load before drawing points (otherwise markers
       // attach to a non-ready map and may not render).
@@ -307,10 +316,17 @@ const MapView = {
   update() {
     if (!this.m || !this._mapLoaded || !State.pos) return;
 
-    // Move or create user marker
+    // Move or create user marker — v22.82: directional triangle + halo
+    // instead of a static blue circle. The triangle is rotated by JS to
+    // point in the real-world heading direction (compensating for map
+    // bearing).
     if (!this.currentMarkerEl) {
       this.currentMarkerEl = document.createElement('div');
-      this.currentMarkerEl.innerHTML = '<div class="ra-current"></div>';
+      this.currentMarkerEl.innerHTML =
+        '<div class="ra-current">' +
+          '<div class="ra-current-halo"></div>' +
+          '<div class="ra-current-tri"></div>' +
+        '</div>';
       this.currentMarker = new maplibregl.Marker({ element: this.currentMarkerEl, anchor: 'center' })
         .setLngLat([State.pos.lng, State.pos.lat])
         .addTo(this.m);
@@ -388,6 +404,9 @@ const MapView = {
 
     this.updateAheadRanks();
 
+    // v22.82: rotate the directional triangle to point in real-world heading
+    this._updateLocationTriangle();
+
     // v22.58: fetch & draw the driving route once per (session, destination)
     // — internal guards make this cheap on subsequent ticks.
     this._fetchAndDrawRoute();
@@ -435,6 +454,47 @@ const MapView = {
       zoom: Math.max(this.m.getZoom(), 13),
       duration: 500,
     });
+  },
+
+  /** v22.82: rotate the location triangle to point in the real-world
+   *  heading direction, compensating for the current map bearing.
+   *
+   *  Heading priority (user-specified):
+   *    1. State.deviceHeading  - compass via DeviceOrientationEvent
+   *    2. State.heading        - GPS movement bearing (live or derived)
+   *    3. null                 - no source; triangle defaults to 0° + red
+   *
+   *  Visual rotation = real-world heading - map bearing. So when the map
+   *  rotates (heading-up nav mode), the triangle counter-rotates to keep
+   *  pointing in the actual cardinal direction the user is facing.
+   *
+   *  Logs throttled to once per 3 seconds to avoid spamming the debug
+   *  panel on every tick. */
+  _updateLocationTriangle() {
+    if (!this.currentMarkerEl) return;
+    const tri = this.currentMarkerEl.querySelector('.ra-current-tri');
+    if (!tri) return;
+    const heading = (typeof State.deviceHeading === 'number' && !isNaN(State.deviceHeading))
+      ? State.deviceHeading
+      : (typeof State.heading === 'number' && !isNaN(State.heading))
+        ? State.heading
+        : null;
+    let mapBearing = 0;
+    try { mapBearing = this.m ? this.m.getBearing() : 0; } catch (e) {}
+    if (heading == null) {
+      tri.classList.add('no-heading');
+      tri.style.transform = 'translate(-50%, -50%) rotate(0deg)';
+    } else {
+      tri.classList.remove('no-heading');
+      const visualRot = heading - mapBearing;
+      tri.style.transform = `translate(-50%, -50%) rotate(${visualRot}deg)`;
+    }
+    // Throttled diagnostic
+    if (!this._lastTriLogAt || Date.now() - this._lastTriLogAt > 3000) {
+      this._lastTriLogAt = Date.now();
+      const h = heading == null ? '—' : heading.toFixed(1);
+      logEvent('GPS', `heading=${h} mapBearing=${mapBearing.toFixed(1)} markerRotation=${heading == null ? '0' : (heading - mapBearing).toFixed(1)}`);
+    }
   },
 
   /** v22.78 / hardened in v22.80: switch between 2D top-down and 3D
@@ -2361,9 +2421,12 @@ function importJson(e) {
    ============================================================ */
 function boot() {
   try {
-    logEvent('BOOT', 'App starting (v22.79)');
+    logEvent('BOOT', 'App starting (v22.82)');
     UI.applyTheme();
     wire();
+    // v22.82: try to subscribe to the device compass. iOS will defer the
+    // actual permission request to the first user tap.
+    GPS.setupDeviceOrientation();
     UI.render();
     UI.updateFollowPill();
     UI.updateSoundIcon();

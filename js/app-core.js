@@ -319,6 +319,10 @@ const State = {
   // v22.52: track WHERE the current heading value came from — 'gps' = iOS
   // gave us coords.heading; 'derived' = we computed from position delta.
   headingSource: null,
+  // v22.82: device-orientation compass heading. Set by GPS.setupDeviceOrientation
+  // (listens to the `deviceorientation` event). Preferred over GPS heading
+  // for the directional triangle because it works even when stationary.
+  deviceHeading: null,
   // v22.36: U-turn detection — track previous heading + how many consecutive
   // ticks the heading has reversed. We require sustained reversal (~3 ticks)
   // to avoid false positives from momentary GPS jitter / lane changes.
@@ -725,6 +729,56 @@ const GPS = {
     UI.setStatusMode('Idle', '');
     UI.setBtnGoActive(false);
     if (wasGps) logEvent('GPS', 'Tracking stopped');
+  },
+
+  /** v22.82: subscribe to the device's compass via DeviceOrientationEvent.
+   *  Best-effort:
+   *    - On iOS 13+ requires user-gesture permission (piggybacks the next
+   *      tap, mirroring how Audio.unlock requests audio).
+   *    - On Android, registers immediately; `e.absolute` must be true
+   *      to trust `alpha` as a compass bearing.
+   *    - On iOS, reads `e.webkitCompassHeading` (already true-north
+   *      compass degrees clockwise).
+   *  Sets State.deviceHeading; the directional triangle reads from there.
+   *  Idempotent — safe to call multiple times. */
+  setupDeviceOrientation() {
+    if (this._deviceOrientationWired) return;
+    this._deviceOrientationWired = true;
+    if (typeof DeviceOrientationEvent === 'undefined') {
+      logEvent('GPS', 'DeviceOrientationEvent not supported');
+      return;
+    }
+    const handler = (e) => {
+      let h = null;
+      if (typeof e.webkitCompassHeading === 'number' && !isNaN(e.webkitCompassHeading)) {
+        // iOS true-north compass
+        h = e.webkitCompassHeading;
+      } else if (e.alpha != null && !isNaN(e.alpha) && e.absolute === true) {
+        // Android absolute orientation: alpha is degrees CCW from north
+        h = (360 - e.alpha) % 360;
+      }
+      if (h != null) State.deviceHeading = h;
+    };
+    if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+      // iOS 13+: needs a user gesture before requestPermission resolves.
+      const ask = () => {
+        DeviceOrientationEvent.requestPermission().then(s => {
+          if (s === 'granted') {
+            window.addEventListener('deviceorientation', handler);
+            logEvent('GPS', 'Compass permission granted', 'ok');
+          } else {
+            logEvent('GPS', 'Compass permission ' + s, 'err');
+          }
+        }).catch(err => logEvent('GPS', 'Compass error: ' + err.message, 'err'));
+      };
+      // Piggyback on the next user tap (most likely the first interaction).
+      document.addEventListener('click', ask, { once: true, passive: true });
+      logEvent('GPS', 'Compass: waiting for first tap to request permission');
+    } else {
+      // Non-iOS or older iOS — no permission flow.
+      window.addEventListener('deviceorientation', handler);
+      logEvent('GPS', 'Compass listener registered');
+    }
   },
 
   async requestWakeLock() {

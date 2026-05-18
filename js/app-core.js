@@ -86,6 +86,52 @@ const Utils = {
 };
 
 /* ============================================================
+   0b. LOGGER — v22.79
+   In-memory event log with a 200-entry cap. Newest entries at index 0.
+   When the debug modal is open, every log() call also refreshes the
+   visible list via UI.renderDebugLog (looked up lazily, so the logger
+   doesn't crash if it fires before UI is defined).
+   ============================================================ */
+const Logger = {
+  MAX: 200,
+  logs: [],
+  log(type, message, level) {
+    const entry = {
+      t: new Date().toLocaleTimeString(),
+      type: String(type || '').toUpperCase().slice(0, 10),
+      msg: String(message == null ? '' : message),
+      level: level || '',
+    };
+    this.logs.unshift(entry);
+    if (this.logs.length > this.MAX) this.logs.length = this.MAX;
+    // Mirror to devtools console
+    try { console.log(`[${entry.type}]`, entry.msg); } catch (e) {}
+    // If the debug modal is open, refresh the visible list
+    try {
+      const modal = document.getElementById('m-debug');
+      if (modal && modal.classList.contains('open') &&
+          typeof UI !== 'undefined' && UI.renderDebugLog) {
+        UI.renderDebugLog();
+      }
+    } catch (e) {}
+  },
+  clear() {
+    this.logs = [];
+    try {
+      if (typeof UI !== 'undefined' && UI.renderDebugLog) UI.renderDebugLog();
+    } catch (e) {}
+  },
+  asText() {
+    return this.logs.map(L => `[${L.t}] ${L.type}: ${L.msg}`).join('\n');
+  },
+};
+
+/** Global helper: drop-in `logEvent("GPS", "Position updated")`. */
+function logEvent(type, message, level) {
+  Logger.log(type, message, level);
+}
+
+/* ============================================================
    1. STORAGE
    ============================================================ */
 const Storage = {
@@ -112,7 +158,7 @@ const Storage = {
   },
   save(key, val) {
     try { localStorage.setItem(key, JSON.stringify(val)); return true; }
-    catch (e) { Utils.toast('Storage full', 'bad'); return false; }
+    catch (e) { Utils.toast('Storage full', 'bad'); logEvent('STORE', 'Save failed (' + key + '): ' + e.message, 'err'); return false; }
   },
   defaultData() {
     return { version: 22, activeDestId: null, destinations: [], points: [] };
@@ -515,6 +561,7 @@ const Audio = {
   alert(point, meters) {
     const s = State.settings.sound;
     if (s === 'off') return; // master mute still respected
+    logEvent('ALERT', `${point.name || Utils.typeLabel(point.type)} @ ${meters}m`);
     // v22.12: count for diagnostic strip
     State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
     State.lastAlertAt = Date.now();
@@ -630,7 +677,8 @@ if ('speechSynthesis' in window) {
    ============================================================ */
 const GPS = {
   async start() {
-    if (!navigator.geolocation) { Utils.toast('GPS not supported', 'bad'); return; }
+    if (!navigator.geolocation) { Utils.toast('GPS not supported', 'bad'); logEvent('GPS', 'Not supported by browser', 'err'); return; }
+    logEvent('GPS', 'Tracking started');
     Audio.unlock();
     this.stop();
     // v22.1: reset all runtime alert state for a fresh drive session.
@@ -661,13 +709,14 @@ const GPS = {
     await this.requestWakeLock();
     State.watchId = navigator.geolocation.watchPosition(
       pos => this.onTick(pos),
-      err => { Utils.toast('GPS: ' + err.message, 'bad'); this.stop(); },
+      err => { Utils.toast('GPS: ' + err.message, 'bad'); logEvent('GPS', 'Error: ' + err.message, 'err'); this.stop(); },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
     );
     UI.setBtnGoActive(true);
   },
 
   stop() {
+    const wasGps = State.mode === 'gps';
     if (State.watchId != null) { navigator.geolocation.clearWatch(State.watchId); State.watchId = null; }
     if (State.wakeLock) { try { State.wakeLock.release(); } catch (e) {} State.wakeLock = null; }
     State.mode = 'idle';
@@ -675,6 +724,7 @@ const GPS = {
     if (typeof MapView !== 'undefined' && MapView && MapView.clearRoute) MapView.clearRoute();
     UI.setStatusMode('Idle', '');
     UI.setBtnGoActive(false);
+    if (wasGps) logEvent('GPS', 'Tracking stopped');
   },
 
   async requestWakeLock() {
@@ -725,6 +775,11 @@ const GPS = {
   },
 
   onTick(pos) {
+    // v22.79: rate-limited GPS log — every 10s, not every tick.
+    if (!this._lastGpsLogAt || Date.now() - this._lastGpsLogAt > 10000) {
+      this._lastGpsLogAt = Date.now();
+      logEvent('GPS', `Pos ${pos.coords.latitude.toFixed(4)},${pos.coords.longitude.toFixed(4)} ±${Math.round(pos.coords.accuracy)}m ${(pos.coords.speed != null ? Math.round(pos.coords.speed * 3.6) + 'km/h' : '')}`.trim());
+    }
     // v22.1: don't silently drop low-accuracy readings.
     // Show a "LOW GPS" warning in the status line but still use the position;
     // skipping entirely can freeze the map in poor-signal areas (tunnel, urban canyon).

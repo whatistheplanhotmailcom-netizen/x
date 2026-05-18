@@ -1080,6 +1080,26 @@ body {
   font-style: italic;
 }
 
+/* v22.79: debug log rows. Newest at top, scrollable. Type colored
+   (amber for default, red for err, green for ok). */
+.debug-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 6px;
+  border-bottom: 1px solid var(--line);
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.debug-row:last-child { border-bottom: none; }
+.debug-row .ts { color: var(--ink-3); flex-shrink: 0; font-variant-numeric: tabular-nums; min-width: 62px; }
+.debug-row .ty { color: var(--amber-2); font-weight: 700; flex-shrink: 0; min-width: 54px; }
+.debug-row .msg { flex: 1; color: var(--ink); min-width: 0; }
+.debug-row.err .ty { color: var(--red); }
+.debug-row.ok  .ty { color: var(--green); }
+
 /* TABS */
 .tabs {
   display: flex;

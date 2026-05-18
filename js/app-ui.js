@@ -326,25 +326,18 @@ const MapView = {
       this._smoothedHeading = avg;
     }
 
-    // v22.77 DIAGNOSTIC: logged every tick, toasted every ~3 seconds. Lets
-    // the user see what's happening from their phone screen. Remove once
-    // we've identified which value is broken.
+    // v22.79: rotation diagnostic — pushed to the debug log instead of
+    // the main-screen toast (which cluttered the driving UI). Tap the 🐛
+    // button in the topbar to see entries. Throttled to every ~3 seconds.
     try {
       const mapB = this.m ? this.m.getBearing() : null;
-      console.log('[ROT]', {
-        navOn: !!State.settings.navMode,
-        speedMps: State.speedMps,
-        heading: State.heading,
-        smoothed: this._smoothedHeading,
-        mapBearing: mapB,
-      });
       if (!this._lastDiagAt || Date.now() - this._lastDiagAt > 3000) {
         this._lastDiagAt = Date.now();
         const navOnTxt = State.settings.navMode ? 'N1' : 'N0';
         const hdg = State.heading == null ? '—' : Math.round(State.heading);
         const smo = this._smoothedHeading == null ? '—' : Math.round(this._smoothedHeading);
         const mb  = mapB == null ? '—' : Math.round(mapB);
-        Utils.toast(`${navOnTxt} hdg ${hdg} smo ${smo} mapb ${mb}`, 'good');
+        logEvent('ROT', `${navOnTxt} hdg ${hdg} smo ${smo} mapb ${mb}`);
       }
     } catch (e) {}
 
@@ -505,8 +498,9 @@ const MapView = {
         const km = (data.routes[0].distance / 1000).toFixed(0);
         const min = Math.round(data.routes[0].duration / 60);
         Utils.toast(`Route: ${km} km · ~${min} min`, 'good');
+        logEvent('ROUTE', `Drawn ${km} km, ~${min} min`, 'ok');
       })
-      .catch(e => { console.warn('Route fetch failed:', e); })
+      .catch(e => { console.warn('Route fetch failed:', e); logEvent('ROUTE', 'Fetch failed: ' + (e && e.message || e), 'err'); })
       .finally(() => { this._routeFetching = false; });
   },
 
@@ -653,6 +647,29 @@ const UI = {
     else if (min < 60)   el.textContent = `✓ updated ${min}m ago`;
     else                 el.textContent = `✓ updated ${Math.floor(min / 60)}h ago`;
     el.className = '';
+  },
+
+  /** v22.79: render the debug log modal contents. Newest at top — Logger
+   *  already unshifts new entries to index 0, so iteration order gives us
+   *  the correct visual order without a sort. scrollTop = 0 keeps the
+   *  newest visible (auto-scroll behavior). */
+  renderDebugLog() {
+    const list = document.getElementById('debug-log');
+    const count = document.getElementById('debug-count');
+    if (!list) return;
+    if (count) count.textContent = `(${Logger.logs.length})`;
+    if (!Logger.logs.length) {
+      list.innerHTML = '<div class="empty">No events logged yet</div>';
+      return;
+    }
+    list.innerHTML = Logger.logs.map(L =>
+      `<div class="debug-row ${Utils.escapeHtml(L.level)}">
+        <span class="ts">${Utils.escapeHtml(L.t)}</span>
+        <span class="ty">${Utils.escapeHtml(L.type)}</span>
+        <span class="msg">${Utils.escapeHtml(L.msg)}</span>
+      </div>`
+    ).join('');
+    list.scrollTop = 0;
   },
 
   /** v22.58: render the right-side captured-points timeline rail.
@@ -1283,11 +1300,13 @@ const UI = {
       Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
       announce = Utils.typeLabel(c.type) + ' updated';
       trackedId = nearby.id;
+      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`);
     } else {
       State.data.points.push(c);
       Utils.toast(`${Utils.typeLabel(c.type)} saved`, 'good');
       announce = Utils.typeLabel(c.type) + ' captured';
       trackedId = c.id;
+      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`);
     }
     State.lastTripCaptureId = trackedId; // v22.10: track for double-tap recall
     State.pendingCapture = null;
@@ -1724,6 +1743,33 @@ const UI = {
    ============================================================ */
 function wire() {
   document.getElementById('btn-settings').onclick = () => { UI.syncSettings(); UI.openModal('m-settings'); };
+  // v22.79: debug log panel — opens the rolling-200 event history.
+  document.getElementById('btn-debug').onclick = () => {
+    UI.renderDebugLog();
+    UI.openModal('m-debug');
+  };
+  document.getElementById('debug-clear').onclick = () => {
+    Logger.clear();
+    Utils.toast('Log cleared', 'good');
+  };
+  document.getElementById('debug-copy').onclick = async () => {
+    const text = Logger.asText();
+    if (!text) { Utils.toast('Nothing to copy', 'bad'); return; }
+    try {
+      await navigator.clipboard.writeText(text);
+      Utils.toast(`Copied ${Logger.logs.length} entries`, 'good');
+    } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy');
+        ta.remove();
+        Utils.toast(`Copied ${Logger.logs.length} entries`, 'good');
+      } catch (e2) { Utils.toast('Copy failed', 'bad'); }
+    }
+  };
 
   // v22.10: Next-ahead card single/double tap
   // Single tap (after ~280ms with no second tap) → announce nearest ahead
@@ -1801,6 +1847,7 @@ function wire() {
   document.getElementById('btn-nav').onclick = () => {
     State.settings.navMode = !State.settings.navMode;
     State.saveSettings();
+    logEvent('MAP', 'Nav-mode (heading-up) ' + (State.settings.navMode ? 'ON' : 'OFF'));
     const btn = document.getElementById('btn-nav');
     btn.classList.toggle('on', State.settings.navMode);
     // Reset rotation throttle so the very next tick rotates immediately
@@ -1831,12 +1878,14 @@ function wire() {
     document.getElementById('btn-pitch').classList.toggle('on', State.settings.pitchMode);
     MapView.setPitchMode(State.settings.pitchMode);
     Utils.toast(State.settings.pitchMode ? '3D perspective' : '2D top-down', 'good');
+    logEvent('MAP', '3D ' + (State.settings.pitchMode ? 'ON' : 'OFF'));
   };
 
   document.getElementById('follow-pill').onclick = () => {
     State.followMap = !State.followMap;
     UI.updateFollowPill();
     if (State.followMap && State.pos) MapView.recenter();
+    logEvent('NAV', 'Follow ' + (State.followMap ? 'ON' : 'OFF'));
   };
   document.getElementById('sign').onclick = () => UI.openLimitPicker('manual');
 
@@ -2260,6 +2309,7 @@ function importJson(e) {
    ============================================================ */
 function boot() {
   try {
+    logEvent('BOOT', 'App starting (v22.79)');
     UI.applyTheme();
     wire();
     UI.render();
@@ -2288,6 +2338,7 @@ function boot() {
   } catch (e) {
     console.error('Boot error', e);
     Utils.toast('Boot error: ' + e.message, 'bad');
+    try { logEvent('BOOT', 'Error: ' + e.message, 'err'); } catch (_) {}
   }
 }
 

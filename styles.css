@@ -1010,6 +1010,17 @@ body {
 }
 .row input[type=number] { width: 72px; text-align: center; }
 .row input[type=text]   { flex: 2; text-align: left; }
+/* v22.90: small explanatory text shown directly below a settings row. */
+.row-hint {
+  font-size: 10px;
+  color: var(--ink-3);
+  line-height: 1.45;
+  padding: 4px 4px 8px 12px;
+  margin: -2px 0 4px 4px;
+  border-left: 2px solid var(--line-2);
+}
+.row-hint code { font-family: ui-monospace, monospace; color: var(--ink-2); }
+.row-hint strong { color: var(--ink-2); }
 /* v22.17: chip-style markers for alert distances */
 .marker-chip {
   display: inline-flex;

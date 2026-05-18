@@ -446,26 +446,31 @@ const MapView = {
     return null;
   },
 
-  /** v22.85: apply nav-mode rotation. Extracted from MapView.update so
-   *  it can also be called directly from the device-orientation event
-   *  listener — that way the map starts rotating the instant the user
-   *  turns the phone, without waiting for a GPS fix. Self-contained:
-   *  reads State, reads getBestHeading, runs through the smoothing
-   *  buffer + throttle + dead-zone, then easeTo's the camera bearing.
+  /** v22.86: continuous nav-mode lock.
    *
-   *  No-op when:
-   *    - Map isn't ready (!this.m || !this._mapLoaded)
-   *    - Nav-mode is OFF (logs a one-shot hint every 5s)
-   *    - No heading source available (compass and GPS both null)
+   *  Why the rewrite: the v22.85 throttle + cached _lastBearingApplied
+   *  comparison was getting stuck. Once we'd set _lastBearingApplied to,
+   *  say, 130°, subsequent smoothed-heading values close to 130° were
+   *  inside the 1° dead-zone OR blocked by the 150ms time throttle, and
+   *  easeTo never fired again. Visible symptom: map rotated once on
+   *  nav-mode toggle and then froze, even though the phone kept turning.
    *
-   *  Logs a verification entry 300ms after each easeTo call so the
-   *  debug panel can confirm map.getBearing() actually changed. */
+   *  New logic, per user spec:
+   *    - Compare to the ACTUAL map.getBearing() each call (not cached).
+   *    - Shortest-arc angle delta so 359° / 0° wrap is correct.
+   *    - 2° dead-zone, no time throttle. Each easeTo cancels the
+   *      previous animation and re-targets, so re-entering at 60Hz is
+   *      safe — map continuously catches up to the latest heading.
+   *    - duration 250ms (snappier than v22.85's 300ms).
+   *    - essential:true to bypass prefers-reduced-motion.
+   *
+   *  Called from BOTH MapView.update() (GPS tick path) AND the
+   *  deviceorientation handler in GPS.setupDeviceOrientation, so the
+   *  map rotates on every heading update from either source. */
   _applyNavRotation() {
     if (!this.m || !this._mapLoaded) return;
-    const navOn = !!State.settings.navMode;
-    if (!navOn) {
-      // Throttled hint — every 5 seconds — so the user knows WHY the
-      // map isn't rotating if they expected it to.
+    if (!State.settings.navMode) {
+      // Throttled hint so the user knows WHY the map isn't rotating
       if (!this._lastNavOffHintAt || Date.now() - this._lastNavOffHintAt > 5000) {
         this._lastNavOffHintAt = Date.now();
         logEvent('MAP', 'navMode=OFF — tap 🧭 to enable heading-up rotation');
@@ -476,11 +481,11 @@ const MapView = {
     if (bestHeading == null) {
       if (!this._lastNoHeadingHintAt || Date.now() - this._lastNoHeadingHintAt > 5000) {
         this._lastNoHeadingHintAt = Date.now();
-        logEvent('MAP', 'navMode=ON but no heading source yet (waiting for compass or GPS movement)');
+        logEvent('MAP', 'navMode=ON but no heading source yet');
       }
       return;
     }
-    // Vector-averaged smoothing across last 3 readings
+    // Vector-averaged smoothing across last 3 readings (low-pass filter)
     this._headingBuf.push(bestHeading);
     if (this._headingBuf.length > 3) this._headingBuf.shift();
     let sx = 0, sy = 0;
@@ -488,35 +493,30 @@ const MapView = {
       sx += Math.cos(x * Math.PI / 180);
       sy += Math.sin(x * Math.PI / 180);
     }
-    let avg = Math.atan2(sy / this._headingBuf.length, sx / this._headingBuf.length) * 180 / Math.PI;
-    if (avg < 0) avg += 360;
-    this._smoothedHeading = avg;
+    let smoothed = Math.atan2(sy / this._headingBuf.length, sx / this._headingBuf.length) * 180 / Math.PI;
+    if (smoothed < 0) smoothed += 360;
+    this._smoothedHeading = smoothed;
 
-    // Throttle + dead-zone
-    const now = Date.now();
-    const last = this._lastBearingApplied;
-    let delta = (last == null) ? 999 : Math.abs(this._smoothedHeading - last);
-    if (delta > 180) delta = 360 - delta;
-    if (now - this._lastBearingAt <= 150 || delta <= 1) return;
+    // Compare to the ACTUAL current map bearing — not a cached intent.
+    // This is what gets stuck if we use _lastBearingApplied as the
+    // reference (per user diagnosis).
+    let currentBearing = 0;
+    try { currentBearing = this.m.getBearing(); } catch (e) {}
+    // Shortest-arc delta so 359° -> 0° doesn't read as a 359° change.
+    const delta = Math.abs(((smoothed - currentBearing + 540) % 360) - 180);
 
-    // Apply rotation
+    // 2° dead-zone — below this, no visible change, skip the easeTo.
+    if (delta <= 2) return;
+
     try {
-      const targetBearing = this._smoothedHeading;
       this.m.easeTo({
-        bearing: targetBearing,
-        duration: 300,
+        bearing: smoothed,
+        duration: 250,
         essential: true,
       });
-      this._lastBearingApplied = targetBearing;
-      this._lastBearingAt = now;
-      // Verification log per user spec — runs after the animation should
-      // have started so we can confirm getBearing() actually moved.
-      setTimeout(() => {
-        try {
-          const mb = this.m.getBearing();
-          logEvent('MAP', `after nav rotate mapBearing=${mb.toFixed(1)} heading=${targetBearing.toFixed(1)}`);
-        } catch (e) {}
-      }, 320);
+      this._lastBearingApplied = smoothed; // kept for legacy callers
+      this._lastBearingAt = Date.now();
+      logEvent('MAP', `nav-lock heading=${smoothed.toFixed(1)} bearing→${smoothed.toFixed(1)} (was ${currentBearing.toFixed(1)})`);
     } catch (e) {
       logEvent('MAP', 'easeTo bearing error: ' + (e && e.message || e), 'err');
     }

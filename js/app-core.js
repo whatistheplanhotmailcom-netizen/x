@@ -148,6 +148,10 @@ const Storage = {
       // the distance ring: at/above threshold uses 100m, below uses 50m.
       hereSpeedThreshold: 100,  // km/h
       hereRepeatCount: 2,       // how many times the announcement repeats (1-10)
+      // v22.78: 3D pitch mode. When true, the map camera is tilted forward
+      // to ~60° for a navigation perspective. Toggled via the 3D button on
+      // the map overlay; survives across sessions.
+      pitchMode: false,
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest

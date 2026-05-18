@@ -24,6 +24,10 @@ const MapView = {
   _routeForDestId: null,
   _routeFetching: false,
 
+  // v22.78: zoom snapshot taken when entering 3D pitch so we can restore
+  // the user's original zoom level when they return to 2D.
+  _zoomBeforePitch: null,
+
   init() {
     if (this.m) return;
     if (typeof maplibregl === 'undefined') {
@@ -121,6 +125,12 @@ const MapView = {
       this.m.on('load', () => {
         this._mapLoaded = true;
         this.updatePoints();
+        // v22.78: if the user had 3D mode on across sessions, apply it now
+        // that the map is ready. Use duration 0 so it appears immediately
+        // (animating on first load looks janky).
+        if (State.settings.pitchMode) {
+          this.setPitchMode(true, { duration: 0 });
+        }
       });
 
       // Resize after a tick so the canvas matches the actual container size
@@ -420,6 +430,42 @@ const MapView = {
       zoom: Math.max(this.m.getZoom(), 13),
       duration: 500,
     });
+  },
+
+  /** v22.78: Smoothly transition between 2D top-down and 3D navigation
+   *  perspective. ON tilts the camera to 60° and reduces zoom by 0.5
+   *  (clamped to min 10) for better forward visibility. OFF restores the
+   *  pre-pitch zoom and snaps pitch back to 0. center and bearing are
+   *  preserved by easeTo (only the keys we pass are touched), so this
+   *  doesn't fight nav-mode rotation or break follow mode.
+   *  opts.duration overrides the default 800 ms animation. */
+  setPitchMode(on, opts) {
+    if (!this.m) return;
+    opts = opts || {};
+    const dur = opts.duration != null ? opts.duration : 800;
+    try {
+      if (on) {
+        if (this._zoomBeforePitch == null) {
+          this._zoomBeforePitch = this.m.getZoom();
+        }
+        const targetZoom = Math.max(10, this._zoomBeforePitch - 0.5);
+        this.m.easeTo({
+          pitch: 60,
+          zoom: targetZoom,
+          duration: dur,
+        });
+      } else {
+        const restoredZoom = this._zoomBeforePitch != null
+          ? this._zoomBeforePitch
+          : this.m.getZoom() + 0.5;
+        this._zoomBeforePitch = null;
+        this.m.easeTo({
+          pitch: 0,
+          zoom: restoredZoom,
+          duration: dur,
+        });
+      }
+    } catch (e) { console.warn('setPitchMode error:', e); }
   },
 
   /** v22.58: fetch a driving route from current GPS pos → active destination
@@ -1778,6 +1824,15 @@ function wire() {
     }
   };
 
+  // v22.78: 3D pitch toggle — smoothly tilts camera to 60° and back.
+  document.getElementById('btn-pitch').onclick = () => {
+    State.settings.pitchMode = !State.settings.pitchMode;
+    State.saveSettings();
+    document.getElementById('btn-pitch').classList.toggle('on', State.settings.pitchMode);
+    MapView.setPitchMode(State.settings.pitchMode);
+    Utils.toast(State.settings.pitchMode ? '3D perspective' : '2D top-down', 'good');
+  };
+
   document.getElementById('follow-pill').onclick = () => {
     State.followMap = !State.followMap;
     UI.updateFollowPill();
@@ -2217,6 +2272,10 @@ function boot() {
     // v22.54: restore 🧭 button state
     const navBtn = document.getElementById('btn-nav');
     if (navBtn) navBtn.classList.toggle('on', !!State.settings.navMode);
+    // v22.78: restore 3D button state. The actual camera pitch is applied
+    // inside MapView.init's 'load' handler once the map is ready.
+    const pitchBtn = document.getElementById('btn-pitch');
+    if (pitchBtn) pitchBtn.classList.toggle('on', !!State.settings.pitchMode);
     if (State.settings.autoBackup) Backup.start();
     setInterval(() => { if (State.settings.theme === 'auto') UI.applyTheme(); }, 60 * 60 * 1000);
     // v22: driving safety reminder, once per device

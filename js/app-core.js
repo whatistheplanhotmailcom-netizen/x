@@ -1833,8 +1833,12 @@ const Alerts = {
    *  triggers an alert (subject to hysteresis in Alerts.tick).
    *  PROXIMITY FALLBACK preserves v22.68 behavior so the LIMIT card
    *  isn't blank while you're driving BETWEEN two speed-change points
-   *  — closest point within 3 km wins as the visible value even if
-   *  it doesn't pass the alert threshold. */
+   *  — closest point within 1 km wins as the visible value even if
+   *  it doesn't pass the alert threshold.
+   *  v22.103: fallback now requires heading alignment with the
+   *  candidate's captureBearing. Turning onto a side road (heading
+   *  mismatch ≥45°) clears the display until a point on the NEW road
+   *  scores high enough — or one was previously captured there. */
   currentLimit() {
     if (State.manualLimit != null) return State.manualLimit;
     if (!State.pos) return null;
@@ -1847,11 +1851,21 @@ const Alerts = {
     };
     const best = Speed.findBestSpeedPoint(userState, State.data.points);
     if (best) return best.limit;
-    // Fallback: closest speed_change within 3km
+    // v22.103: proximity fallback — 1 km radius + heading match
+    const headingReliable = Speed.isHeadingReliable(userState.speedKmh);
     const candidates = State.data.points
       .filter(p => p.type === 'speed_change' && p.status !== 'no')
       .map(p => ({ p, dKm: Utils.distKm(State.pos, p), lim: typeof p.speedLimit === 'number' ? p.speedLimit : p.limit }))
-      .filter(x => typeof x.lim === 'number' && x.dKm < 3)
+      .filter(x => typeof x.lim === 'number' && x.dKm < 1)
+      .filter(x => {
+        // Heading guard: only match when going the same direction as
+        // the captured sign. If the user's heading isn't reliable
+        // (stopped / very slow), allow through. If the point has no
+        // captureBearing (legacy data), allow through.
+        if (!headingReliable) return true;
+        if (x.p.captureBearing == null) return true;
+        return Speed.headingMatches(userState.heading, x.p.captureBearing, 45);
+      })
       .sort((a, b) => a.dKm - b.dKm);
     return candidates.length ? candidates[0].lim : null;
   },

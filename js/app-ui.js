@@ -2952,6 +2952,27 @@ function wire() {
     Audio.unlock();
     UI.openSoundCheck();
   };
+  // v22.99: clear cache & hard reload
+  document.getElementById('btn-clear-cache').onclick = async () => {
+    const ok = await UI.confirm('Clear cache and reload the page? Your saved data is not affected.');
+    if (!ok) return;
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        for (const r of regs) await r.unregister();
+      }
+      if (window.caches && caches.keys) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+      logEvent('CACHE', 'cleared service workers + caches', 'ok');
+    } catch (e) {
+      logEvent('CACHE', 'clear failed: ' + (e && e.message || e), 'err');
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.set('_cb', Date.now().toString());
+    window.location.replace(url.toString());
+  };
   // v22.8: Sound check test buttons
   document.getElementById('sc-tone').onclick = () => {
     Audio.unlock();

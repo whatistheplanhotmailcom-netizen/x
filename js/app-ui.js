@@ -2538,7 +2538,25 @@ function wire() {
   document.getElementById('i-gh-token').onchange = e => { State.gh.token = e.target.value.trim(); State.saveGh(); UI.updateBackupStatus(); };
   document.getElementById('i-gh-repo').onchange = e => { State.gh.repo = e.target.value.trim(); State.saveGh(); UI.updateBackupStatus(); };
   document.getElementById('i-gh-path').onchange = e => { State.gh.path = e.target.value.trim() || 'road-alert.json'; State.saveGh(); };
-  document.getElementById('btn-backup-now').onclick = () => Backup.push();
+  // v22.93: backup/restore handlers run the buttons through a .loading
+  // state so the user can see the request is in flight (spinner on the
+  // right of the label, button greyed + non-interactive). Original label
+  // is restored after the promise settles, success or fail.
+  const _withLoading = async (btnId, label, fn) => {
+    const btn = document.getElementById(btnId);
+    if (!btn) { return fn(); }
+    const orig = btn.textContent;
+    btn.classList.add('loading');
+    btn.textContent = label;
+    try { return await fn(); }
+    finally {
+      btn.classList.remove('loading');
+      btn.textContent = orig;
+    }
+  };
+  document.getElementById('btn-backup-now').onclick = () => {
+    _withLoading('btn-backup-now', '☁ Backing up…', () => Backup.push());
+  };
   // v22.30: Restore — confirm first (destructive)
   document.getElementById('btn-restore').onclick = () => {
     if (!State.gh.token || !State.gh.repo || !State.gh.path) {
@@ -2550,7 +2568,9 @@ function wire() {
     const msg = (ptCount > 0 || dCount > 0)
       ? `Replace local data?\n\nCurrent: ${ptCount} points, ${dCount} destinations.\nThis cannot be undone.`
       : `Restore from GitHub?`;
-    if (confirm(msg)) Backup.pull();
+    if (confirm(msg)) {
+      _withLoading('btn-restore', '⬇ Restoring…', () => Backup.pull());
+    }
   };
   document.getElementById('trip-toggle').onclick = () => UI.toggleTrip();
   document.getElementById('trip-list').onclick = () => { UI.renderTripsList(); UI.openModal('m-trips'); };

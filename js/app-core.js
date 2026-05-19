@@ -1739,8 +1739,11 @@ const Backup = {
   async push(opts = {}) {
     if (!State.gh.token || !State.gh.repo || !State.gh.path) {
       if (!opts.silent) Utils.toast('Set token/repo/path first', 'bad');
+      logEvent('BACKUP', 'push aborted — token/repo/path missing', 'err');
       return false;
     }
+    const tag = opts.silent ? 'auto' : 'manual';
+    logEvent('BACKUP', `push start (${tag})`);
     try {
       const apiBase = `https://api.github.com/repos/${State.gh.repo}/contents/${State.gh.path}`;
       const headers = {
@@ -1751,7 +1754,9 @@ const Backup = {
       try {
         const r = await fetch(apiBase, { headers });
         if (r.ok) sha = (await r.json()).sha;
-      } catch (e) {}
+      } catch (e) {
+        logEvent('BACKUP', 'sha lookup soft-fail: ' + (e && e.message || e));
+      }
       const payload = JSON.stringify({
         version: 22,
         exportedAt: new Date().toISOString(),
@@ -1770,16 +1775,20 @@ const Backup = {
       });
       if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
-        if (!opts.silent) Utils.toast('Backup failed: ' + (err.message || resp.status), 'bad');
+        const msg = err.message || ('HTTP ' + resp.status);
+        if (!opts.silent) Utils.toast('Backup failed: ' + msg, 'bad');
+        logEvent('BACKUP', `push HTTP ${resp.status}: ${msg}`, 'err');
         return false;
       }
       State.lastBackup = Date.now();
       State.lastBackupHash = this.hash();
       UI.updateBackupStatus();
       if (!opts.silent) Utils.toast('Backed up ✓', 'good');
+      logEvent('BACKUP', `push ok (${(payload.length / 1024).toFixed(1)}KB, ${tag})`, 'ok');
       return true;
     } catch (e) {
       if (!opts.silent) Utils.toast('Backup error', 'bad');
+      logEvent('BACKUP', 'push exception: ' + (e && e.message || e), 'err');
       return false;
     }
   },
@@ -1796,8 +1805,10 @@ const Backup = {
   async pull() {
     if (!State.gh.token || !State.gh.repo || !State.gh.path) {
       Utils.toast('Set token/repo/path first', 'bad');
+      logEvent('BACKUP', 'pull aborted — token/repo/path missing', 'err');
       return false;
     }
+    logEvent('BACKUP', 'pull start');
     try {
       const apiBase = `https://api.github.com/repos/${State.gh.repo}/contents/${State.gh.path}`;
       const headers = {
@@ -1807,20 +1818,30 @@ const Backup = {
       const r = await fetch(apiBase, { headers });
       if (!r.ok) {
         const err = await r.json().catch(() => ({}));
-        Utils.toast('Restore failed: ' + (err.message || r.status), 'bad');
+        const msg = err.message || ('HTTP ' + r.status);
+        Utils.toast('Restore failed: ' + msg, 'bad');
+        logEvent('BACKUP', `pull HTTP ${r.status}: ${msg}`, 'err');
         return false;
       }
       const json = await r.json();
       // GitHub returns file content as base64; decode + parse
       const raw = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
-      const parsed = JSON.parse(raw);
+      let parsed;
+      try { parsed = JSON.parse(raw); }
+      catch (e) {
+        Utils.toast('Restore: invalid JSON', 'bad');
+        logEvent('BACKUP', 'pull JSON parse error: ' + e.message, 'err');
+        return false;
+      }
       if (!parsed || typeof parsed !== 'object') {
         Utils.toast('Restore: invalid payload', 'bad');
+        logEvent('BACKUP', 'pull invalid payload (not an object)', 'err');
         return false;
       }
       // Validate shape — data must exist; settings/trips are optional
       if (!parsed.data || !parsed.data.points || !parsed.data.destinations) {
         Utils.toast('Restore: missing data shape', 'bad');
+        logEvent('BACKUP', 'pull missing data.points or data.destinations', 'err');
         return false;
       }
       // Apply
@@ -1837,9 +1858,11 @@ const Backup = {
       if (MapView.m) MapView.updatePoints();
       UI.updateBackupStatus();
       Utils.toast(`Restored: ${State.data.points.length} points, ${State.data.destinations.length} dests`, 'good');
+      logEvent('BACKUP', `pull ok (${State.data.points.length} points, ${State.data.destinations.length} dests)`, 'ok');
       return true;
     } catch (e) {
       Utils.toast('Restore error: ' + (e.message || e), 'bad');
+      logEvent('BACKUP', 'pull exception: ' + (e && e.message || e), 'err');
       return false;
     }
   },

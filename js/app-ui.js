@@ -1234,7 +1234,8 @@ const UI = {
       let pct = Math.max(0, Math.min(100, 100 * (1 - distM / startM)));
       const tier = distM < 200 ? 'red' : (distM < 500 ? 'amber' : 'green');
       body.innerHTML = `
-        <div class="next-name">${Utils.emoji(n.type, n.subtype)} ${Utils.escapeHtml(n.name)}</div>
+        <div class="next-bg-emoji">${Utils.emoji(n.type, n.subtype)}</div>
+        <div class="next-name">${Utils.escapeHtml(n.name)}</div>
         <div class="next-meta">${Utils.escapeHtml(Utils.typeLabel(n.type))}${sideTag}</div>
         <div class="next-dist ${urgent}">${n.dist < 1 ? Math.round(n.dist * 1000) : n.dist.toFixed(1)}<span class="unit">${n.dist < 1 ? 'm' : 'km'}</span></div>
         <div class="next-progress" data-tier="${tier}">

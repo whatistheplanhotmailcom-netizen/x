@@ -423,7 +423,26 @@ body {
   flex-direction: column;
   justify-content: center;
   min-width: 0;
+  position: relative;
+  overflow: hidden;
 }
+/* v22.92: oversized type-emoji rendered as a translucent watermark
+   behind the name/meta/dist text. Improves at-a-glance recognition
+   while driving without crowding the small card layout. */
+.next-bg-emoji {
+  position: absolute;
+  right: -4px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 76px;
+  line-height: 1;
+  opacity: 0.18;
+  pointer-events: none;
+  z-index: 0;
+  filter: saturate(1.2);
+  user-select: none;
+}
+.next-name, .next-meta, .next-dist, .next-progress { position: relative; z-index: 1; }
 /* v22.13: compact empty state — when nothing is ahead the card should
    not dominate the screen with empty space. */
 .next-empty {
@@ -1367,6 +1386,8 @@ body {
   .next-dist { font-size: 14px; margin-top: 2px; }
   .next-dist .unit { font-size: 9px; }
   .next-empty { font-size: 10px; padding: 4px 0; }
+  /* v22.92: shrink the watermark proportionally on short viewports */
+  .next-bg-emoji { font-size: 52px; right: -2px; opacity: 0.16; }
   /* Map can be smaller too */
   .map-wrap { min-height: 100px; }
   /* Action buttons compact but still touch-friendly */

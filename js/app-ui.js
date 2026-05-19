@@ -1906,17 +1906,52 @@ const UI = {
     Utils.toast('Destination saved', 'good');
   },
 
-  deleteDest() {
-    if (!State.editingDestId) return;
-    if (!confirm('Delete this destination?')) return;
-    State.data.destinations = State.data.destinations.filter(d => d.id !== State.editingDestId);
-    if (State.data.activeDestId === State.editingDestId) {
-      State.data.activeDestId = State.data.destinations[0]?.id || null;
+  /** v22.94: was using window.confirm() which Safari silently blocks
+   *  on some installs — same failure mode as the v22.74 point-delete
+   *  bug. Now uses the in-app UI.confirm modal and emits DEST log
+   *  entries to the debug panel for every code path. */
+  async deleteDest() {
+    if (!State.editingDestId) {
+      logEvent('DEST', 'delete aborted — no editingDestId set', 'err');
+      return;
     }
-    State.saveData();
-    this.closeAllModals();
-    MapView.updatePoints();
-    Utils.toast('Destination deleted');
+    const id = State.editingDestId;
+    const dest = State.data.destinations.find(d => d.id === id);
+    const name = dest ? dest.name : '(unknown)';
+    const ptCount = State.data.points.filter(p => p.destId === id).length;
+    logEvent('DEST', `delete prompt: "${name}" (${ptCount} points tagged)`);
+    const ok = await UI.confirm(
+      `Delete "${name}"?` + (ptCount > 0 ? `\n\n${ptCount} captured points are tagged to this destination and will become orphans (still in storage, hidden from the map).` : ''),
+      { title: 'Delete destination' }
+    );
+    if (!ok) {
+      logEvent('DEST', 'delete cancelled by user');
+      return;
+    }
+    try {
+      const before = State.data.destinations.length;
+      State.data.destinations = State.data.destinations.filter(d => d.id !== id);
+      const after = State.data.destinations.length;
+      if (before === after) {
+        logEvent('DEST', `delete no-op: id "${id}" not found in destinations array`, 'err');
+        Utils.toast('Delete failed — id not found', 'bad');
+        return;
+      }
+      if (State.data.activeDestId === id) {
+        const next = State.data.destinations[0] && State.data.destinations[0].id || null;
+        State.data.activeDestId = next;
+        logEvent('DEST', `active destination was deleted — switched to "${next || 'none'}"`);
+      }
+      State.editingDestId = null;
+      State.saveData();
+      this.closeAllModals();
+      if (MapView && MapView.updatePoints) MapView.updatePoints();
+      Utils.toast(`Deleted "${name}"`, 'good');
+      logEvent('DEST', `delete ok: "${name}" (${before} → ${after} destinations)`, 'ok');
+    } catch (e) {
+      Utils.toast('Delete error: ' + (e && e.message || e), 'bad');
+      logEvent('DEST', 'delete exception: ' + (e && e.message || e), 'err');
+    }
   },
 
   renderAuditList() {

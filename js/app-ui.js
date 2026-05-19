@@ -98,8 +98,15 @@ const MapView = {
   _routeCoords: null,
   _lastRouteCheckAt: 0,
   _lastRefetchAt: 0,
-  _offRouteDeviationM: 100,    // metres before we consider "off route"
-  _rerouteCooldownMs: 30000,   // min interval between auto-reroutes
+  // v22.97: tightened reroute thresholds per spec.
+  _offRouteDeviationM: 25,         // metres past route before it counts as a strike
+  _rerouteCooldownMs: 10000,       // min interval between auto-reroutes
+  _offRouteAccuracyMaxM: 30,       // skip the whole check if GPS ±accuracy is worse
+  _offRouteStrikesRequired: 2,     // need this many consecutive off-route GPS updates
+  _offRouteStrikes: 0,             // running counter, resets when back on route
+  _isReroute: false,               // flag for _fetchAndDrawRoute so its log lines say "reroute"
+  _lastDevDistLogAt: 0,            // throttle for the per-tick distance log
+  _loggedDebounceAt: 0,            // throttle for the "skipped — debounce" log
 
   // v22.78: zoom snapshot taken when entering 3D pitch so we can restore
   // the user's original zoom level when they return to 2D.
@@ -768,9 +775,25 @@ const MapView = {
         const km = (data.routes[0].distance / 1000).toFixed(0);
         const min = Math.round(data.routes[0].duration / 60);
         Utils.toast(`Route: ${km} km · ~${min} min`, 'good');
-        logEvent('ROUTE', `Drawn ${km} km, ~${min} min`, 'ok');
+        // v22.97: log line names "reroute" when this fetch was triggered
+        // by _checkRouteDeviation (the _isReroute flag) vs an initial fetch.
+        if (this._isReroute) {
+          logEvent('ROUTE', `reroute completed — ${km}km / ~${min}min`, 'ok');
+          this._isReroute = false;
+        } else {
+          logEvent('ROUTE', `Drawn ${km} km, ~${min} min`, 'ok');
+        }
       })
-      .catch(e => { console.warn('Route fetch failed:', e); logEvent('ROUTE', 'Fetch failed: ' + (e && e.message || e), 'err'); })
+      .catch(e => {
+        console.warn('Route fetch failed:', e);
+        const msg = (e && e.message) || String(e);
+        if (this._isReroute) {
+          logEvent('ROUTE', 'reroute failed: ' + msg, 'err');
+          this._isReroute = false;
+        } else {
+          logEvent('ROUTE', 'Fetch failed: ' + msg, 'err');
+        }
+      })
       .finally(() => { this._routeFetching = false; });
   },
 
@@ -867,20 +890,62 @@ const MapView = {
     if (this._routeFetching) return;
     const dest = State.activeDest();
     if (!dest) return;
+
     const now = Date.now();
-    if (now - this._lastRouteCheckAt < 3000) return;
-    this._lastRouteCheckAt = now;
 
-    const distM = this._distanceToRouteMeters(State.pos, this._routeCoords);
-    if (distM <= this._offRouteDeviationM) return;
-
-    if (now - this._lastRefetchAt < this._rerouteCooldownMs) {
-      // Cooldown — already refetched recently, ride it out
+    // v22.97: GPS accuracy gate — don't make routing decisions on a poor
+    // fix. The check still runs every GPS update; we just refuse to
+    // strike or trigger when the position itself is too noisy.
+    if (State.accuracy != null && State.accuracy > this._offRouteAccuracyMaxM) {
+      if (!this._lastDevDistLogAt || now - this._lastDevDistLogAt > 5000) {
+        this._lastDevDistLogAt = now;
+        logEvent('ROUTE', `GPS update · accuracy ±${Math.round(State.accuracy)}m > ${this._offRouteAccuracyMaxM}m — deviation check skipped`);
+      }
       return;
     }
+
+    const distM = this._distanceToRouteMeters(State.pos, this._routeCoords);
+
+    // Throttled distance heartbeat for the debug panel (every ~5s)
+    if (!this._lastDevDistLogAt || now - this._lastDevDistLogAt > 5000) {
+      this._lastDevDistLogAt = now;
+      logEvent('ROUTE', `GPS update · distance from route = ${Math.round(distM)}m · strikes ${this._offRouteStrikes}`);
+    }
+
+    if (distM <= this._offRouteDeviationM) {
+      // Back inside the corridor — reset strikes and log the transition once
+      if (this._offRouteStrikes > 0) {
+        logEvent('ROUTE', `back on route (${Math.round(distM)}m) — strikes reset`, 'ok');
+        this._offRouteStrikes = 0;
+      }
+      return;
+    }
+
+    // Off-route this update — accumulate a strike
+    this._offRouteStrikes = (this._offRouteStrikes || 0) + 1;
+    logEvent('ROUTE', `off-route strike ${this._offRouteStrikes}/${this._offRouteStrikesRequired}: ${Math.round(distM)}m from route`);
+
+    // Need N consecutive strikes before we trigger
+    if (this._offRouteStrikes < this._offRouteStrikesRequired) return;
+
+    // Debounce — only one auto-reroute per cooldown window
+    const sinceLast = now - this._lastRefetchAt;
+    if (sinceLast < this._rerouteCooldownMs) {
+      if (!this._loggedDebounceAt || now - this._loggedDebounceAt > 5000) {
+        this._loggedDebounceAt = now;
+        const left = Math.ceil((this._rerouteCooldownMs - sinceLast) / 1000);
+        logEvent('ROUTE', `reroute skipped — debounce (${left}s remaining)`);
+      }
+      return;
+    }
+
+    // Fire the reroute. Reset strikes so we don't fire again on the very
+    // next tick before the fetch even completes.
     this._lastRefetchAt = now;
-    logEvent('ROUTE', `off-route by ${Math.round(distM)}m — recalculating`, 'ok');
-    Utils.toast(`Off route (${Math.round(distM)}m) — recalculating…`, 'good');
+    this._offRouteStrikes = 0;
+    this._isReroute = true;
+    logEvent('ROUTE', `reroute started — ${Math.round(distM)}m off route, recalculating from current GPS`, 'ok');
+    Utils.toast(`Off route — recalculating…`, 'good');
     // Clearing the cached destId forces _fetchAndDrawRoute to re-issue.
     this._routeForDestId = null;
     this._fetchAndDrawRoute();

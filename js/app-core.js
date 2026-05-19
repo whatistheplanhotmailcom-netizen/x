@@ -776,6 +776,114 @@ const Corridor = {
 };
 
 /* ============================================================
+   0f. ROUTE MEMORY — v22.98
+   Learn successful OSRM routes per destination + restore them
+   instantly on re-selection if the origin matches roughly. The
+   restore is a UX fast-start — fresh deviation-triggered reroutes
+   still replace stored geometry whenever the live path diverges.
+   localStorage only; no network.
+   ============================================================ */
+const RouteMemory = {
+  MAX_ENTRIES: 20,
+  TTL_MS: 30 * 24 * 60 * 60 * 1000, // 30 days
+  ORIGIN_MATCH_KM: 2,               // current pos must be within this of stored origin to match
+
+  /** Read all stored entries. Returns []. */
+  _all() {
+    try {
+      const raw = localStorage.getItem(Storage.KEYS.learnedRoutes);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  },
+
+  _write(arr) {
+    try {
+      localStorage.setItem(Storage.KEYS.learnedRoutes, JSON.stringify(arr));
+      return true;
+    } catch (e) {
+      logEvent('ROUTE', 'learned route storage write failed: ' + (e && e.message || e), 'err');
+      return false;
+    }
+  },
+
+  /** Sort newest-first, drop expired, cap at MAX_ENTRIES. */
+  _prune(arr) {
+    const now = Date.now();
+    const sorted = arr.slice().sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+    const fresh = sorted.filter(r => r && r.timestamp && (now - r.timestamp) <= RouteMemory.TTL_MS);
+    return fresh.slice(0, RouteMemory.MAX_ENTRIES);
+  },
+
+  /** Persist a successful route. Replaces any existing entry for the
+   *  same destId (newer wins). originPos = the GPS pos at fetch time. */
+  saveLearnedRoute(destId, destName, geometry, distance, duration, originPos) {
+    if (!destId || !geometry || !originPos) return;
+    let arr = RouteMemory._all();
+    const wasReplacement = arr.some(r => r.destId === destId);
+    arr = arr.filter(r => r.destId !== destId);
+    arr.unshift({
+      destId,
+      destName: String(destName || ''),
+      geometry,
+      distance: typeof distance === 'number' ? distance : 0,
+      duration: typeof duration === 'number' ? duration : 0,
+      timestamp: Date.now(),
+      originLat: originPos.lat,
+      originLng: originPos.lng,
+    });
+    arr = RouteMemory._prune(arr);
+    RouteMemory._write(arr);
+    const km = (distance / 1000).toFixed(0);
+    logEvent('ROUTE', `learned route ${wasReplacement ? 'replaced' : 'saved'}: ${destName || destId} (${km}km)`, 'ok');
+  },
+
+  /** Lookup a learned route. Match requires:
+   *    - same destId
+   *    - timestamp within TTL_MS
+   *    - current pos within ORIGIN_MATCH_KM of stored origin
+   *  Returns the entry or null. Logs mismatch reasons. */
+  findLearnedRoute(destId, currentPos) {
+    if (!destId || !currentPos) return null;
+    const arr = RouteMemory._all();
+    const now = Date.now();
+    for (const r of arr) {
+      if (!r || r.destId !== destId) continue;
+      if (!r.timestamp || (now - r.timestamp) > RouteMemory.TTL_MS) {
+        logEvent('ROUTE', `learned route expired for "${r.destName || destId}"`);
+        continue;
+      }
+      if (typeof r.originLat !== 'number' || typeof r.originLng !== 'number') continue;
+      const km = Utils.distKm({ lat: r.originLat, lng: r.originLng }, currentPos);
+      if (km > RouteMemory.ORIGIN_MATCH_KM) {
+        logEvent('ROUTE', `learned route mismatch: origin ${km.toFixed(1)}km from current pos (limit ${RouteMemory.ORIGIN_MATCH_KM}km)`);
+        continue;
+      }
+      return r;
+    }
+    return null;
+  },
+
+  /** Drop expired entries from storage. Safe to call repeatedly; no-op
+   *  if nothing changes. Called on app boot. */
+  cleanupExpiredRoutes() {
+    const arr = RouteMemory._all();
+    const pruned = RouteMemory._prune(arr);
+    if (pruned.length !== arr.length) {
+      RouteMemory._write(pruned);
+      logEvent('ROUTE', `cleaned up ${arr.length - pruned.length} expired learned routes`);
+    }
+  },
+
+  /** Convenience wrapper: same as saveLearnedRoute but logs as
+   *  "replaced" — called from the reroute success path. */
+  replaceLearnedRoute(destId, destName, geometry, distance, duration, originPos) {
+    RouteMemory.saveLearnedRoute(destId, destName, geometry, distance, duration, originPos);
+  },
+};
+
+/* ============================================================
    1. STORAGE
    ============================================================ */
 const Storage = {
@@ -795,6 +903,8 @@ const Storage = {
     // v22.96: migration backup + completion timestamp
     migrationBackup: 'roadAlert.v22.96.migrationBackup',
     migrationCompletedAt: 'roadAlert.v22.96.migrationCompletedAt',
+    // v22.98: learned-route memory (RouteMemory module)
+    learnedRoutes: 'roadAlert.v22.98.learnedRoutes',
   },
   load(key, def) {
     try {

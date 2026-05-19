@@ -760,8 +760,28 @@ const MapView = {
       this.clearRoute();
     }
 
+    // v22.98: try the learned-route cache first. If a matching entry
+    // exists (same destId, ≤30 days old, origin within 2km of current
+    // pos), restore its geometry IMMEDIATELY and skip the network
+    // fetch. The deviation check still runs on every tick; if the live
+    // path diverges, the normal reroute path replaces both the visible
+    // line AND the stored entry.
+    if (!this._isReroute) {
+      const learned = RouteMemory.findLearnedRoute(dest.id, pos);
+      if (learned) {
+        this._renderRoute(learned.geometry);
+        this._routeForDestId = dest.id;
+        const lkm = (learned.distance / 1000).toFixed(0);
+        const lmin = Math.round(learned.duration / 60);
+        Utils.toast(`Route restored from memory · ${lkm}km`, 'good');
+        logEvent('ROUTE', `restored learned route — ${lkm}km / ~${lmin}min`, 'ok');
+        return;
+      }
+    }
+
     this._routeFetching = true;
     const destIdSnap = dest.id;
+    const destNameSnap = dest.name || '';
     const url = `https://router.project-osrm.org/route/v1/driving/${pos.lng},${pos.lat};${dest.lng},${dest.lat}?overview=full&geometries=geojson`;
     fetch(url)
       .then(r => { if (!r.ok) throw new Error('OSRM ' + r.status); return r.json(); })
@@ -770,10 +790,11 @@ const MapView = {
         // Stale check: destination may have changed during the await
         const currentDest = State.activeDest();
         if (!currentDest || currentDest.id !== destIdSnap) return;
-        this._renderRoute(data.routes[0].geometry);
+        const route0 = data.routes[0];
+        this._renderRoute(route0.geometry);
         this._routeForDestId = destIdSnap;
-        const km = (data.routes[0].distance / 1000).toFixed(0);
-        const min = Math.round(data.routes[0].duration / 60);
+        const km = (route0.distance / 1000).toFixed(0);
+        const min = Math.round(route0.duration / 60);
         Utils.toast(`Route: ${km} km · ~${min} min`, 'good');
         // v22.97: log line names "reroute" when this fetch was triggered
         // by _checkRouteDeviation (the _isReroute flag) vs an initial fetch.
@@ -782,6 +803,19 @@ const MapView = {
           this._isReroute = false;
         } else {
           logEvent('ROUTE', `Drawn ${km} km, ~${min} min`, 'ok');
+        }
+        // v22.98: persist the fresh route to memory so future selections
+        // of this destination can fast-start. Captured here in the
+        // success branch so we never cache failed/no-route attempts.
+        if (State.pos) {
+          RouteMemory.saveLearnedRoute(
+            destIdSnap,
+            destNameSnap,
+            route0.geometry,
+            route0.distance,
+            route0.duration,
+            State.pos
+          );
         }
       })
       .catch(e => {
@@ -815,14 +849,14 @@ const MapView = {
       type: 'line',
       source: 'ra-route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#f59e0b', 'line-width': 10, 'line-opacity': 0.25 },
+      paint: { 'line-color': '#4285F4', 'line-width': 10, 'line-opacity': 0.25 },
     });
     this.m.addLayer({
       id: 'ra-route-line',
       type: 'line',
       source: 'ra-route',
       layout: { 'line-cap': 'round', 'line-join': 'round' },
-      paint: { 'line-color': '#f59e0b', 'line-width': 5, 'line-opacity': 0.9 },
+      paint: { 'line-color': '#4285F4', 'line-width': 5, 'line-opacity': 0.9 },
     });
   },
 
@@ -3039,7 +3073,9 @@ function importJson(e) {
    ============================================================ */
 function boot() {
   try {
-    logEvent('BOOT', 'App starting (v22.82)');
+    logEvent('BOOT', 'App starting (v22.98)');
+    // v22.98: prune expired learned routes (>30 days) on every boot
+    RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();
     wire();
     // v22.82: try to subscribe to the device compass. iOS will defer the

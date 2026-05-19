@@ -92,6 +92,14 @@ const MapView = {
   // from OSRM's free public endpoint and render as a MapLibre line layer.
   _routeForDestId: null,
   _routeFetching: false,
+  // v22.95: stored coordinates of the currently-drawn route, used by
+  // _checkRouteDeviation to detect when the user has drifted off-route
+  // and trigger a fresh OSRM fetch from their current position.
+  _routeCoords: null,
+  _lastRouteCheckAt: 0,
+  _lastRefetchAt: 0,
+  _offRouteDeviationM: 100,    // metres before we consider "off route"
+  _rerouteCooldownMs: 30000,   // min interval between auto-reroutes
 
   // v22.78: zoom snapshot taken when entering 3D pitch so we can restore
   // the user's original zoom level when they return to 2D.
@@ -457,6 +465,9 @@ const MapView = {
     // v22.58: fetch & draw the driving route once per (session, destination)
     // — internal guards make this cheap on subsequent ticks.
     this._fetchAndDrawRoute();
+    // v22.95: detect off-route deviation and refetch from the new position
+    // when the user has drifted past the threshold. Throttled internally.
+    this._checkRouteDeviation();
 
     // Lazy full rebuild every 30 s (passed-status, fmtAgo)
     const refreshMs = 30000;
@@ -769,6 +780,10 @@ const MapView = {
   _renderRoute(geom) {
     if (!this.m) return;
     const data = { type: 'Feature', properties: {}, geometry: geom };
+    // v22.95: cache the coordinate array so _checkRouteDeviation can
+    // measure how far off-route the user has drifted. Coordinates are
+    // [lng, lat] tuples in MapLibre/GeoJSON convention.
+    this._routeCoords = (geom && Array.isArray(geom.coordinates)) ? geom.coordinates : null;
     const src = this.m.getSource('ra-route');
     if (src) { src.setData(data); return; }
     this.m.addSource('ra-route', { type: 'geojson', data });
@@ -792,11 +807,83 @@ const MapView = {
    *  on destination change (before a refetch). */
   clearRoute() {
     if (!this.m) return;
+    this._routeCoords = null; // v22.95: drop cached coords with the line
     ['ra-route-line', 'ra-route-glow'].forEach(id => {
       try { if (this.m.getLayer(id)) this.m.removeLayer(id); } catch (e) {}
     });
     try { if (this.m.getSource('ra-route')) this.m.removeSource('ra-route'); } catch (e) {}
     this._routeForDestId = null;
+  },
+
+  /** v22.95: planar (flat-earth) distance in metres from a point P to
+   *  the closest spot on the segment A→B. Accurate over short distances
+   *  (≤ a few km). Inputs in {lat,lng}. Used by _distanceToRouteMeters. */
+  _pointToSegmentMeters(p, a, b) {
+    const latToM = 111320;
+    const lngToM = 111320 * Math.cos(p.lat * Math.PI / 180);
+    const px = (p.lng - a.lng) * lngToM, py = (p.lat - a.lat) * latToM;
+    const bx = (b.lng - a.lng) * lngToM, by = (b.lat - a.lat) * latToM;
+    const segLenSq = bx * bx + by * by;
+    if (segLenSq === 0) return Math.sqrt(px * px + py * py);
+    let t = (px * bx + py * by) / segLenSq;
+    t = Math.max(0, Math.min(1, t));
+    const dx = px - t * bx, dy = py - t * by;
+    return Math.sqrt(dx * dx + dy * dy);
+  },
+
+  /** v22.95: minimum perpendicular distance in metres from `pos` to any
+   *  segment of the cached route coords. Returns Infinity if no route
+   *  is currently drawn. coords are [lng, lat] tuples (GeoJSON order). */
+  _distanceToRouteMeters(pos, coords) {
+    if (!coords || coords.length < 2) return Infinity;
+    let min = Infinity;
+    for (let i = 0; i < coords.length - 1; i++) {
+      const a = { lng: coords[i][0],     lat: coords[i][1] };
+      const b = { lng: coords[i + 1][0], lat: coords[i + 1][1] };
+      const d = this._pointToSegmentMeters(pos, a, b);
+      if (d < min) min = d;
+    }
+    return min;
+  },
+
+  /** v22.95: detect when the vehicle has drifted off the drawn route and
+   *  trigger a fresh OSRM fetch from the new position.
+   *
+   *  Self-throttled three ways so we don't hammer the public OSRM
+   *  endpoint or jank the canvas on every tick:
+   *    1. Check at most every 3 seconds.
+   *    2. Skip if a fetch is already in flight.
+   *    3. Skip if the last reroute fired within the cooldown (default 30s).
+   *
+   *  Trigger condition: minimum perpendicular distance from user to ANY
+   *  segment of the route line > _offRouteDeviationM (default 100m).
+   *
+   *  Refetch is just "clear the destId cache and call _fetchAndDrawRoute"
+   *  — the existing fetch path then builds a fresh route from current pos. */
+  _checkRouteDeviation() {
+    if (!this.m || !this._mapLoaded) return;
+    if (!State.pos) return;
+    if (!this._routeCoords || this._routeCoords.length < 2) return;
+    if (this._routeFetching) return;
+    const dest = State.activeDest();
+    if (!dest) return;
+    const now = Date.now();
+    if (now - this._lastRouteCheckAt < 3000) return;
+    this._lastRouteCheckAt = now;
+
+    const distM = this._distanceToRouteMeters(State.pos, this._routeCoords);
+    if (distM <= this._offRouteDeviationM) return;
+
+    if (now - this._lastRefetchAt < this._rerouteCooldownMs) {
+      // Cooldown — already refetched recently, ride it out
+      return;
+    }
+    this._lastRefetchAt = now;
+    logEvent('ROUTE', `off-route by ${Math.round(distM)}m — recalculating`, 'ok');
+    Utils.toast(`Off route (${Math.round(distM)}m) — recalculating…`, 'good');
+    // Clearing the cached destId forces _fetchAndDrawRoute to re-issue.
+    this._routeForDestId = null;
+    this._fetchAndDrawRoute();
   },
 
   askSetDest(latlng) {

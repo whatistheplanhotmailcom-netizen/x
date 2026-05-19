@@ -344,7 +344,7 @@ const MapView = {
         const label = p ? (p.name || Utils.typeLabel(p.type)) : 'point';
         const ok = await UI.confirm(`Delete ${label}?`, { title: 'Delete point' });
         if (!ok) return;
-        State.data.points = State.data.points.filter(x => x.id !== id);
+        State.removePointById(id);
         State.alertedMarkers.delete(id);
         State.lastDistByPoint.delete(id);
         State.passedPoints.delete(id);
@@ -1385,7 +1385,7 @@ const UI = {
         const label = p.name || Utils.typeLabel(p.type);
         const ok = await UI.confirm(`Delete ${label}?`, { title: 'Delete point' });
         if (!ok) return;
-        State.data.points = State.data.points.filter(x => x.id !== id);
+        State.removePointById(id);
         State.alertedMarkers.delete(id);
         State.lastDistByPoint.delete(id);
         State.passedPoints.delete(id);
@@ -1944,7 +1944,10 @@ const UI = {
       trackedId = nearby.id;
       logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`);
     } else {
-      State.data.points.push(c);
+      // v22.101: route via State.addPointToActiveDest so the new id is
+      // appended to dest.routePointRefs[] post-migration. Direct
+      // State.data.points.push left captures invisible to activePoints().
+      State.addPointToActiveDest(c);
       Utils.toast(`${Utils.typeLabel(c.type)} saved`, 'good');
       announce = Utils.typeLabel(c.type) + ' captured';
       trackedId = c.id;
@@ -2043,7 +2046,7 @@ const UI = {
     const label = p ? (p.name || Utils.typeLabel(p.type)) : 'point';
     const ok = await UI.confirm(`Delete ${label}?`, { title: 'Delete point' });
     if (!ok) return;
-    State.data.points = State.data.points.filter(x => x.id !== id);
+    State.removePointById(id);
     State.alertedMarkers.delete(id);
     State.lastDistByPoint.delete(id);
     State.passedPoints.delete(id);
@@ -2286,7 +2289,7 @@ const UI = {
     list.querySelectorAll('[data-rem]').forEach(b =>
       b.onclick = () => {
         if (!confirm('Delete this point?')) return;
-        State.data.points = State.data.points.filter(p => p.id !== b.dataset.rem);
+        State.removePointById(b.dataset.rem);
         State.saveData();
         this.renderAuditList();
       }

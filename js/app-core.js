@@ -1178,6 +1178,29 @@ const State = {
     return this.data.points.filter(p => p.destId === id);
   },
 
+  /** v22.101: keep dest.routePointRefs in sync when a new point is captured
+   *  for the active destination. Pre-migration data (no routePointRefs[])
+   *  is left untouched and continues to use the legacy destId filter. */
+  addPointToActiveDest(point) {
+    this.data.points.push(point);
+    const dest = this.activeDest();
+    if (!dest) return;
+    if (Array.isArray(dest.routePointRefs)) {
+      if (!dest.routePointRefs.includes(point.id)) dest.routePointRefs.push(point.id);
+    }
+  },
+
+  /** v22.101: remove a point and clean it out of every destination's
+   *  routePointRefs[] so the timeline / map / next-ahead stop seeing it. */
+  removePointById(id) {
+    this.data.points = this.data.points.filter(p => p.id !== id);
+    for (const d of this.data.destinations) {
+      if (Array.isArray(d.routePointRefs)) {
+        d.routePointRefs = d.routePointRefs.filter(pid => pid !== id);
+      }
+    }
+  },
+
   /** v22.91: rolling-average current speed (km/h) over the last 30 seconds.
    *  Returns null if we don't have at least 10 samples (≈ 10 s of data).
    *  null = "insufficient history → caller should treat as unknown". */

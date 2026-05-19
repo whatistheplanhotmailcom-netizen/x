@@ -362,6 +362,420 @@ const Speed = {
 };
 
 /* ============================================================
+   0d. MIGRATION — v22.96
+   Global speed-point store + destination-as-metadata refactor.
+   Decouples points from destinations: points live in a single global
+   array; destinations carry .routePointRefs (array of point ids).
+   Migration is dry-run-first, user-confirmed, with a localStorage
+   backup so a failed migration can be rolled back. Deterministic
+   single-pass first-match-wins deduplication per spec.
+
+   DEFERRED to a follow-up commit (intentionally):
+     - Full corridor filtering integrated into the alert path
+       (helpers are here, hookup in Alerts.tick is not).
+     - Destination list UI (search / favorite / archive).
+     - Map display modes (active route / nearby / all).
+     - Auto-delete backup after MIGRATION_BACKUP_TTL_DAYS.
+   ============================================================ */
+const MigrationConfig = {
+  DEDUPE_DISTANCE_METERS: 25,
+  DEDUPE_BEARING_DIFF_DEGREES: 25,
+  CORRIDOR_HIGHWAY_METERS: 300,
+  CORRIDOR_CITY_METERS: 150,
+  CORRIDOR_UNKNOWN_METERS: 250,
+  MAP_MAX_VISIBLE_POINTS: 200,
+  MIGRATION_BACKUP_TTL_DAYS: 7,
+};
+
+/** Deterministic JSON stringification — recursively sorts object keys
+ *  alphabetically so the output is invariant to insertion order. Used
+ *  by the determinism test in the dry-run UI and by integrity checks. */
+function sortedKeyStringify(obj) {
+  if (obj === null || typeof obj !== 'object') return JSON.stringify(obj);
+  if (Array.isArray(obj)) return '[' + obj.map(sortedKeyStringify).join(',') + ']';
+  const keys = Object.keys(obj).sort();
+  return '{' + keys.map(k => JSON.stringify(k) + ':' + sortedKeyStringify(obj[k])).join(',') + '}';
+}
+
+const Migration = {
+  /** Build a structurally-complete dry-run output IN MEMORY without
+   *  touching localStorage. Returns the full would-be new data shape
+   *  plus a report object the UI displays for confirmation. Calling
+   *  this twice on the same input must produce byte-identical output
+   *  (sortedKeyStringify equality) — the single test asserts this. */
+  runMigrationDryRun(oldData) {
+    const points = (oldData && Array.isArray(oldData.points)) ? oldData.points : [];
+    const dests  = (oldData && Array.isArray(oldData.destinations)) ? oldData.destinations : [];
+
+    const dedup = Migration.dedupeSpeedPoints(points);
+
+    // Build new destinations with routePointRefs derived from sourceDestinationIds
+    const newDests = [];
+    const pointsByDestSrc = new Map(); // destId -> [pointId]
+    for (const np of dedup.globalPoints) {
+      for (const src of (np.sourceDestinationIds || [])) {
+        if (!pointsByDestSrc.has(src)) pointsByDestSrc.set(src, []);
+        pointsByDestSrc.get(src).push(np.id);
+      }
+    }
+    let zeroPointDests = 0;
+    for (const oldD of [...dests].sort((a, b) => (a.id || '').localeCompare(b.id || ''))) {
+      const refs = pointsByDestSrc.get(oldD.id) || [];
+      const newD = {
+        id: oldD.id,
+        name: oldD.name,
+        lat: oldD.lat,
+        lng: oldD.lng,
+        createdAt: oldD.createdAt || new Date(0).toISOString(),
+        updatedAt: oldD.updatedAt || oldD.createdAt || new Date(0).toISOString(),
+        favorite: !!oldD.favorite,
+        archived: !!oldD.archived,
+        routePointRefs: refs.slice().sort(),
+      };
+      if (refs.length === 0) zeroPointDests++;
+      newDests.push(newD);
+    }
+
+    const newData = {
+      version: 23,
+      activeDestId: (oldData && oldData.activeDestId) || null,
+      destinations: newDests,
+      points: dedup.globalPoints,
+    };
+
+    const report = {
+      oldDestCount: dests.length,
+      oldPointCount: points.length,
+      duplicateGroups: dedup.duplicateGroups,
+      pointsToMerge: dedup.mergedCount,
+      newGlobalPoints: dedup.globalPoints.length,
+      destsToMigrate: dests.length,
+      zeroPointDests: zeroPointDests,
+    };
+
+    return { newData, mergeMap: dedup.mergeMap, report };
+  },
+
+  /** Execute the actual migration: backup → swap data → save. Returns
+   *  { ok, errors } from validateMigrationResult. Caller is responsible
+   *  for having run dry-run + gotten user confirmation. */
+  migrateToGlobalSpeedPoints(oldData) {
+    const backupOk = Migration.backupOldRouteData(oldData);
+    if (!backupOk) {
+      return { ok: false, errors: ['Backup failed — migration aborted'] };
+    }
+    const dry = Migration.runMigrationDryRun(oldData);
+    const val = Migration.validateMigrationResult(oldData, dry.newData, dry.mergeMap);
+    if (!val.ok) {
+      logEvent('MIGRATE', 'validation failed before commit: ' + val.errors.join('; '), 'err');
+      return { ok: false, errors: val.errors };
+    }
+    // Commit
+    try {
+      State.data = dry.newData;
+      Storage.save(Storage.KEYS.data, State.data);
+      localStorage.setItem(Storage.KEYS.migrationCompletedAt, new Date().toISOString());
+      logEvent('MIGRATE', 'migration applied — ' +
+        `${dry.report.oldPointCount} old points → ${dry.report.newGlobalPoints} global ` +
+        `(merged ${dry.report.pointsToMerge}); ${dry.report.destsToMigrate} destinations migrated`,
+        'ok');
+      return { ok: true, errors: [], report: dry.report };
+    } catch (e) {
+      logEvent('MIGRATE', 'commit exception: ' + (e && e.message || e), 'err');
+      return { ok: false, errors: [String(e && e.message || e)] };
+    }
+  },
+
+  /** Persist the old data structure to localStorage under a versioned key
+   *  before destructive changes. Survives until restoreFromMigrationBackup
+   *  is called OR the user explicitly clears it via Settings. */
+  backupOldRouteData(oldData) {
+    try {
+      const wrapper = {
+        version: 22,
+        backedUpAt: new Date().toISOString(),
+        data: oldData,
+      };
+      localStorage.setItem(Storage.KEYS.migrationBackup, JSON.stringify(wrapper));
+      logEvent('MIGRATE', `backup saved (${JSON.stringify(oldData).length} bytes)`, 'ok');
+      return true;
+    } catch (e) {
+      logEvent('MIGRATE', 'backup write failed: ' + (e && e.message || e), 'err');
+      return false;
+    }
+  },
+
+  /** Return parsed backup wrapper { version, backedUpAt, data } or null. */
+  readMigrationBackup() {
+    try {
+      const raw = localStorage.getItem(Storage.KEYS.migrationBackup);
+      if (!raw) return null;
+      return JSON.parse(raw);
+    } catch (e) { return null; }
+  },
+
+  /** Replace State.data with the old structure from the backup. */
+  restoreFromMigrationBackup() {
+    const backup = Migration.readMigrationBackup();
+    if (!backup || !backup.data) {
+      logEvent('MIGRATE', 'restore aborted — no backup found', 'err');
+      return false;
+    }
+    try {
+      State.data = backup.data;
+      Storage.save(Storage.KEYS.data, State.data);
+      localStorage.removeItem(Storage.KEYS.migrationCompletedAt);
+      logEvent('MIGRATE', `restored backup from ${backup.backedUpAt}`, 'ok');
+      return true;
+    } catch (e) {
+      logEvent('MIGRATE', 'restore exception: ' + (e && e.message || e), 'err');
+      return false;
+    }
+  },
+
+  /** Single-pass first-match-wins deduplication. Sort first for
+   *  determinism (createdAt, then id). Returns:
+   *   - globalPoints[]: deduplicated array (new IDs preserved from
+   *     the original first-seen point)
+   *   - mergeMap: { oldId → globalId }
+   *   - mergedCount: how many points got merged into others
+   *   - duplicateGroups: how many merge targets received >1 source */
+  dedupeSpeedPoints(points) {
+    const sorted = [...points].sort((a, b) => {
+      const ca = a.createdAt || '';
+      const cb = b.createdAt || '';
+      if (ca !== cb) return ca.localeCompare(cb);
+      return String(a.id || '').localeCompare(String(b.id || ''));
+    });
+    const globalPoints = [];
+    const mergeMap = {};
+    let mergedCount = 0;
+    for (const p of sorted) {
+      const target = Migration.findDuplicatePoint(p, globalPoints);
+      if (target) {
+        Migration._mergeInto(target, p);
+        mergeMap[p.id] = target.id;
+        mergedCount++;
+      } else {
+        const np = Migration._toGlobalPoint(p);
+        globalPoints.push(np);
+        mergeMap[p.id] = np.id;
+      }
+    }
+    // Count duplicate groups (targets that received more than one source)
+    const incoming = {};
+    for (const oldId in mergeMap) {
+      incoming[mergeMap[oldId]] = (incoming[mergeMap[oldId]] || 0) + 1;
+    }
+    let duplicateGroups = 0;
+    for (const k in incoming) if (incoming[k] > 1) duplicateGroups++;
+    return { globalPoints, mergeMap, mergedCount, duplicateGroups };
+  },
+
+  /** First-match-wins lookup in `existingPoints`. Returns the matching
+   *  point or null. Implements the per-spec duplicate rule with the
+   *  known-different-roadType non-merge edge case. */
+  findDuplicatePoint(point, existingPoints) {
+    const limit = (typeof point.speedLimit === 'number') ? point.speedLimit
+                : (typeof point.limit === 'number') ? point.limit : null;
+    for (const ex of existingPoints) {
+      const distM = Utils.distKm(ex, point) * 1000;
+      if (distM > MigrationConfig.DEDUPE_DISTANCE_METERS) continue;
+      const exLimit = (typeof ex.speedLimit === 'number') ? ex.speedLimit
+                    : (typeof ex.limit === 'number') ? ex.limit : null;
+      if (exLimit !== limit) continue;
+      // Road type: same OR at least one unknown. Two known but different → no merge.
+      const rtA = ex.roadType || 'unknown';
+      const rtB = point.roadType || 'unknown';
+      if (rtA !== rtB && rtA !== 'unknown' && rtB !== 'unknown') continue;
+      // Directional: bearings must be close. Non-directional → bearing doesn't block.
+      if (ex.directional && point.directional) {
+        const bA = ex.captureBearing;
+        const bB = point.captureBearing;
+        if (bA != null && bB != null) {
+          const diff = Speed.angleDiff(bA, bB);
+          if (diff > MigrationConfig.DEDUPE_BEARING_DIFF_DEGREES) continue;
+        }
+      }
+      return ex; // first match wins
+    }
+    return null;
+  },
+
+  /** Build a clean new global-point record from an old point. Preserves
+   *  the id and all existing fields; adds sourceDestinationIds and the
+   *  speedLimit alias. */
+  _toGlobalPoint(p) {
+    const np = { ...p };
+    if (!Array.isArray(np.sourceDestinationIds)) {
+      np.sourceDestinationIds = p.destId ? [p.destId] : [];
+    }
+    if (np.speedLimit == null && typeof p.limit === 'number') np.speedLimit = p.limit;
+    if (!np.updatedAt) np.updatedAt = p.updatedAt || p.createdAt || new Date(0).toISOString();
+    if (!Array.isArray(np.mergedFromIds)) np.mergedFromIds = [];
+    return np;
+  },
+
+  /** Merge `src` into `target` IN PLACE per spec rules. */
+  _mergeInto(target, src) {
+    // oldest createdAt
+    if (src.createdAt && (!target.createdAt || src.createdAt < target.createdAt)) {
+      target.createdAt = src.createdAt;
+    }
+    // newest updatedAt
+    const su = src.updatedAt || src.createdAt;
+    if (su && (!target.updatedAt || su > target.updatedAt)) target.updatedAt = su;
+    // union sourceDestinationIds
+    const a = target.sourceDestinationIds || (target.destId ? [target.destId] : []);
+    const b = src.sourceDestinationIds || (src.destId ? [src.destId] : []);
+    target.sourceDestinationIds = Array.from(new Set([...a, ...b])).sort();
+    // track merged-from
+    if (!Array.isArray(target.mergedFromIds)) target.mergedFromIds = [];
+    target.mergedFromIds.push(src.id);
+    if (Array.isArray(src.mergedFromIds)) target.mergedFromIds.push(...src.mergedFromIds);
+    target.mergedFromIds = Array.from(new Set(target.mergedFromIds)).sort();
+    // prefer non-null roadName
+    if (!target.roadName && src.roadName) target.roadName = src.roadName;
+    // prefer known roadType
+    if ((!target.roadType || target.roadType === 'unknown') && src.roadType && src.roadType !== 'unknown') {
+      target.roadType = src.roadType;
+    }
+    // directional sticky-true
+    if (src.directional) {
+      target.directional = true;
+      if (target.captureBearing == null && src.captureBearing != null) {
+        target.captureBearing = src.captureBearing;
+      }
+    }
+    // confidence aggregate
+    target.confidence = (target.confidence || 1) + (src.confidence || 1);
+  },
+
+  /** Verify the migrated structure matches the old data per the spec's
+   *  9-point success criteria (subset that's checkable without runtime
+   *  state). Returns { ok, errors[] }. */
+  validateMigrationResult(oldData, newData, mergeMap) {
+    const errors = [];
+    const oldDests = (oldData.destinations || []);
+    const oldPoints = (oldData.points || []);
+
+    // 1. Every old destination has a corresponding new destination record.
+    const newDestIds = new Set(newData.destinations.map(d => d.id));
+    for (const od of oldDests) {
+      if (!newDestIds.has(od.id)) errors.push(`Destination ${od.id} ("${od.name}") missing in new data`);
+    }
+    // 2. Every old point has either a new global point or a documented merge target.
+    const newPointIds = new Set(newData.points.map(p => p.id));
+    for (const op of oldPoints) {
+      const target = mergeMap[op.id];
+      if (!target) { errors.push(`Point ${op.id} has no merge target`); continue; }
+      if (!newPointIds.has(target)) errors.push(`Merge target ${target} for old point ${op.id} not in global points`);
+    }
+    // 4. Total alert-eligible point count equals old point count minus deduplicated.
+    const expectedNewCount = oldPoints.length - oldPoints.filter(op => {
+      const t = mergeMap[op.id];
+      return t && t !== op.id;
+    }).length;
+    if (newData.points.length !== expectedNewCount) {
+      errors.push(`Global point count mismatch: expected ${expectedNewCount}, got ${newData.points.length}`);
+    }
+    // 5. Zero-point destinations preserved (they still appear in newData.destinations).
+    for (const od of oldDests) {
+      const owned = oldPoints.filter(p => p.destId === od.id).length;
+      if (owned === 0 && !newDestIds.has(od.id)) {
+        errors.push(`Zero-point destination ${od.id} was dropped`);
+      }
+    }
+    return { ok: errors.length === 0, errors };
+  },
+
+  /** Whether a migration has been committed on this device. */
+  isMigrated() {
+    return !!localStorage.getItem(Storage.KEYS.migrationCompletedAt);
+  },
+};
+
+/* ============================================================
+   0e. CORRIDOR — v22.96
+   Pure-geometry helpers for active-route candidate filtering. Not yet
+   wired into Alerts.tick (deferred). Kept here so the helpers are
+   available to whichever code later opts into corridor filtering.
+   ============================================================ */
+const Corridor = {
+  /** Planar distance from a single point to the segment a→b, in metres. */
+  distanceToRouteSegment(point, segmentStart, segmentEnd) {
+    const latToM = 111320;
+    const lngToM = 111320 * Math.cos(point.lat * Math.PI / 180);
+    const px = (point.lng - segmentStart.lng) * lngToM;
+    const py = (point.lat - segmentStart.lat) * latToM;
+    const bx = (segmentEnd.lng - segmentStart.lng) * lngToM;
+    const by = (segmentEnd.lat - segmentStart.lat) * latToM;
+    const segLenSq = bx * bx + by * by;
+    if (segLenSq === 0) return Math.sqrt(px * px + py * py);
+    let t = (px * bx + py * by) / segLenSq;
+    t = Math.max(0, Math.min(1, t));
+    const dx = px - t * bx, dy = py - t * by;
+    return Math.sqrt(dx * dx + dy * dy);
+  },
+
+  /** True if the point is within corridorMeters of any segment of the
+   *  route polyline. routeGeometry expected as a GeoJSON LineString
+   *  ({ type:'LineString', coordinates:[[lng,lat],...] }). */
+  isPointInsideRouteCorridor(point, routeGeometry, corridorMeters) {
+    if (!routeGeometry || !Array.isArray(routeGeometry.coordinates)) return false;
+    const coords = routeGeometry.coordinates;
+    if (coords.length < 2) return false;
+    for (let i = 0; i < coords.length - 1; i++) {
+      const a = { lng: coords[i][0],     lat: coords[i][1] };
+      const b = { lng: coords[i + 1][0], lat: coords[i + 1][1] };
+      const d = Corridor.distanceToRouteSegment(point, a, b);
+      if (d <= corridorMeters) return true;
+    }
+    return false;
+  },
+
+  /** Filter global points to those inside the active route's corridor.
+   *  Falls back to a bounding-box around the destination if no
+   *  routeGeometry is available, or to "all points" if neither is set. */
+  getRouteCandidatePoints(activeRoute, globalPoints) {
+    if (!activeRoute) return globalPoints.slice();
+    const dest = activeRoute.destination;
+    const geom = activeRoute.routeGeometry;
+    // Determine corridor width per road type (defaults to unknown if not set)
+    const rt = activeRoute.roadType || 'unknown';
+    const corridor = rt === 'highway' ? MigrationConfig.CORRIDOR_HIGHWAY_METERS
+                  : rt === 'city'    ? MigrationConfig.CORRIDOR_CITY_METERS
+                  : MigrationConfig.CORRIDOR_UNKNOWN_METERS;
+    if (geom && Array.isArray(geom.coordinates)) {
+      return globalPoints.filter(p => Corridor.isPointInsideRouteCorridor(p, geom, corridor));
+    }
+    // Fallback: bbox around destination (5 km square)
+    if (dest && typeof dest.lat === 'number') {
+      const km = 5;
+      const dLat = km / 111;
+      const dLng = km / (111 * Math.cos(dest.lat * Math.PI / 180));
+      return globalPoints.filter(p =>
+        p.lat >= dest.lat - dLat && p.lat <= dest.lat + dLat &&
+        p.lng >= dest.lng - dLng && p.lng <= dest.lng + dLng);
+    }
+    return globalPoints.slice();
+  },
+
+  /** Nearby-only filter for "no active route" mode. Returns points
+   *  within `radiusKm` of userState.{lat,lng}. */
+  getGlobalCandidatePoints(userState, globalPoints, radiusKm) {
+    const r = (typeof radiusKm === 'number') ? radiusKm : 5;
+    return globalPoints.filter(p => Utils.distKm(p, userState) <= r);
+  },
+
+  /** Top-level dispatcher used by future Alerts integration. */
+  getAlertCandidates(userState, activeRoute, globalPoints) {
+    if (activeRoute) return Corridor.getRouteCandidatePoints(activeRoute, globalPoints);
+    return Corridor.getGlobalCandidatePoints(userState, globalPoints);
+  },
+};
+
+/* ============================================================
    1. STORAGE
    ============================================================ */
 const Storage = {
@@ -378,6 +792,9 @@ const Storage = {
     legacyTrips: 'roadAlert.v17.trips',
     legacyGh: 'roadAlert.v17.gh',
     safetyShown: 'roadAlert.v22.safetyShown',
+    // v22.96: migration backup + completion timestamp
+    migrationBackup: 'roadAlert.v22.96.migrationBackup',
+    migrationCompletedAt: 'roadAlert.v22.96.migrationCompletedAt',
   },
   load(key, def) {
     try {
@@ -638,8 +1055,16 @@ const State = {
     // v22.3: STRICT filter — only points belonging to the currently active
     // destination. No more "orphan" points (without destId) leaking into
     // the map view. Orphans can be assigned via Audit or Edit point.
+    // v22.96: post-migration, destinations carry .routePointRefs (array
+    // of point ids). Use that when present; fall back to the legacy
+    // destId filter for un-migrated data.
     const id = this.data.activeDestId;
-    if (!id) return []; // No active destination → show nothing on the map
+    if (!id) return [];
+    const dest = this.data.destinations.find(d => d.id === id);
+    if (dest && Array.isArray(dest.routePointRefs)) {
+      const refSet = new Set(dest.routePointRefs);
+      return this.data.points.filter(p => refSet.has(p.id));
+    }
     return this.data.points.filter(p => p.destId === id);
   },
 

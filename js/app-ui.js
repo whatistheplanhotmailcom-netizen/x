@@ -1051,6 +1051,117 @@ const UI = {
    *  gets the .active class (amber background via existing .opts rule
    *  on .sheet-btn? actually .sheet-btn doesn't have an active state by
    *  default — we set border-color inline). Tap a row → setMapStyle. */
+  /** v22.96: paint the small status line above the Migrate buttons and
+   *  show/hide the Restore-backup button based on whether a backup
+   *  exists in localStorage. Called on Settings open and after any
+   *  migration action. */
+  renderMigrationStatus() {
+    const el = document.getElementById('migration-status');
+    const restoreBtn = document.getElementById('btn-migrate-restore');
+    const dryBtn = document.getElementById('btn-migrate-dry');
+    if (!el) return;
+    const migrated = Migration.isMigrated();
+    const backup = Migration.readMigrationBackup();
+    if (migrated) {
+      const when = localStorage.getItem(Storage.KEYS.migrationCompletedAt) || '';
+      el.innerHTML = `<strong>Migrated</strong> · using global point store · completed ${Utils.escapeHtml(when.slice(0, 19).replace('T', ' '))}` +
+        (backup ? `<br>Backup still available (until you restore or clear it).` : `<br>Backup not found.`);
+      if (dryBtn) dryBtn.textContent = '⚙ Re-run dry-run';
+    } else {
+      el.innerHTML = `<strong>Legacy layout</strong> — points are owned by destinations via destId. Run the migration to switch to a global point store with destination.routePointRefs[] indirection.`;
+      if (dryBtn) dryBtn.textContent = '⚙ Migrate to global store';
+    }
+    if (restoreBtn) restoreBtn.style.display = backup ? 'block' : 'none';
+  },
+
+  /** v22.96: Run the dry-run migration in memory, paint the report into
+   *  the modal, validate against the old data, and only enable the
+   *  Run-migration button if validation passed. */
+  openMigrationDryRun() {
+    const oldData = State.data;
+    const dry = Migration.runMigrationDryRun(oldData);
+    const validation = Migration.validateMigrationResult(oldData, dry.newData, dry.mergeMap);
+    const r = dry.report;
+    const rep = document.getElementById('migration-report');
+    const errBox = document.getElementById('migration-errors');
+    const goBtn = document.getElementById('btn-do-migrate');
+    rep.innerHTML = [
+      `<div><span style="color:var(--ink-3)">Old destinations:</span> <strong>${r.oldDestCount}</strong></div>`,
+      `<div><span style="color:var(--ink-3)">Old points:</span> <strong>${r.oldPointCount}</strong></div>`,
+      `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)"><span style="color:var(--ink-3)">Duplicate groups detected:</span> <strong>${r.duplicateGroups}</strong></div>`,
+      `<div><span style="color:var(--ink-3)">Points to be merged:</span> <strong>${r.pointsToMerge}</strong></div>`,
+      `<div><span style="color:var(--ink-3)">Global points after merge:</span> <strong style="color:var(--green)">${r.newGlobalPoints}</strong></div>`,
+      `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)"><span style="color:var(--ink-3)">Destinations to migrate:</span> <strong>${r.destsToMigrate}</strong></div>`,
+      `<div><span style="color:var(--ink-3)">Zero-point destinations (kept):</span> <strong>${r.zeroPointDests}</strong></div>`,
+      `<div style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line);font-size:10px;color:var(--ink-3)">Determinism check: <strong style="color:var(--green)">${UI._runDeterminismCheck(oldData) ? 'PASS' : 'FAIL'}</strong> (dry-run output is byte-identical across two runs)</div>`,
+    ].join('');
+    if (validation.ok) {
+      errBox.style.display = 'none';
+      goBtn.disabled = false;
+      goBtn.style.opacity = '1';
+    } else {
+      errBox.style.display = 'block';
+      errBox.innerHTML = '<strong>Validation failed — migration blocked:</strong><ul style="margin:4px 0 0 18px;padding:0">' +
+        validation.errors.map(e => `<li>${Utils.escapeHtml(e)}</li>`).join('') + '</ul>';
+      goBtn.disabled = true;
+      goBtn.style.opacity = '0.4';
+    }
+    logEvent('MIGRATE', `dry-run: ${r.oldPointCount}p / ${r.oldDestCount}d → ${r.newGlobalPoints}p (merged ${r.pointsToMerge}) · validation ${validation.ok ? 'ok' : 'FAIL'}`, validation.ok ? 'ok' : 'err');
+    this.openModal('m-migration');
+  },
+
+  /** v22.96: run dry-run TWICE on the same input and compare via
+   *  sortedKeyStringify. The whole point of deterministic dedup is
+   *  byte-identical output. */
+  _runDeterminismCheck(oldData) {
+    try {
+      const a = Migration.runMigrationDryRun(oldData);
+      const b = Migration.runMigrationDryRun(oldData);
+      return sortedKeyStringify({
+        newData: a.newData, mergeMap: a.mergeMap,
+      }) === sortedKeyStringify({
+        newData: b.newData, mergeMap: b.mergeMap,
+      });
+    } catch (e) { return false; }
+  },
+
+  /** v22.96: commit the migration after explicit confirmation. */
+  async doMigration() {
+    const ok = await UI.confirm(
+      'Apply migration NOW?\n\nA backup of your current data will be saved to localStorage. You can restore from it later via Settings → Data architecture → Restore backup.',
+      { title: 'Confirm migration', okLabel: 'Apply' }
+    );
+    if (!ok) { logEvent('MIGRATE', 'user declined at confirm'); return; }
+    const result = Migration.migrateToGlobalSpeedPoints(State.data);
+    if (result.ok) {
+      Utils.toast('Migration applied · backup saved', 'good');
+      this.closeAllModals();
+      UI.render();
+      if (MapView.m) MapView.updatePoints();
+      this.renderMigrationStatus();
+    } else {
+      Utils.toast('Migration failed — original data unchanged', 'bad');
+      logEvent('MIGRATE', 'migration failed: ' + (result.errors || []).join('; '), 'err');
+    }
+  },
+
+  /** v22.96: restore the backed-up legacy data structure. */
+  async doMigrationRestore() {
+    const ok = await UI.confirm(
+      'Restore the pre-migration backup? This will REPLACE current data with the backed-up legacy structure.',
+      { title: 'Restore backup', okLabel: 'Restore' }
+    );
+    if (!ok) return;
+    if (Migration.restoreFromMigrationBackup()) {
+      Utils.toast('Backup restored', 'good');
+      UI.render();
+      if (MapView.m) MapView.updatePoints();
+      this.renderMigrationStatus();
+    } else {
+      Utils.toast('Restore failed — no backup found', 'bad');
+    }
+  },
+
   renderMapStyleList() {
     const list = document.getElementById('mapstyle-list');
     if (!list) return;
@@ -2234,7 +2345,15 @@ const UI = {
    9. WIRING
    ============================================================ */
 function wire() {
-  document.getElementById('btn-settings').onclick = () => { UI.syncSettings(); UI.openModal('m-settings'); };
+  document.getElementById('btn-settings').onclick = () => {
+    UI.syncSettings();
+    UI.renderMigrationStatus(); // v22.96: refresh migration status on open
+    UI.openModal('m-settings');
+  };
+  // v22.96: data architecture migration wiring
+  document.getElementById('btn-migrate-dry').onclick = () => UI.openMigrationDryRun();
+  document.getElementById('btn-migrate-restore').onclick = () => UI.doMigrationRestore();
+  document.getElementById('btn-do-migrate').onclick = () => UI.doMigration();
   // v22.79: debug log panel — opens the rolling-200 event history.
   document.getElementById('btn-debug').onclick = () => {
     UI.renderDebugLog();

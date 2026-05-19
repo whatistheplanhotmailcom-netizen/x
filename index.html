@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="X">
-<title>X v22.103</title>
+<title>X v22.104</title>
 
 <link rel="manifest" href='data:application/json,{"name":"X","short_name":"X","start_url":".","display":"standalone","background_color":"%23f5f1e8","theme_color":"%23f5f1e8","icons":[{"src":"data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 192 192%22%3E%3Crect width=%22192%22 height=%22192%22 fill=%22%23f5f1e8%22/%3E%3Ccircle cx=%2296%22 cy=%2296%22 r=%2240%22 fill=%22none%22 stroke=%22%23ef4444%22 stroke-width=%2210%22/%3E%3Ctext x=%2296%22 y=%22112%22 text-anchor=%22middle%22 font-family=%22Arial%22 font-weight=%22800%22 font-size=%2240%22 fill=%22%231c1917%22%3E120%3C/text%3E%3C/svg%3E","sizes":"192x192","type":"image/svg+xml"}]}'>
 
@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=22.102">
+<link rel="stylesheet" href="styles.css?v=22.104">
 </head>
 <body data-theme="light">
 
@@ -26,7 +26,7 @@
     <div class="brand">
       <span class="dot"></span>
       <span>X</span>
-      <span class="version">v22.103</span>
+      <span class="version">v22.104</span>
     </div>
     <span class="topbar-spacer"></span>
     <div class="topbar-actions">
@@ -540,7 +540,7 @@
     <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="btn" id="btn-test-sound">🔊 Sound check</button>
 
-    <!-- v22.103: clear cache + hard reload. Useful when the app updates but
+    <!-- v22.104: clear cache + hard reload. Useful when the app updates but
          the phone keeps serving old cached JS/CSS. -->
     <div class="section-title">Cache</div>
     <button class="btn" id="btn-clear-cache" style="color:var(--amber-2);border-color:var(--amber-2);">↻ Clear cache &amp; reload</button>
@@ -616,7 +616,7 @@
   </div>
 </div>
 
-<!-- v22.103: debug log panel — newest entries at top, in-memory only,
+<!-- v22.104: debug log panel — newest entries at top, in-memory only,
      capped at 500 rows by the Logger module in app-core.js. -->
 <div class="modal" id="m-debug">
   <div class="modal-card">
@@ -701,8 +701,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=22.102"></script>
-<script defer src="js/app-ui.js?v=22.102"></script>
+<script defer src="js/app-core.js?v=22.104"></script>
+<script defer src="js/app-ui.js?v=22.104"></script>
 
 </body>
 </html>

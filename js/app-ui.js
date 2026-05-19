@@ -107,6 +107,11 @@ const MapView = {
   _isReroute: false,               // flag for _fetchAndDrawRoute so its log lines say "reroute"
   _lastDevDistLogAt: 0,            // throttle for the per-tick distance log
   _loggedDebounceAt: 0,            // throttle for the "skipped — debounce" log
+  // v22.104: arrival detection — when GPS gets within ARRIVAL_RADIUS_M of
+  // the active destination, flip the stored route to confirmed and clear
+  // the drawn line. Session-scoped Set prevents re-firing on every tick.
+  _arrivedDestIds: new Set(),
+  ARRIVAL_RADIUS_M: 100,
 
   // v22.78: zoom snapshot taken when entering 3D pitch so we can restore
   // the user's original zoom level when they return to 2D.
@@ -475,6 +480,8 @@ const MapView = {
     // v22.95: detect off-route deviation and refetch from the new position
     // when the user has drifted past the threshold. Throttled internally.
     this._checkRouteDeviation();
+    // v22.104: detect arrival — confirms the learned route and clears the line
+    this._checkArrival();
 
     // Lazy full rebuild every 30 s (passed-status, fmtAgo)
     const refreshMs = 30000;
@@ -983,6 +990,28 @@ const MapView = {
     // Clearing the cached destId forces _fetchAndDrawRoute to re-issue.
     this._routeForDestId = null;
     this._fetchAndDrawRoute();
+  },
+
+  /** v22.104: arrival check. When GPS gets within ARRIVAL_RADIUS_M of the
+   *  active destination, flip the stored route to confirmed and clear the
+   *  drawn line. Idempotent per session via _arrivedDestIds. */
+  _checkArrival() {
+    if (!State.pos) return;
+    const dest = State.activeDest();
+    if (!dest) return;
+    if (this._arrivedDestIds.has(dest.id)) return;
+    const distM = Utils.distKm(State.pos, dest) * 1000;
+    if (distM > this.ARRIVAL_RADIUS_M) return;
+    this._arrivedDestIds.add(dest.id);
+    logEvent('ROUTE', `arrived at "${dest.name || dest.id}" (${Math.round(distM)}m) — route confirmed`, 'ok');
+    Utils.toast(`Arrived at ${dest.name || 'destination'}`, 'good');
+    try { RouteMemory.confirmLearnedRoute(dest.id); } catch (e) {
+      logEvent('ROUTE', 'confirmLearnedRoute threw: ' + (e && e.message || e), 'err');
+    }
+    this.clearRoute();
+    // Intentionally keep _routeForDestId = dest.id so the next tick doesn't
+    // refetch a degenerate near-zero route. A real destination change resets
+    // both the cache and clears the line via the normal path.
   },
 
   askSetDest(latlng) {

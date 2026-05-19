@@ -817,7 +817,11 @@ const RouteMemory = {
   },
 
   /** Persist a successful route. Replaces any existing entry for the
-   *  same destId (newer wins). originPos = the GPS pos at fetch time. */
+   *  same destId (newer wins). originPos = the GPS pos at fetch time.
+   *  v22.104: new entries start with confirmed=false. They only become
+   *  confirmed once RouteMemory.confirmLearnedRoute(destId) is called
+   *  (on arrival at the destination). findLearnedRoute returns only
+   *  confirmed entries, so unconfirmed routes are never auto-restored. */
   saveLearnedRoute(destId, destName, geometry, distance, duration, originPos) {
     if (!destId || !geometry || !originPos) return;
     let arr = RouteMemory._all();
@@ -832,17 +836,39 @@ const RouteMemory = {
       timestamp: Date.now(),
       originLat: originPos.lat,
       originLng: originPos.lng,
+      confirmed: false, // v22.104
     });
     arr = RouteMemory._prune(arr);
     RouteMemory._write(arr);
     const km = (distance / 1000).toFixed(0);
-    logEvent('ROUTE', `learned route ${wasReplacement ? 'replaced' : 'saved'}: ${destName || destId} (${km}km)`, 'ok');
+    logEvent('ROUTE', `learned route ${wasReplacement ? 'replaced' : 'saved'} (pending): ${destName || destId} (${km}km)`, 'ok');
+  },
+
+  /** v22.104: flip confirmed=true on the entry for this destId. Called
+   *  when the user actually reaches the destination — proving the
+   *  proposed route was the one they drove. Only confirmed routes are
+   *  returned by findLearnedRoute, so this is what gates re-use. */
+  confirmLearnedRoute(destId) {
+    if (!destId) return false;
+    const arr = RouteMemory._all();
+    const entry = arr.find(r => r && r.destId === destId);
+    if (!entry) {
+      logEvent('ROUTE', `confirm skipped — no stored route for ${destId}`);
+      return false;
+    }
+    if (entry.confirmed) return false; // idempotent
+    entry.confirmed = true;
+    entry.confirmedAt = Date.now();
+    RouteMemory._write(arr);
+    logEvent('ROUTE', `learned route confirmed: ${entry.destName || destId}`, 'ok');
+    return true;
   },
 
   /** Lookup a learned route. Match requires:
    *    - same destId
    *    - timestamp within TTL_MS
    *    - current pos within ORIGIN_MATCH_KM of stored origin
+   *    - v22.104: entry is confirmed (user has driven it to arrival)
    *  Returns the entry or null. Logs mismatch reasons. */
   findLearnedRoute(destId, currentPos) {
     if (!destId || !currentPos) return null;
@@ -858,6 +884,10 @@ const RouteMemory = {
       const km = Utils.distKm({ lat: r.originLat, lng: r.originLng }, currentPos);
       if (km > RouteMemory.ORIGIN_MATCH_KM) {
         logEvent('ROUTE', `learned route mismatch: origin ${km.toFixed(1)}km from current pos (limit ${RouteMemory.ORIGIN_MATCH_KM}km)`);
+        continue;
+      }
+      if (!r.confirmed) {
+        logEvent('ROUTE', `learned route not confirmed yet for "${r.destName || destId}" — fetching fresh`);
         continue;
       }
       return r;

@@ -93,7 +93,7 @@ const Utils = {
    doesn't crash if it fires before UI is defined).
    ============================================================ */
 const Logger = {
-  MAX: 200,
+  MAX: 500,
   logs: [],
   log(type, message, level) {
     const entry = {
@@ -1408,7 +1408,8 @@ const Audio = {
   alert(point, meters) {
     const s = State.settings.sound;
     if (s === 'off') return; // master mute still respected
-    logEvent('ALERT', `${point.name || Utils.typeLabel(point.type)} @ ${meters}m`);
+    // v22.102: level='ok' so ALERTs show green in the debug log
+    logEvent('ALERT', `${point.name || Utils.typeLabel(point.type)} @ ${meters}m`, 'ok');
     // v22.12: count for diagnostic strip
     State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
     State.lastAlertAt = Date.now();

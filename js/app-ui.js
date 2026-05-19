@@ -1942,7 +1942,7 @@ const UI = {
       Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
       announce = Utils.typeLabel(c.type) + ' updated';
       trackedId = nearby.id;
-      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`);
+      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
     } else {
       // v22.101: route via State.addPointToActiveDest so the new id is
       // appended to dest.routePointRefs[] post-migration. Direct
@@ -1951,7 +1951,7 @@ const UI = {
       Utils.toast(`${Utils.typeLabel(c.type)} saved`, 'good');
       announce = Utils.typeLabel(c.type) + ' captured';
       trackedId = c.id;
-      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`);
+      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
     }
     State.lastTripCaptureId = trackedId; // v22.10: track for double-tap recall
     State.pendingCapture = null;
@@ -2481,6 +2481,79 @@ function wire() {
         ta.remove();
         Utils.toast(`Copied ${Logger.logs.length} entries`, 'good');
       } catch (e2) { Utils.toast('Copy failed', 'bad'); }
+    }
+  };
+
+  // v22.102: render the full log to a canvas, download as PNG. Pure 2D
+  // canvas drawing — no html2canvas dep needed. Colors mirror the theme
+  // (--surface bg, --amber-2 type, --ink msg, --red err, --green ok).
+  document.getElementById('debug-png').onclick = () => {
+    if (!Logger.logs.length) { Utils.toast('Nothing to export', 'bad'); return; }
+    try {
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const pad = 12;
+      const lineH = 18;
+      const fontPx = 12;
+      const headerH = 36;
+      const colTs = 70;
+      const colTy = 80;
+      const colMsg = 720;
+      const totalW = pad + colTs + colTy + colMsg + pad;
+      const totalH = pad + headerH + Logger.logs.length * lineH + pad;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = totalW * dpr;
+      canvas.height = totalH * dpr;
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      // Background
+      ctx.fillStyle = '#0c0a09';
+      ctx.fillRect(0, 0, totalW, totalH);
+
+      // Header
+      ctx.fillStyle = '#f5f5f4';
+      ctx.font = `700 14px ui-monospace, monospace`;
+      const stamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      ctx.fillText(`X · debug log · ${Logger.logs.length} entries · ${stamp}`, pad, pad + 16);
+
+      // Rows
+      ctx.font = `${fontPx}px ui-monospace, monospace`;
+      ctx.textBaseline = 'top';
+      let y = pad + headerH;
+      for (const L of Logger.logs) {
+        // ts
+        ctx.fillStyle = '#a8a29e';
+        ctx.fillText(L.t, pad, y);
+        // type — color by level
+        ctx.fillStyle = L.level === 'err' ? '#ef4444'
+                     : L.level === 'ok'  ? '#22c55e'
+                     : '#f59e0b';
+        ctx.fillText(L.type, pad + colTs, y);
+        // msg — truncate to col width
+        ctx.fillStyle = '#f5f5f4';
+        let msg = L.msg || '';
+        const maxChars = Math.floor(colMsg / (fontPx * 0.6));
+        if (msg.length > maxChars) msg = msg.slice(0, maxChars - 1) + '…';
+        ctx.fillText(msg, pad + colTs + colTy, y);
+        y += lineH;
+      }
+
+      canvas.toBlob(blob => {
+        if (!blob) { Utils.toast('PNG export failed', 'bad'); return; }
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `x-debug-${stamp.replace(/[: ]/g, '-')}.png`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        Utils.toast(`Exported ${Logger.logs.length} entries`, 'good');
+      }, 'image/png');
+    } catch (e) {
+      logEvent('LOG', 'PNG export failed: ' + (e && e.message || e), 'err');
+      Utils.toast('PNG export failed', 'bad');
     }
   };
 

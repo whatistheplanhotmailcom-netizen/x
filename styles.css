@@ -162,9 +162,14 @@ body {
    hugs the right edge, center card sits truly in the middle of the
    row regardless of side widths. Cards are content-sized; the 1fr
    side columns absorb any extra horizontal space. */
+/* v23.1.8: cards are now fixed-width via three equal grid columns,
+   mirroring the .stats minmax(0,1fr) minmax(0,1fr) pattern used by
+   the Speed + Next-ahead pair. Each card fills its column, so the
+   widths never change when GPS text grows ("acquiring…" → "±4m ✓")
+   or when ETA text gets longer. */
 .diag-strip {
   display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
   align-items: stretch;
   gap: 6px;
   margin-top: 4px;
@@ -175,22 +180,21 @@ body {
   min-width: 0;
 }
 .diag-strip .diag-group {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 4px 10px;
   flex-wrap: nowrap;
   min-width: 0;
-  max-width: 100%;
+  width: 100%;
   overflow: hidden;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 4px 8px;
-  width: max-content; /* size to content, not the grid column */
 }
-.diag-strip .diag-left   { justify-self: start; }
-.diag-strip .diag-center { justify-self: center; overflow: visible; } /* v23.1.6: allow the net-dot pulse ring to extend past the card border */
-.diag-strip .diag-right  { justify-self: end; }
+.diag-strip .diag-left   { justify-content: flex-start; }
+.diag-strip .diag-center { justify-content: center; overflow: visible; } /* v23.1.6: allow the pulse ring to extend past the card border */
+.diag-strip .diag-right  { justify-content: flex-end; }
 .diag-strip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }

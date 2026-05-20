@@ -162,14 +162,14 @@ body {
    hugs the right edge, center card sits truly in the middle of the
    row regardless of side widths. Cards are content-sized; the 1fr
    side columns absorb any extra horizontal space. */
-/* v23.1.8: cards are now fixed-width via three equal grid columns,
-   mirroring the .stats minmax(0,1fr) minmax(0,1fr) pattern used by
-   the Speed + Next-ahead pair. Each card fills its column, so the
-   widths never change when GPS text grows ("acquiring…" → "±4m ✓")
-   or when ETA text gets longer. */
+/* v23.1.9: asymmetric columns — middle card is a small fixed-width
+   slot for the network dot, side cards expand to fill the leftover
+   width equally. Everything is still locked-fixed (no resizing on
+   text changes) because the middle column is a pixel value and the
+   sides are equal 1fr minmaxes. */
 .diag-strip {
   display: grid;
-  grid-template-columns: minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);
+  grid-template-columns: minmax(0,1fr) 48px minmax(0,1fr);
   align-items: stretch;
   gap: 6px;
   margin-top: 4px;

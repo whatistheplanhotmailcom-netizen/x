@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.1.0">
+<link rel="stylesheet" href="styles.css?v=23.1.1">
 </head>
 <body data-theme="light">
 
@@ -53,11 +53,21 @@
 
   <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->
   <!-- v23.1.0: HDG + route ETA added inline; replaces the recurring
-       "Route: X km · ~Y min" toast that fired on every reroute. -->
+       "Route: X km · ~Y min" toast that fired on every reroute.
+       v23.1.1: three-group layout — GPS/HDG left, online status
+       center, ETA + destination right. -->
   <div class="diag-strip" id="diag-strip">
-    <span id="diag-gps">GPS —</span>
-    <span id="diag-hdg">HDG —</span>
-    <span id="diag-eta">ETA —</span>
+    <div class="diag-group diag-left">
+      <span id="diag-gps">GPS —</span>
+      <span id="diag-hdg">HDG —</span>
+    </div>
+    <div class="diag-group diag-center">
+      <span id="diag-net">🔴 offline</span>
+    </div>
+    <div class="diag-group diag-right">
+      <span id="diag-eta">ETA —</span>
+      <span id="diag-dest">—</span>
+    </div>
   </div>
 
   <!-- STATS -->
@@ -707,8 +717,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.1.0"></script>
-<script defer src="js/app-ui.js?v=23.1.0"></script>
+<script defer src="js/app-core.js?v=23.1.1"></script>
+<script defer src="js/app-ui.js?v=23.1.1"></script>
 
 </body>
 </html>

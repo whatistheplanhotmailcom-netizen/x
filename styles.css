@@ -154,6 +154,8 @@ body {
 /* v22.12: tiny live diagnostic strip — easy to glance at while driving */
 .diag-strip {
   display: flex;
+  align-items: center;
+  justify-content: space-between; /* v23.1.1: left | center | right groups */
   flex-wrap: wrap;
   gap: 4px 10px;
   padding: 4px 6px;
@@ -166,7 +168,11 @@ body {
   border-radius: 6px;
   margin-top: 4px;
 }
-.diag-strip > span { white-space: nowrap; }
+/* v23.1.1: three named groups inside the strip — left, center, right */
+.diag-strip .diag-group { display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
+.diag-strip .diag-center { justify-content: center; }
+.diag-strip .diag-right  { justify-content: flex-end; }
+.diag-strip span { white-space: nowrap; }
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }

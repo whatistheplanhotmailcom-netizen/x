@@ -1535,15 +1535,15 @@ const UI = {
     // (network distance / network duration). The straight-line shrinks as
     // the user drives, so the ETA self-updates without re-issuing OSRM.
     if (etaEl) {
-      const dest = MapView._routeDestCoords;
+      const destCoords = MapView._routeDestCoords;
       const distM = MapView._routeDistanceM;
       const durS = MapView._routeDurationS;
-      if (!dest || !State.pos || !distM || !durS) {
+      if (!destCoords || !State.pos || !distM || !durS) {
         etaEl.textContent = 'ETA —';
         etaEl.className = '';
       } else {
         const avgSpeedMs = distM / durS; // m/s implied by OSRM
-        const straightM = Utils.distKm(State.pos, dest) * 1000;
+        const straightM = Utils.distKm(State.pos, destCoords) * 1000;
         const remainingSec = avgSpeedMs > 0 ? straightM / avgSpeedMs : 0;
         const arrival = new Date(Date.now() + remainingSec * 1000);
         const hh = String(arrival.getHours()).padStart(2, '0');
@@ -1552,6 +1552,35 @@ const UI = {
         const distTxt = km < 1 ? Math.round(straightM) + 'm' : km.toFixed(1) + 'km';
         etaEl.textContent = `ETA ${hh}:${mm} · ${distTxt}`;
         etaEl.className = 'good';
+      }
+    }
+
+    // Destination cell — short name of the currently active destination.
+    // Truncated so the right group can't push past the strip edge.
+    const destEl = document.getElementById('diag-dest');
+    if (destEl) {
+      const dest = State.activeDest();
+      if (dest && dest.name) {
+        const name = dest.name.length > 20 ? dest.name.slice(0, 18) + '…' : dest.name;
+        destEl.textContent = '→ ' + name;
+        destEl.className = '';
+      } else {
+        destEl.textContent = '—';
+        destEl.className = '';
+      }
+    }
+
+    // Network cell — center of the strip. navigator.onLine plus the
+    // online/offline event listeners (wired in boot) keep it live.
+    const netEl = document.getElementById('diag-net');
+    if (netEl) {
+      const online = (typeof navigator !== 'undefined' && navigator.onLine !== false);
+      if (online) {
+        netEl.textContent = '🟢 online';
+        netEl.className = 'good';
+      } else {
+        netEl.textContent = '🔴 offline';
+        netEl.className = 'bad';
       }
     }
   },
@@ -3323,6 +3352,11 @@ function boot() {
     RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();
     UI.applyHintsVisibility(); // v23.0.1: respect saved show/hide preference
+    // v23.1.1: live online/offline cell in diag-strip. Re-render on the
+    // connectivity events so the indicator flips immediately, not on the
+    // next GPS tick. Log so the debug panel records the transition.
+    window.addEventListener('online',  () => { logEvent('NET', 'online',  'ok');  UI.renderDiagStrip(); });
+    window.addEventListener('offline', () => { logEvent('NET', 'offline', 'err'); UI.renderDiagStrip(); });
     wire();
     // v22.82: try to subscribe to the device compass. iOS will defer the
     // actual permission request to the first user tap.

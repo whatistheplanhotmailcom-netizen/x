@@ -107,6 +107,12 @@ const MapView = {
   _isReroute: false,               // flag for _fetchAndDrawRoute so its log lines say "reroute"
   _lastDevDistLogAt: 0,            // throttle for the per-tick distance log
   _loggedDebounceAt: 0,            // throttle for the "skipped — debounce" log
+  // v23.1.0: cached route metrics so the diag-strip ETA cell can show
+  // distance + estimated time remaining without re-issuing OSRM calls.
+  // Both set when a route is drawn/restored; cleared in clearRoute().
+  _routeDistanceM: null,
+  _routeDurationS: null,
+  _routeDestCoords: null,          // {lat,lng} of the destination at fetch time
   // v22.104: arrival detection — when GPS gets within ARRIVAL_RADIUS_M of
   // the active destination, flip the stored route to confirmed and clear
   // the drawn line. Session-scoped Set prevents re-firing on every tick.
@@ -785,9 +791,12 @@ const MapView = {
       if (learned) {
         this._renderRoute(learned.geometry);
         this._routeForDestId = dest.id;
+        // v23.1.0: cache for diag-strip ETA. No toast — status sits on screen.
+        this._routeDistanceM = learned.distance;
+        this._routeDurationS = learned.duration;
+        this._routeDestCoords = { lat: dest.lat, lng: dest.lng };
         const lkm = (learned.distance / 1000).toFixed(0);
         const lmin = Math.round(learned.duration / 60);
-        Utils.toast(`Route restored from memory · ${lkm}km`, 'good');
         logEvent('ROUTE', `restored learned route — ${lkm}km / ~${lmin}min`, 'ok');
         return;
       }
@@ -807,9 +816,12 @@ const MapView = {
         const route0 = data.routes[0];
         this._renderRoute(route0.geometry);
         this._routeForDestId = destIdSnap;
+        // v23.1.0: cache for diag-strip ETA. No toast — status sits on screen.
+        this._routeDistanceM = route0.distance;
+        this._routeDurationS = route0.duration;
+        this._routeDestCoords = { lat: currentDest.lat, lng: currentDest.lng };
         const km = (route0.distance / 1000).toFixed(0);
         const min = Math.round(route0.duration / 60);
-        Utils.toast(`Route: ${km} km · ~${min} min`, 'good');
         // v22.97: log line names "reroute" when this fetch was triggered
         // by _checkRouteDeviation (the _isReroute flag) vs an initial fetch.
         if (this._isReroute) {
@@ -879,6 +891,10 @@ const MapView = {
   clearRoute() {
     if (!this.m) return;
     this._routeCoords = null; // v22.95: drop cached coords with the line
+    // v23.1.0: drop cached route metrics so the diag-strip clears too
+    this._routeDistanceM = null;
+    this._routeDurationS = null;
+    this._routeDestCoords = null;
     ['ra-route-line', 'ra-route-glow'].forEach(id => {
       try { if (this.m.getLayer(id)) this.m.removeLayer(id); } catch (e) {}
     });
@@ -993,7 +1009,7 @@ const MapView = {
     this._offRouteStrikes = 0;
     this._isReroute = true;
     logEvent('ROUTE', `reroute started — ${Math.round(distM)}m off route, recalculating from current GPS`, 'ok');
-    Utils.toast(`Off route — recalculating…`, 'good');
+    // v23.1.0: status sits in the diag-strip now; no toast for reroute.
     // Clearing the cached destId forces _fetchAndDrawRoute to re-issue.
     this._routeForDestId = null;
     this._fetchAndDrawRoute();
@@ -1457,65 +1473,86 @@ const UI = {
   /** v22.37: GPS health indicator — multi-state strip.
    *  Detects: never-locked, stale fix, position jump, low accuracy.
    *  Colors: good (green) / warn (amber) / bad (red).
-   *  Idle mode (no GPS started) shows neutral "off" — not red. */
+   *  Idle mode (no GPS started) shows neutral "off" — not red.
+   *  v23.1.0: HDG and route ETA split into sibling cells in the strip.
+   *  The recurring "Route: X km · ~Y min" toast was replaced by the
+   *  ETA cell so the status sits on screen instead of popping every
+   *  few seconds. */
   renderDiagStrip() {
     const gpsEl = document.getElementById('diag-gps');
-    if (!gpsEl) return;
+    const hdgEl = document.getElementById('diag-hdg');
+    const etaEl = document.getElementById('diag-eta');
 
-    // Idle: app not actively listening for GPS — neutral, not red
-    if (State.mode === 'idle') {
-      gpsEl.textContent = 'GPS off';
-      gpsEl.className = '';
-      return;
+    // GPS cell
+    if (gpsEl) {
+      if (State.mode === 'idle') {
+        gpsEl.textContent = 'GPS off';
+        gpsEl.className = '';
+      } else if (State.accuracy == null || State.lastFixAt == null) {
+        gpsEl.textContent = 'GPS acquiring…';
+        gpsEl.className = 'warn';
+      } else {
+        const sinceFixMs = Date.now() - State.lastFixAt;
+        if (sinceFixMs > 30000) {
+          gpsEl.textContent = `GPS LOST · ${Math.round(sinceFixMs / 1000)}s ago`;
+          gpsEl.className = 'bad';
+        } else if (sinceFixMs > 8000) {
+          gpsEl.textContent = `GPS stale · ${Math.round(sinceFixMs / 1000)}s ago`;
+          gpsEl.className = 'warn';
+        } else if (State.lastFixJump) {
+          gpsEl.textContent = `GPS jump ±${Math.round(State.accuracy)}m`;
+          gpsEl.className = 'warn';
+        } else {
+          const acc = Math.round(State.accuracy);
+          if (State.accuracy > 500) {
+            gpsEl.textContent = `GPS ±${acc}m (poor)`;
+            gpsEl.className = 'bad';
+          } else if (State.accuracy > 200) {
+            gpsEl.textContent = `GPS ±${acc}m (degraded)`;
+            gpsEl.className = 'warn';
+          } else {
+            gpsEl.textContent = `GPS ±${acc}m ✓`;
+            gpsEl.className = 'good';
+          }
+        }
+      }
     }
 
-    // GPS started but no fix yet
-    if (State.accuracy == null || State.lastFixAt == null) {
-      gpsEl.textContent = 'GPS acquiring…';
-      gpsEl.className = 'warn';
-      return;
+    // HDG cell — own slot so it's always visible alongside GPS health.
+    if (hdgEl) {
+      if (State.heading == null) {
+        hdgEl.textContent = 'HDG —';
+        hdgEl.className = '';
+      } else {
+        const src = State.headingSource === 'gps' ? 'gps' : (State.headingSource === 'derived' ? 'der' : '?');
+        hdgEl.textContent = `HDG ${Math.round(State.heading)}° ${src}`;
+        hdgEl.className = '';
+      }
     }
 
-    // Stale fix detection — no update in 8+ seconds is suspicious
-    const sinceFixMs = Date.now() - State.lastFixAt;
-    if (sinceFixMs > 30000) {
-      gpsEl.textContent = `GPS LOST · ${Math.round(sinceFixMs / 1000)}s ago`;
-      gpsEl.className = 'bad';
-      return;
-    }
-    if (sinceFixMs > 8000) {
-      gpsEl.textContent = `GPS stale · ${Math.round(sinceFixMs / 1000)}s ago`;
-      gpsEl.className = 'warn';
-      return;
-    }
-
-    // Position jump — last fix was implausibly far from previous
-    if (State.lastFixJump) {
-      gpsEl.textContent = `GPS jump ±${Math.round(State.accuracy)}m`;
-      gpsEl.className = 'warn';
-      return;
-    }
-
-    // Accuracy tiers (existing)
-    const acc = Math.round(State.accuracy);
-    // v22.52: append heading info for diagnostic during real-drive testing.
-    // Shows: HDG 142° gps (or 'der' for derived). Empty when no heading yet.
-    let headingTxt = '';
-    if (State.heading != null) {
-      const src = State.headingSource === 'gps' ? 'gps' : (State.headingSource === 'derived' ? 'der' : '?');
-      headingTxt = ` · HDG ${Math.round(State.heading)}° ${src}`;
-    } else {
-      headingTxt = ' · HDG —';
-    }
-    if (State.accuracy > 500) {
-      gpsEl.textContent = `GPS ±${acc}m (poor)${headingTxt}`;
-      gpsEl.className = 'bad';
-    } else if (State.accuracy > 200) {
-      gpsEl.textContent = `GPS ±${acc}m (degraded)${headingTxt}`;
-      gpsEl.className = 'warn';
-    } else {
-      gpsEl.textContent = `GPS ±${acc}m ✓${headingTxt}`;
-      gpsEl.className = 'good';
+    // ETA cell — straight-line distance to active destination + estimated
+    // arrival HH:MM derived from the cached route's average speed
+    // (network distance / network duration). The straight-line shrinks as
+    // the user drives, so the ETA self-updates without re-issuing OSRM.
+    if (etaEl) {
+      const dest = MapView._routeDestCoords;
+      const distM = MapView._routeDistanceM;
+      const durS = MapView._routeDurationS;
+      if (!dest || !State.pos || !distM || !durS) {
+        etaEl.textContent = 'ETA —';
+        etaEl.className = '';
+      } else {
+        const avgSpeedMs = distM / durS; // m/s implied by OSRM
+        const straightM = Utils.distKm(State.pos, dest) * 1000;
+        const remainingSec = avgSpeedMs > 0 ? straightM / avgSpeedMs : 0;
+        const arrival = new Date(Date.now() + remainingSec * 1000);
+        const hh = String(arrival.getHours()).padStart(2, '0');
+        const mm = String(arrival.getMinutes()).padStart(2, '0');
+        const km = straightM / 1000;
+        const distTxt = km < 1 ? Math.round(straightM) + 'm' : km.toFixed(1) + 'km';
+        etaEl.textContent = `ETA ${hh}:${mm} · ${distTxt}`;
+        etaEl.className = 'good';
+      }
     }
   },
 

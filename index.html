@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.1.5">
+<link rel="stylesheet" href="styles.css?v=23.1.6">
 </head>
 <body data-theme="light">
 
@@ -64,7 +64,9 @@
       <span id="diag-hdg">HDG —</span>
     </div>
     <div class="diag-group diag-center">
-      <span id="diag-net" title="Network status">🔴</span>
+      <span id="diag-net" class="net-online" title="Online" aria-label="Online">
+        <span class="net-dot"></span>
+      </span>
     </div>
     <div class="diag-group diag-right">
       <span id="diag-eta">ETA —</span>
@@ -718,8 +720,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.1.5"></script>
-<script defer src="js/app-ui.js?v=23.1.5"></script>
+<script defer src="js/app-core.js?v=23.1.6"></script>
+<script defer src="js/app-ui.js?v=23.1.6"></script>
 
 </body>
 </html>

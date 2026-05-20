@@ -1557,14 +1557,23 @@ const UI = {
 
     // Network cell — center of the strip. navigator.onLine plus the
     // online/offline event listeners (wired in boot) keep it live.
-    // v23.1.2: dot-only so the cell never grows or wraps. Aria-label
-    // carries the human-readable status for screen readers.
+    // v23.1.6: the dot is a CSS circle now (.net-dot child); colour +
+    // pulse animation are class-driven so we never re-render the DOM
+    // text and the pulse keyframes keep running smoothly.
     const netEl = document.getElementById('diag-net');
     if (netEl) {
       const online = (typeof navigator !== 'undefined' && navigator.onLine !== false);
-      netEl.textContent = online ? '🟢' : '🔴';
-      netEl.setAttribute('title', online ? 'Online' : 'Offline');
-      netEl.setAttribute('aria-label', online ? 'Online' : 'Offline');
+      netEl.classList.toggle('net-online', online);
+      netEl.classList.toggle('net-offline', !online);
+      const label = online ? 'Online' : 'Offline';
+      netEl.setAttribute('title', label);
+      netEl.setAttribute('aria-label', label);
+      // Ensure the dot child exists (defensive — initial markup has it)
+      if (!netEl.querySelector('.net-dot')) {
+        const d = document.createElement('span');
+        d.className = 'net-dot';
+        netEl.appendChild(d);
+      }
     }
   },
 

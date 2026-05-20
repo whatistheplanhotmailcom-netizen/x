@@ -189,12 +189,58 @@ body {
   width: max-content; /* size to content, not the grid column */
 }
 .diag-strip .diag-left   { justify-self: start; }
-.diag-strip .diag-center { justify-self: center; }
+.diag-strip .diag-center { justify-self: center; overflow: visible; } /* v23.1.6: allow the net-dot pulse ring to extend past the card border */
 .diag-strip .diag-right  { justify-self: end; }
 .diag-strip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }
+
+/* v23.1.6: neon network status dot.
+   - Online  → green dot with constant outer glow + a pulse ring that
+              expands from scale(0) at the center to scale(1.1) (10%
+              past the dot's outer border) every second.
+   - Offline → red dot, no pulse.
+   The dot itself is a CSS circle (was the 🟢 emoji) so colour and
+   glow are precisely controllable. */
+#diag-net { display: inline-flex; align-items: center; justify-content: center; overflow: visible; }
+#diag-net .net-dot {
+  position: relative;
+  display: inline-block;
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  background: #22ff77;
+  box-shadow: 0 0 4px rgba(34,255,119,0.9), 0 0 10px rgba(34,255,119,0.55);
+  flex: 0 0 auto;
+}
+#diag-net.net-offline .net-dot {
+  background: #ff3344;
+  box-shadow: 0 0 4px rgba(255,51,68,0.9);
+}
+/* Pulse ring — sits behind the dot, animates from center outward.
+   transform-origin: center keeps the expansion concentric.
+   Scale 1.1 = 10% past the dot's outer border. */
+#diag-net.net-online .net-dot::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: #22ff77;
+  transform: scale(0);
+  transform-origin: center;
+  opacity: 0.75;
+  animation: diag-net-pulse 1s ease-out infinite;
+  pointer-events: none;
+  z-index: -1;
+}
+@keyframes diag-net-pulse {
+  0%   { transform: scale(0);    opacity: 0.85; }
+  80%  {                         opacity: 0.05; }
+  100% { transform: scale(1.1);  opacity: 0;    }
+}
+@media (prefers-reduced-motion: reduce) {
+  #diag-net.net-online .net-dot::before { animation: none; }
+}
 
 /* v22.58: TOOLS RAIL — vertical strip of recent captures, sits in column 2
    of .map-row beside the map. Height matches the map (align-items: stretch

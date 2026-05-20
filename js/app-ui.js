@@ -3246,10 +3246,24 @@ function importJson(e) {
 /* ============================================================
    11. BOOT
    ============================================================ */
+/** Push APP_VERSION into every visible surface. Safe to call before any
+ *  particular element exists — each write is independently null-guarded
+ *  so a missing node never aborts the rest. */
+function applyAppVersion() {
+  try { document.title = 'X ' + APP_VERSION; } catch (e) {}
+  const label = document.getElementById('app-version-label');
+  if (label) label.textContent = APP_VERSION;
+  const dbg = document.getElementById('debug-version');
+  if (dbg) dbg.textContent = APP_VERSION;
+}
+
 function boot() {
   try {
-    logEvent('BOOT', `App starting (v${APP_VERSION})`);
-    // v22.98: prune expired learned routes (>30 days) on every boot
+    // Single source of truth — populate every visible surface from
+    // APP_VERSION. Each DOM write is null-guarded so a missing element
+    // (test harness, partial DOM) never aborts boot.
+    applyAppVersion();
+    logEvent('APP', `Version ${APP_VERSION} loaded`, 'ok');
     RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();
     wire();

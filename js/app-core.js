@@ -1,9 +1,15 @@
 'use strict';
 
-// v22.104: single source of truth for the app version string. Used by the
-// boot log; also referenced by Phase-0 hardening commit. Bump alongside
-// the visible <title>, brand badge, and asset cache-bust strings.
-const APP_VERSION = '22.104';
+// Single source of truth for the running app version. Every visible
+// surface (document.title, the top-bar badge, the debug log header,
+// the [APP] boot line) is populated from this constant at boot. Bump
+// this on every release; the boot wiring synchronizes the DOM and the
+// asset cache-bust query string must be advanced in lockstep.
+// Semantic versioning: MAJOR.MINOR.PATCH.
+//   MAJOR — architecture or major system milestone
+//   MINOR — new features or meaningful capability additions
+//   PATCH — bug fixes, tuning, logging, UI adjustments
+const APP_VERSION = 'v23.0.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {

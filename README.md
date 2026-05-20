@@ -258,24 +258,49 @@ reader.
 ## 8. Versioning Rules
 
 `APP_VERSION` in `js/app-core.js` is the single source of truth for
-the application version. Every other surface must match it.
+the application version. Every other surface must be populated from
+it at boot, not hand-edited.
 
-Surfaces that must stay in sync on every release:
+Format: **semantic versioning**, prefixed with `v`.
 
-- `APP_VERSION` constant in `js/app-core.js`.
-- `<title>` in `index.html`.
-- `<span class="version">` in the top bar of `index.html`.
-- The README header / changelog entry, where applicable.
+    vMAJOR.MINOR.PATCH      e.g. v23.0.0, v23.0.1, v23.1.0
+
+- **MAJOR** — architecture or major system milestone (data model
+  change, scoring engine rewrite, file layout overhaul).
+- **MINOR** — new features or meaningful capability additions.
+- **PATCH** — bug fixes, tuning, logging changes, small UI
+  adjustments.
+
+Surfaces driven from `APP_VERSION` at boot via `applyAppVersion()`:
+
+- `document.title` (HTML ships with the bare title `X`; JS appends
+  the version).
+- `#app-version-label` in the top bar.
+- `#debug-version` in the debug-log header.
+- The first boot log line: `[APP] Version v23.0.0 loaded`.
+
+Surfaces that must be edited by hand on each release:
+
+- The `APP_VERSION` constant itself.
+- The asset cache-bust query string (`?v=...` on `styles.css`,
+  `js/app-core.js`, `js/app-ui.js`) — HTML cannot reference a JS
+  constant in a `<script src>` attribute. Bump it in lockstep.
 - The git commit message and, when used, the PR title.
 
-The asset cache-bust query string (`?v=...` on `styles.css`,
-`js/app-core.js`, `js/app-ui.js`) must be advanced on every commit
-that modifies the CSS or JS, even when the user-facing version
-number itself is not bumped. A build-suffix (`?v=22.104a`) is
-acceptable for intra-version commits.
+The cache-bust string must be advanced on every commit that modifies
+the CSS or JS, even when the user-facing version is not bumped. A
+build-suffix on the cache-bust (`?v=23.0.0a`) is acceptable for
+intra-version commits that ship hotfixes between releases.
 
-Boot log must read the version from `APP_VERSION` so the in-app
-debug log and the visible UI never disagree.
+Historical `v22.X:` markers in code comments are changelog
+annotations describing when each piece of code was added. They are
+**not** current-version assertions and must not be rewritten on a
+version bump.
+
+The `roadAlert.v22.*` `localStorage` namespace is a storage-key
+prefix, not a version assertion. Renaming it would orphan every
+user's saved data and is prohibited by the "Never break saved data"
+rule in Section 7.
 
 ---
 

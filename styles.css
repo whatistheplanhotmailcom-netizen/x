@@ -172,10 +172,12 @@ body {
 /* v23.1.1: three named groups inside the strip — left, center, right */
 /* v23.1.2: groups stay single-line; left/right may shrink and ellipsis;
    center pin-shows the connection dot at all widths. */
+/* v23.1.3: vertical dividers between the three sections so each part
+   reads as its own purpose: GPS health | network status | route ETA. */
 .diag-strip .diag-group { display: flex; align-items: center; gap: 4px 10px; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
-.diag-strip .diag-left   { flex: 1 1 auto; }
-.diag-strip .diag-right  { flex: 0 1 auto; justify-content: flex-end; }
-.diag-strip .diag-center { flex: 0 0 auto; justify-content: center; padding: 0 6px; }
+.diag-strip .diag-left   { flex: 1 1 auto; padding-right: 10px; border-right: 1px solid var(--line-2); }
+.diag-strip .diag-center { flex: 0 0 auto; justify-content: center; padding: 0 12px; border-right: 1px solid var(--line-2); }
+.diag-strip .diag-right  { flex: 0 1 auto; justify-content: flex-end; padding-left: 10px; }
 .diag-strip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }

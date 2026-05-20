@@ -156,7 +156,8 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between; /* v23.1.1: left | center | right groups */
-  flex-wrap: wrap;
+  flex-wrap: nowrap;              /* v23.1.2: never break to a second line */
+  overflow: hidden;
   gap: 4px 10px;
   padding: 4px 6px;
   font-family: var(--mono, monospace);
@@ -169,10 +170,13 @@ body {
   margin-top: 4px;
 }
 /* v23.1.1: three named groups inside the strip — left, center, right */
-.diag-strip .diag-group { display: flex; align-items: center; gap: 4px 10px; flex-wrap: wrap; }
-.diag-strip .diag-center { justify-content: center; }
-.diag-strip .diag-right  { justify-content: flex-end; }
-.diag-strip span { white-space: nowrap; }
+/* v23.1.2: groups stay single-line; left/right may shrink and ellipsis;
+   center pin-shows the connection dot at all widths. */
+.diag-strip .diag-group { display: flex; align-items: center; gap: 4px 10px; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
+.diag-strip .diag-left   { flex: 1 1 auto; }
+.diag-strip .diag-right  { flex: 0 1 auto; justify-content: flex-end; }
+.diag-strip .diag-center { flex: 0 0 auto; justify-content: center; padding: 0 6px; }
+.diag-strip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }

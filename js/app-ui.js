@@ -1555,33 +1555,16 @@ const UI = {
       }
     }
 
-    // Destination cell — short name of the currently active destination.
-    // Truncated so the right group can't push past the strip edge.
-    const destEl = document.getElementById('diag-dest');
-    if (destEl) {
-      const dest = State.activeDest();
-      if (dest && dest.name) {
-        const name = dest.name.length > 20 ? dest.name.slice(0, 18) + '…' : dest.name;
-        destEl.textContent = '→ ' + name;
-        destEl.className = '';
-      } else {
-        destEl.textContent = '—';
-        destEl.className = '';
-      }
-    }
-
     // Network cell — center of the strip. navigator.onLine plus the
     // online/offline event listeners (wired in boot) keep it live.
+    // v23.1.2: dot-only so the cell never grows or wraps. Aria-label
+    // carries the human-readable status for screen readers.
     const netEl = document.getElementById('diag-net');
     if (netEl) {
       const online = (typeof navigator !== 'undefined' && navigator.onLine !== false);
-      if (online) {
-        netEl.textContent = '🟢 online';
-        netEl.className = 'good';
-      } else {
-        netEl.textContent = '🔴 offline';
-        netEl.className = 'bad';
-      }
+      netEl.textContent = online ? '🟢' : '🔴';
+      netEl.setAttribute('title', online ? 'Online' : 'Offline');
+      netEl.setAttribute('aria-label', online ? 'Online' : 'Offline');
     }
   },
 

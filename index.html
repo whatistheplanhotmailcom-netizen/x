@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.1.1">
+<link rel="stylesheet" href="styles.css?v=23.1.2">
 </head>
 <body data-theme="light">
 
@@ -54,19 +54,20 @@
   <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->
   <!-- v23.1.0: HDG + route ETA added inline; replaces the recurring
        "Route: X km · ~Y min" toast that fired on every reroute.
-       v23.1.1: three-group layout — GPS/HDG left, online status
-       center, ETA + destination right. -->
+       v23.1.2: locked to a single line — flex-nowrap on the strip,
+       ellipsis on each cell, connection cell shows only the dot so
+       it always survives overflow. Destination removed (was in the
+       route bar already). -->
   <div class="diag-strip" id="diag-strip">
     <div class="diag-group diag-left">
       <span id="diag-gps">GPS —</span>
       <span id="diag-hdg">HDG —</span>
     </div>
     <div class="diag-group diag-center">
-      <span id="diag-net">🔴 offline</span>
+      <span id="diag-net" title="Network status">🔴</span>
     </div>
     <div class="diag-group diag-right">
       <span id="diag-eta">ETA —</span>
-      <span id="diag-dest">—</span>
     </div>
   </div>
 
@@ -717,8 +718,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.1.1"></script>
-<script defer src="js/app-ui.js?v=23.1.1"></script>
+<script defer src="js/app-core.js?v=23.1.2"></script>
+<script defer src="js/app-ui.js?v=23.1.2"></script>
 
 </body>
 </html>

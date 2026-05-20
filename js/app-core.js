@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.0.0';
+const APP_VERSION = 'v23.0.1';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1280,6 +1280,10 @@ const Storage = {
       // available options ('liberty', 'positron', 'dark', 'satellite',
       // 'terrain'). Default 'liberty' = the original street view.
       mapStyle: 'liberty',
+      // v23.0.1: show the explanatory paragraphs under each settings row.
+      // Default on — first-time users benefit from the context. Power users
+      // can switch off in Settings → Display to reclaim vertical space.
+      showHints: true,
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest

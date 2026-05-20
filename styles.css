@@ -1063,6 +1063,9 @@ body {
 }
 .row-hint code { font-family: ui-monospace, monospace; color: var(--ink-2); }
 .row-hint strong { color: var(--ink-2); }
+/* v23.0.1: user toggle to hide every explanatory paragraph at once.
+   Driven by the Settings → "Show help text" toggle via a body attribute. */
+body[data-hide-hints="true"] .row-hint { display: none; }
 /* v22.17: chip-style markers for alert distances */
 .marker-chip {
   display: inline-flex;

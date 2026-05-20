@@ -2449,6 +2449,10 @@ const UI = {
     // v22.83: compass show/hide toggle reflects the saved setting
     const tCompass = document.getElementById('t-compass');
     if (tCompass) tCompass.classList.toggle('on', State.settings.showCompass !== false);
+    // v23.0.1: hints visibility toggle + body attribute sync
+    const tHints = document.getElementById('t-hints');
+    if (tHints) tHints.classList.toggle('on', State.settings.showHints !== false);
+    UI.applyHintsVisibility();
     document.getElementById('markers-chips') && UI.renderMarkerChips();
     document.getElementById('i-over').value = State.settings.overBy;
     // v22.6: new alert settings
@@ -2480,6 +2484,14 @@ const UI = {
     }
     document.body.setAttribute('data-theme', t);
     document.querySelector('meta[name="theme-color"]').setAttribute('content', t === 'dark' ? '#0c0a09' : '#f5f1e8');
+  },
+
+  /** v23.0.1: write body[data-hide-hints] so the CSS rule that hides every
+   *  .row-hint takes effect immediately. Treat undefined as "show" so
+   *  existing users default to the same behavior as before this toggle. */
+  applyHintsVisibility() {
+    const hide = State.settings.showHints === false;
+    document.body.setAttribute('data-hide-hints', hide ? 'true' : 'false');
   },
 
   updateBackupStatus() {
@@ -2909,6 +2921,13 @@ function wire() {
   document.getElementById('t-side').onclick = () => { State.settings.announceSide = !State.settings.announceSide; State.saveSettings(); UI.syncSettings(); };
   // v22.83: compass show/hide toggle
   document.getElementById('t-compass').onclick = () => UI.toggleCompass();
+  // v23.0.1: hide / show explanatory paragraphs under each settings row
+  const tHintsBtn = document.getElementById('t-hints');
+  if (tHintsBtn) tHintsBtn.onclick = () => {
+    State.settings.showHints = State.settings.showHints === false ? true : false;
+    State.saveSettings();
+    UI.syncSettings();
+  };
   document.getElementById('t-autobackup').onclick = () => {
     State.settings.autoBackup = !State.settings.autoBackup;
     State.saveSettings(); UI.syncSettings();
@@ -3266,6 +3285,7 @@ function boot() {
     logEvent('APP', `Version ${APP_VERSION} loaded`, 'ok');
     RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();
+    UI.applyHintsVisibility(); // v23.0.1: respect saved show/hide preference
     wire();
     // v22.82: try to subscribe to the device compass. iOS will defer the
     // actual permission request to the first user tap.

@@ -1557,13 +1557,21 @@ const UI = {
 
     // Network cell — center of the strip. navigator.onLine plus the
     // online/offline event listeners (wired in boot) keep it live.
-    // v23.1.7: emoji is back. .net-emoji child holds the glyph so
-    // textContent updates don't disturb the pulse pseudo-element.
+    // v23.1.7:  emoji is back. .net-emoji child holds the glyph so
+    //           textContent updates don't disturb the pulse pseudo-element.
+    // v23.1.11: mirror the .net-online / .net-offline class onto the
+    //           parent .diag-center card so its border can flash neon
+    //           green / red.
     const netEl = document.getElementById('diag-net');
     if (netEl) {
       const online = (typeof navigator !== 'undefined' && navigator.onLine !== false);
       netEl.classList.toggle('net-online', online);
       netEl.classList.toggle('net-offline', !online);
+      const card = netEl.closest('.diag-center');
+      if (card) {
+        card.classList.toggle('net-online', online);
+        card.classList.toggle('net-offline', !online);
+      }
       const label = online ? 'Online' : 'Offline';
       netEl.setAttribute('title', label);
       netEl.setAttribute('aria-label', label);

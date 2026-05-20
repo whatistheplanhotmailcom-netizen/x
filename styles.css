@@ -209,7 +209,46 @@ body {
    pulse ring this gives a single bright neon-green flash that
    originates from the glyph and expands past it each beat. */
 #diag-net { position: relative; display: inline-flex; align-items: center; justify-content: center; overflow: visible; line-height: 1; }
-#diag-net .net-emoji { position: relative; z-index: 1; line-height: 1; font-size: 14px; }
+#diag-net .net-emoji { position: relative; z-index: 1; line-height: 1; font-size: 11px; }
+
+/* v23.1.11: neon-flashing border on the network card itself. The
+   .net-online / .net-offline classes are mirrored onto .diag-center
+   in JS so the card border can swap colour + animation as the
+   connectivity state changes. Same 1-second cadence as the emoji
+   flash — the whole card pulses in unison. */
+.diag-strip .diag-center.net-online {
+  border-color: rgba(34,255,119,0.85);
+  animation: diag-card-flash-green 1s ease-in-out infinite;
+}
+.diag-strip .diag-center.net-offline {
+  border-color: rgba(255,51,68,0.85);
+  animation: diag-card-flash-red 1s ease-in-out infinite;
+}
+@keyframes diag-card-flash-green {
+  0%, 100% {
+    border-color: rgba(34,255,119,0.55);
+    box-shadow: 0 0 2px rgba(34,255,119,0.25), inset 0 0 2px rgba(34,255,119,0.15);
+  }
+  35% {
+    border-color: rgba(34,255,119,1);
+    box-shadow:
+      0 0 6px rgba(34,255,119,0.95),
+      0 0 14px rgba(34,255,119,0.6),
+      inset 0 0 6px rgba(34,255,119,0.55);
+  }
+}
+@keyframes diag-card-flash-red {
+  0%, 100% {
+    border-color: rgba(255,51,68,0.55);
+    box-shadow: 0 0 2px rgba(255,51,68,0.25);
+  }
+  35% {
+    border-color: rgba(255,51,68,1);
+    box-shadow:
+      0 0 6px rgba(255,51,68,0.95),
+      0 0 14px rgba(255,51,68,0.5);
+  }
+}
 
 /* Emoji flash — drop-shadow filters work on the rasterised emoji
    glyph so we get a true halo regardless of which font renders it. */
@@ -257,6 +296,8 @@ body {
 @media (prefers-reduced-motion: reduce) {
   #diag-net.net-online::before    { animation: none; }
   #diag-net.net-online .net-emoji { animation: none; }
+  .diag-strip .diag-center.net-online,
+  .diag-strip .diag-center.net-offline { animation: none; }
 }
 
 /* v22.58: TOOLS RAIL — vertical strip of recent captures, sits in column 2

@@ -196,50 +196,34 @@ body {
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }
 
-/* v23.1.6: neon network status dot.
-   - Online  → green dot with constant outer glow + a pulse ring that
-              expands from scale(0) at the center to scale(1.1) (10%
-              past the dot's outer border) every second.
-   - Offline → red dot, no pulse.
-   The dot itself is a CSS circle (was the 🟢 emoji) so colour and
-   glow are precisely controllable. */
-#diag-net { display: inline-flex; align-items: center; justify-content: center; overflow: visible; }
-#diag-net .net-dot {
-  position: relative;
-  display: inline-block;
-  width: 12px; height: 12px;
-  border-radius: 50%;
-  background: #22ff77;
-  box-shadow: 0 0 4px rgba(34,255,119,0.9), 0 0 10px rgba(34,255,119,0.55);
-  flex: 0 0 auto;
-}
-#diag-net.net-offline .net-dot {
-  background: #ff3344;
-  box-shadow: 0 0 4px rgba(255,51,68,0.9);
-}
-/* Pulse ring — sits behind the dot, animates from center outward.
-   transform-origin: center keeps the expansion concentric.
-   Scale 1.1 = 10% past the dot's outer border. */
-#diag-net.net-online .net-dot::before {
+/* v23.1.7: keep the real 🟢 emoji and add a neon-green glow ring that
+   pulses outward from behind it every second, peaking at 10% larger
+   than the emoji's character box (scale 1.1). When offline the emoji
+   becomes 🔴 and the pulse is suppressed. */
+#diag-net { position: relative; display: inline-flex; align-items: center; justify-content: center; overflow: visible; line-height: 1; }
+#diag-net .net-emoji { position: relative; z-index: 1; line-height: 1; font-size: 13px; }
+#diag-net.net-online::before {
   content: '';
   position: absolute;
-  inset: 0;
+  top: 50%; left: 50%;
+  width: 1em; height: 1em;
+  margin: -0.5em 0 0 -0.5em;
   border-radius: 50%;
-  background: #22ff77;
+  background: radial-gradient(circle, rgba(34,255,119,0.85) 0%, rgba(34,255,119,0.45) 60%, rgba(34,255,119,0) 100%);
   transform: scale(0);
-  transform-origin: center;
-  opacity: 0.75;
+  transform-origin: center center;
+  opacity: 0;
   animation: diag-net-pulse 1s ease-out infinite;
   pointer-events: none;
-  z-index: -1;
+  z-index: 0;
 }
 @keyframes diag-net-pulse {
-  0%   { transform: scale(0);    opacity: 0.85; }
-  80%  {                         opacity: 0.05; }
-  100% { transform: scale(1.1);  opacity: 0;    }
+  0%   { transform: scale(0);   opacity: 0.0; }
+  20%  { transform: scale(0.4); opacity: 0.85; }
+  100% { transform: scale(1.1); opacity: 0.0; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #diag-net.net-online .net-dot::before { animation: none; }
+  #diag-net.net-online::before { animation: none; }
 }
 
 /* v22.58: TOOLS RAIL — vertical strip of recent captures, sits in column 2

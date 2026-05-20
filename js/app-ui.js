@@ -1557,9 +1557,8 @@ const UI = {
 
     // Network cell — center of the strip. navigator.onLine plus the
     // online/offline event listeners (wired in boot) keep it live.
-    // v23.1.6: the dot is a CSS circle now (.net-dot child); colour +
-    // pulse animation are class-driven so we never re-render the DOM
-    // text and the pulse keyframes keep running smoothly.
+    // v23.1.7: emoji is back. .net-emoji child holds the glyph so
+    // textContent updates don't disturb the pulse pseudo-element.
     const netEl = document.getElementById('diag-net');
     if (netEl) {
       const online = (typeof navigator !== 'undefined' && navigator.onLine !== false);
@@ -1568,12 +1567,14 @@ const UI = {
       const label = online ? 'Online' : 'Offline';
       netEl.setAttribute('title', label);
       netEl.setAttribute('aria-label', label);
-      // Ensure the dot child exists (defensive — initial markup has it)
-      if (!netEl.querySelector('.net-dot')) {
-        const d = document.createElement('span');
-        d.className = 'net-dot';
-        netEl.appendChild(d);
+      let emojiEl = netEl.querySelector('.net-emoji');
+      if (!emojiEl) {
+        emojiEl = document.createElement('span');
+        emojiEl.className = 'net-emoji';
+        netEl.appendChild(emojiEl);
       }
+      const next = online ? '🟢' : '🔴';
+      if (emojiEl.textContent !== next) emojiEl.textContent = next;
     }
   },
 

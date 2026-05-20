@@ -203,9 +203,36 @@ body {
 /* v23.1.7: keep the real 🟢 emoji and add a neon-green glow ring that
    pulses outward from behind it every second, peaking at 10% larger
    than the emoji's character box (scale 1.1). When offline the emoji
-   becomes 🔴 and the pulse is suppressed. */
+   becomes 🔴 and the pulse is suppressed.
+   v23.1.10: the EMOJI itself now flashes neon green once per second
+   via filter: drop-shadow() keyframes. Combined with the outward
+   pulse ring this gives a single bright neon-green flash that
+   originates from the glyph and expands past it each beat. */
 #diag-net { position: relative; display: inline-flex; align-items: center; justify-content: center; overflow: visible; line-height: 1; }
-#diag-net .net-emoji { position: relative; z-index: 1; line-height: 1; font-size: 13px; }
+#diag-net .net-emoji { position: relative; z-index: 1; line-height: 1; font-size: 14px; }
+
+/* Emoji flash — drop-shadow filters work on the rasterised emoji
+   glyph so we get a true halo regardless of which font renders it. */
+#diag-net.net-online .net-emoji {
+  animation: diag-net-emoji-flash 1s ease-in-out infinite;
+}
+@keyframes diag-net-emoji-flash {
+  0%, 100% {
+    filter: drop-shadow(0 0 0 rgba(34,255,119,0));
+  }
+  35% {
+    filter:
+      drop-shadow(0 0 4px rgba(34,255,119,1))
+      drop-shadow(0 0 10px rgba(34,255,119,0.95))
+      drop-shadow(0 0 18px rgba(34,255,119,0.7));
+  }
+  70% {
+    filter: drop-shadow(0 0 2px rgba(34,255,119,0.4));
+  }
+}
+
+/* Outward ring — sits behind the emoji and expands to 10% past the
+   emoji's character box each cycle. Synced to the same 1s beat. */
 #diag-net.net-online::before {
   content: '';
   position: absolute;
@@ -226,8 +253,10 @@ body {
   20%  { transform: scale(0.4); opacity: 0.85; }
   100% { transform: scale(1.1); opacity: 0.0; }
 }
+
 @media (prefers-reduced-motion: reduce) {
-  #diag-net.net-online::before { animation: none; }
+  #diag-net.net-online::before    { animation: none; }
+  #diag-net.net-online .net-emoji { animation: none; }
 }
 
 /* v22.58: TOOLS RAIL — vertical strip of recent captures, sits in column 2

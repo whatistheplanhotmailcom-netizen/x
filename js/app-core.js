@@ -1,5 +1,10 @@
 'use strict';
 
+// v22.104: single source of truth for the app version string. Used by the
+// boot log; also referenced by Phase-0 hardening commit. Bump alongside
+// the visible <title>, brand badge, and asset cache-bust strings.
+const APP_VERSION = '22.104';
+
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
   console.error('[uncaught]', e.message, e.filename, e.lineno);
@@ -910,6 +915,284 @@ const RouteMemory = {
    *  "replaced" — called from the reroute success path. */
   replaceLearnedRoute(destId, destName, geometry, distance, duration, originPos) {
     RouteMemory.saveLearnedRoute(destId, destName, geometry, distance, duration, originPos);
+  },
+};
+
+/* ============================================================
+   0f. VALIDATOR — v22.104 (Phase 0)
+   Defensive schema validation for imported / restored / JSON-edited
+   data. Never destroys road memory silently — produces a report the
+   user confirms before overwrite. Salvages id-less-but-valid points
+   by minting a new id; truncates over-long strings with a warning;
+   drops genuinely invalid points (bad coords, missing critical
+   fields) only after the user has confirmed.
+   ============================================================ */
+const ValidatorConfig = {
+  MAX_NAME_LEN: 200,
+  MAX_NOTE_LEN: 1000,
+  MAX_LABEL_LEN: 200,
+  MIN_LIMIT_KMH: 5,
+  MAX_LIMIT_KMH: 250,
+  KNOWN_SIDES: ['left', 'right'],
+  KNOWN_STATUSES: ['active', 'no'],
+  KNOWN_TYPES: ['speed_camera', 'speed_change', 'redlight', 'bump', 'petrol', 'service', 'parking', 'rest', 'hazard', 'other'],
+  MAX_WARNINGS_REPORTED: 5,
+};
+
+const Validator = {
+  /** Top-level entry point. `parsed` may be the full export shape
+   *  ({ data, settings, trips }) OR a bare State.data object. Returns
+   *  { ok, report, sanitized } where:
+   *    - ok           : true if at least the shape was recognizable
+   *    - report       : human-readable counts + sample warnings
+   *    - sanitized    : { data, settings, trips } with valid rows kept
+   *  Caller (UI) is responsible for showing the report and prompting
+   *  the user to confirm before assigning sanitized → State.* */
+  validateImport(parsed) {
+    const warnings = [];
+    if (!parsed || typeof parsed !== 'object') {
+      return {
+        ok: false,
+        report: 'Not a JSON object',
+        warnings: ['root is not an object'],
+        sanitized: null,
+      };
+    }
+
+    // Normalize: accept either { data: {...}, settings, trips } or a
+    // bare data object with .points/.destinations.
+    let rawData, rawSettings, rawTrips;
+    if (parsed.data && (Array.isArray(parsed.data.points) || Array.isArray(parsed.data.destinations))) {
+      rawData = parsed.data;
+      rawSettings = parsed.settings || null;
+      rawTrips = Array.isArray(parsed.trips) ? parsed.trips : null;
+    } else if (Array.isArray(parsed.points) || Array.isArray(parsed.destinations)) {
+      rawData = parsed;
+      rawSettings = null;
+      rawTrips = null;
+    } else {
+      return {
+        ok: false,
+        report: 'Missing data.points / data.destinations',
+        warnings: ['shape not recognized'],
+        sanitized: null,
+      };
+    }
+
+    const destsIn = Array.isArray(rawData.destinations) ? rawData.destinations : [];
+    const pointsIn = Array.isArray(rawData.points) ? rawData.points : [];
+    const tripsIn = Array.isArray(rawTrips) ? rawTrips : [];
+
+    const destsOut = [];
+    let destsDropped = 0;
+    for (const d of destsIn) {
+      const res = Validator._validateDestination(d, warnings);
+      if (res) destsOut.push(res); else destsDropped++;
+    }
+
+    const pointsOut = [];
+    let pointsDropped = 0;
+    for (const p of pointsIn) {
+      const res = Validator._validatePoint(p, warnings);
+      if (res) pointsOut.push(res); else pointsDropped++;
+    }
+
+    const tripsOut = [];
+    let tripsDropped = 0;
+    for (const t of tripsIn) {
+      const res = Validator._validateTrip(t, warnings);
+      if (res) tripsOut.push(res); else tripsDropped++;
+    }
+
+    // Settings: drop unknown shape, keep object-typed payload as-is.
+    let settingsApplied = false;
+    let sanitizedSettings = null;
+    if (rawSettings && typeof rawSettings === 'object' && !Array.isArray(rawSettings)) {
+      sanitizedSettings = rawSettings;
+      settingsApplied = true;
+    } else if (rawSettings != null) {
+      warnings.push('settings skipped — not an object');
+    }
+
+    const cap = ValidatorConfig.MAX_WARNINGS_REPORTED;
+    const sampleWarnings = warnings.slice(0, cap);
+    const more = warnings.length > cap ? `\n…and ${warnings.length - cap} more` : '';
+
+    const report = [
+      `Destinations: kept ${destsOut.length} of ${destsIn.length} (dropped ${destsDropped})`,
+      `Points:       kept ${pointsOut.length} of ${pointsIn.length} (dropped ${pointsDropped})`,
+      `Trips:        kept ${tripsOut.length} of ${tripsIn.length} (dropped ${tripsDropped})`,
+      `Settings:     ${settingsApplied ? 'applied' : 'skipped'}`,
+      sampleWarnings.length
+        ? `\nFirst ${sampleWarnings.length} warning${sampleWarnings.length === 1 ? '' : 's'}:\n  - ` + sampleWarnings.join('\n  - ') + more
+        : '\nNo warnings',
+    ].join('\n');
+
+    return {
+      ok: true,
+      report,
+      warnings,
+      sanitized: {
+        data: {
+          ...rawData,
+          destinations: destsOut,
+          points: pointsOut,
+        },
+        settings: sanitizedSettings,
+        trips: tripsOut,
+      },
+      counts: {
+        destsIn: destsIn.length, destsKept: destsOut.length, destsDropped,
+        pointsIn: pointsIn.length, pointsKept: pointsOut.length, pointsDropped,
+        tripsIn: tripsIn.length, tripsKept: tripsOut.length, tripsDropped,
+        settingsApplied,
+      },
+    };
+  },
+
+  _validateDestination(d, warnings) {
+    if (!d || typeof d !== 'object') { warnings.push('destination dropped — not an object'); return null; }
+    const lat = Validator._coord(d.lat);
+    const lng = Validator._coord(d.lng);
+    if (lat == null || lng == null) {
+      warnings.push(`destination "${Validator._safeShort(d.name)}" dropped — invalid coordinates`);
+      return null;
+    }
+    const out = { ...d, lat, lng };
+    if (!out.id || typeof out.id !== 'string') {
+      out.id = Utils.uid();
+      warnings.push(`destination at ${lat.toFixed(4)},${lng.toFixed(4)} missing id; generated ${out.id}`);
+    }
+    out.name = Validator._truncString(out.name, ValidatorConfig.MAX_NAME_LEN, `destination ${out.id} name`, warnings) || '';
+    if (out.createdAt && !Validator._isIsoLike(out.createdAt)) {
+      warnings.push(`destination ${out.id} createdAt invalid — reset`);
+      out.createdAt = new Date().toISOString();
+    }
+    if (out.updatedAt && !Validator._isIsoLike(out.updatedAt)) {
+      warnings.push(`destination ${out.id} updatedAt invalid — reset`);
+      out.updatedAt = new Date().toISOString();
+    }
+    if (out.routePointRefs && !Array.isArray(out.routePointRefs)) {
+      warnings.push(`destination ${out.id} routePointRefs not array — reset`);
+      out.routePointRefs = [];
+    }
+    return out;
+  },
+
+  _validatePoint(p, warnings) {
+    if (!p || typeof p !== 'object') { warnings.push('point dropped — not an object'); return null; }
+    const lat = Validator._coord(p.lat);
+    const lng = Validator._coord(p.lng);
+    if (lat == null || lng == null) {
+      warnings.push(`point "${Validator._safeShort(p.name)}" dropped — invalid coordinates`);
+      return null;
+    }
+    const out = { ...p, lat, lng };
+    if (!out.id || typeof out.id !== 'string') {
+      const newId = Utils.uid();
+      warnings.push(`point at ${lat.toFixed(4)},${lng.toFixed(4)} missing id; generated ${newId}`);
+      out.id = newId;
+    }
+    if (out.type && typeof out.type === 'string') {
+      if (!ValidatorConfig.KNOWN_TYPES.includes(out.type)) {
+        warnings.push(`point ${out.id} unknown type "${out.type}" — accepted (display will fall back)`);
+      }
+    } else {
+      warnings.push(`point ${out.id} missing type — set to "other"`);
+      out.type = 'other';
+    }
+    if (out.side != null) {
+      if (typeof out.side !== 'string' || !ValidatorConfig.KNOWN_SIDES.includes(out.side)) {
+        warnings.push(`point ${out.id} invalid side "${out.side}" — cleared`);
+        delete out.side;
+      }
+    }
+    if (out.status != null) {
+      if (typeof out.status !== 'string' || !ValidatorConfig.KNOWN_STATUSES.includes(out.status)) {
+        warnings.push(`point ${out.id} invalid status "${out.status}" — reset to "active"`);
+        out.status = 'active';
+      }
+    }
+    const limit = Validator._speedLimit(out.limit);
+    if (out.limit != null && limit == null) {
+      warnings.push(`point ${out.id} invalid speed limit "${out.limit}" — cleared`);
+      delete out.limit;
+    } else if (limit != null) {
+      out.limit = limit;
+    }
+    const speedLimit = Validator._speedLimit(out.speedLimit);
+    if (out.speedLimit != null && speedLimit == null) {
+      warnings.push(`point ${out.id} invalid speedLimit "${out.speedLimit}" — cleared`);
+      delete out.speedLimit;
+    } else if (speedLimit != null) {
+      out.speedLimit = speedLimit;
+    }
+    out.name = Validator._truncString(out.name, ValidatorConfig.MAX_NAME_LEN, `point ${out.id} name`, warnings) || '';
+    if (out.note != null) {
+      out.note = Validator._truncString(out.note, ValidatorConfig.MAX_NOTE_LEN, `point ${out.id} note`, warnings) || '';
+    }
+    if (out.label != null) {
+      out.label = Validator._truncString(out.label, ValidatorConfig.MAX_LABEL_LEN, `point ${out.id} label`, warnings) || '';
+    }
+    if (out.createdAt && !Validator._isIsoLike(out.createdAt)) {
+      warnings.push(`point ${out.id} createdAt invalid — reset`);
+      out.createdAt = new Date().toISOString();
+    }
+    if (out.updatedAt && !Validator._isIsoLike(out.updatedAt)) {
+      warnings.push(`point ${out.id} updatedAt invalid — reset`);
+      out.updatedAt = new Date().toISOString();
+    }
+    return out;
+  },
+
+  _validateTrip(t, warnings) {
+    if (!t || typeof t !== 'object') { warnings.push('trip dropped — not an object'); return null; }
+    if (!t.startedAt || !Validator._isIsoLike(t.startedAt)) {
+      warnings.push('trip dropped — missing/invalid startedAt');
+      return null;
+    }
+    const out = { ...t };
+    if (out.endedAt && !Validator._isIsoLike(out.endedAt)) {
+      warnings.push('trip endedAt invalid — cleared');
+      delete out.endedAt;
+    }
+    if (typeof out.distanceKm !== 'number' || !isFinite(out.distanceKm) || out.distanceKm < 0) out.distanceKm = 0;
+    if (typeof out.maxSpeed !== 'number' || !isFinite(out.maxSpeed) || out.maxSpeed < 0) out.maxSpeed = 0;
+    return out;
+  },
+
+  _coord(v) {
+    const n = typeof v === 'string' ? parseFloat(v) : v;
+    if (typeof n !== 'number' || !isFinite(n)) return null;
+    if (n < -180 || n > 180) return null; // lat is tighter but lng covers both
+    return n;
+  },
+
+  _speedLimit(v) {
+    if (v == null) return null;
+    const n = typeof v === 'string' ? parseFloat(v) : v;
+    if (typeof n !== 'number' || !isFinite(n)) return null;
+    if (n < ValidatorConfig.MIN_LIMIT_KMH || n > ValidatorConfig.MAX_LIMIT_KMH) return null;
+    return n;
+  },
+
+  _isIsoLike(s) {
+    if (typeof s !== 'string') return false;
+    const d = new Date(s);
+    return !isNaN(d.getTime());
+  },
+
+  _truncString(s, max, label, warnings) {
+    if (s == null) return s;
+    const str = String(s);
+    if (str.length <= max) return str;
+    warnings.push(`${label} truncated to ${max} chars`);
+    return str.slice(0, max);
+  },
+
+  _safeShort(s) {
+    if (s == null) return '?';
+    return String(s).slice(0, 40);
   },
 };
 
@@ -2333,11 +2616,40 @@ const Confirm = {
    8. BACKUP
    ============================================================ */
 const Backup = {
-  hash() {
+  // v22.104: serial restore lock. A second pull() while one is in flight
+  // returns false safely with a log/toast — prevents two GitHub fetches
+  // and two confirmation flows stomping local data in parallel.
+  _pulling: false,
+
+  /** v22.104: deterministic weak hash. Used as the SHA-256 fallback when
+   *  crypto.subtle.digest is unavailable (file://, insecure context, very
+   *  old browsers). Caller wraps the return value with a "weak:" prefix. */
+  _weakHash() {
     const s = JSON.stringify({ d: State.data, t: State.trips, st: State.settings });
     let h = 0;
     for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
     return h;
+  },
+
+  /** v22.104: async SHA-256 hash of the current data+trips+settings,
+   *  hex-encoded. Returns a "weak:<int32>" string on fallback (digest
+   *  unavailable or threw). Backup must not break — change comparison
+   *  still works because weak: hashes are deterministic too. */
+  async hash() {
+    const s = JSON.stringify({ d: State.data, t: State.trips, st: State.settings });
+    try {
+      if (typeof crypto !== 'undefined' && crypto.subtle && crypto.subtle.digest) {
+        const buf = new TextEncoder().encode(s);
+        const digest = await crypto.subtle.digest('SHA-256', buf);
+        const hex = Array.from(new Uint8Array(digest))
+          .map(b => b.toString(16).padStart(2, '0')).join('');
+        return hex;
+      }
+    } catch (e) {
+      logEvent('BACKUP', 'sha-256 digest failed, using weak fallback: ' + (e && e.message || e));
+    }
+    logEvent('BACKUP', 'sha-256 unavailable — using weak hash');
+    return 'weak:' + Backup._weakHash();
   },
   async push(opts = {}) {
     if (!State.gh.token || !State.gh.repo || !State.gh.path) {
@@ -2367,7 +2679,12 @@ const Backup = {
         settings: State.settings,
         trips: State.trips,
       }, null, 2);
-      const b64 = btoa(unescape(encodeURIComponent(payload)));
+      // v22.104: replace deprecated unescape()/escape() round-trip with
+      // TextEncoder. Same bytes (UTF-8), no deprecated globals.
+      const bytes = new TextEncoder().encode(payload);
+      let bin = '';
+      for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+      const b64 = btoa(bin);
       const body = {
         message: (opts.silent ? 'Auto-backup ' : 'Backup ') + new Date().toISOString(),
         content: b64,
@@ -2384,7 +2701,7 @@ const Backup = {
         return false;
       }
       State.lastBackup = Date.now();
-      State.lastBackupHash = this.hash();
+      State.lastBackupHash = await this.hash();
       UI.updateBackupStatus();
       if (!opts.silent) Utils.toast('Backed up ✓', 'good');
       logEvent('BACKUP', `push ok (${(payload.length / 1024).toFixed(1)}KB, ${tag})`, 'ok');
@@ -2398,19 +2715,28 @@ const Backup = {
   async tryAuto() {
     if (!State.settings.autoBackup) return;
     if (!State.gh.token || !State.gh.repo) return;
-    const h = this.hash();
+    const h = await this.hash();
     if (h === State.lastBackupHash) return;
     await this.push({ silent: true });
   },
 
   /** v22.30: pull backup from GitHub. Replaces local data with remote.
-   *  Destructive — must be confirmed by user. */
+   *  Destructive — must be confirmed by user.
+   *  v22.104: serial lock via Backup._pulling. Validator-gated overwrite —
+   *  caller (UI) sees a sanitization report and explicitly confirms
+   *  before any State.* assignment. Decoding via TextDecoder. */
   async pull() {
+    if (Backup._pulling) {
+      Utils.toast('Restore already in progress', 'bad');
+      logEvent('BACKUP', 'pull aborted — already in progress');
+      return false;
+    }
     if (!State.gh.token || !State.gh.repo || !State.gh.path) {
       Utils.toast('Set token/repo/path first', 'bad');
       logEvent('BACKUP', 'pull aborted — token/repo/path missing', 'err');
       return false;
     }
+    Backup._pulling = true;
     logEvent('BACKUP', 'pull start');
     try {
       const apiBase = `https://api.github.com/repos/${State.gh.repo}/contents/${State.gh.path}`;
@@ -2427,8 +2753,12 @@ const Backup = {
         return false;
       }
       const json = await r.json();
-      // GitHub returns file content as base64; decode + parse
-      const raw = decodeURIComponent(escape(atob(json.content.replace(/\n/g, ''))));
+      // v22.104: decode base64 → UTF-8 via TextDecoder (no escape()).
+      const b64clean = (json.content || '').replace(/\n/g, '');
+      const bin = atob(b64clean);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const raw = new TextDecoder('utf-8').decode(bytes);
       let parsed;
       try { parsed = JSON.parse(raw); }
       catch (e) {
@@ -2436,26 +2766,31 @@ const Backup = {
         logEvent('BACKUP', 'pull JSON parse error: ' + e.message, 'err');
         return false;
       }
-      if (!parsed || typeof parsed !== 'object') {
-        Utils.toast('Restore: invalid payload', 'bad');
-        logEvent('BACKUP', 'pull invalid payload (not an object)', 'err');
+      // v22.104: validate before showing the report. Validator returns
+      // sanitized copies; do not assign until UI.confirm comes back true.
+      const val = Validator.validateImport(parsed);
+      if (!val.ok) {
+        Utils.toast('Restore: ' + val.report, 'bad');
+        logEvent('BACKUP', 'pull validation failed: ' + val.report, 'err');
         return false;
       }
-      // Validate shape — data must exist; settings/trips are optional
-      if (!parsed.data || !parsed.data.points || !parsed.data.destinations) {
-        Utils.toast('Restore: missing data shape', 'bad');
-        logEvent('BACKUP', 'pull missing data.points or data.destinations', 'err');
+      const ok = await UI.confirm(val.report, {
+        title: 'Restore — apply this data?',
+        okLabel: 'Apply',
+      });
+      if (!ok) {
+        Utils.toast('Restore cancelled', 'bad');
+        logEvent('BACKUP', 'pull cancelled at validation confirm');
         return false;
       }
-      // Apply
-      State.data = parsed.data;
-      if (parsed.settings) State.settings = Object.assign({}, State.settings, parsed.settings);
-      if (parsed.trips) State.trips = parsed.trips;
+      // Apply sanitized data
+      State.data = val.sanitized.data;
+      if (val.sanitized.settings) State.settings = Object.assign({}, State.settings, val.sanitized.settings);
+      if (Array.isArray(val.sanitized.trips)) State.trips = val.sanitized.trips;
       State.saveData();
       State.saveSettings();
       State.saveTrips();
-      State.lastBackupHash = this.hash();
-      // Re-render everything that depends on data
+      State.lastBackupHash = await this.hash();
       UI.renderRouteBar();
       UI.renderMarkerChips();
       if (MapView.m) MapView.updatePoints();
@@ -2467,6 +2802,8 @@ const Backup = {
       Utils.toast('Restore error: ' + (e.message || e), 'bad');
       logEvent('BACKUP', 'pull exception: ' + (e && e.message || e), 'err');
       return false;
+    } finally {
+      Backup._pulling = false;
     }
   },
   start() { this.stop(); State.backupTimer = setInterval(() => this.tryAuto(), 5 * 60 * 1000); },

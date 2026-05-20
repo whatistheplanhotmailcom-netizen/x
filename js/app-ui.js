@@ -214,7 +214,14 @@ const MapView = {
           this.startCaptureAt({ lat: lngLat.lat, lng: lngLat.lng });
         }, 700);
       });
-      this.m.on('touchend touchmove dragstart', () => clearTimeout(this.longPressTimer));
+      // v22.104: MapLibre doesn't support space-separated event names.
+      // Cancel long-press on touchend (finger lifted) and dragstart (map
+      // pan started). Do NOT cancel on touchmove — finger jitter fires it
+      // constantly even when the user is holding still, which broke
+      // long-press capture.
+      ['touchend', 'dragstart'].forEach(ev =>
+        this.m.on(ev, () => clearTimeout(this.longPressTimer))
+      );
 
       // v22.81: keep the on-screen compass synced with the actual map
       // bearing. 'rotate' fires continuously during easeTo/setBearing,
@@ -319,7 +326,7 @@ const MapView = {
     const confText = (p.confidence && p.confidence > 1) ? ` · ×${p.confidence}` : '';
     const html = `
       <div class="pop-name">${Utils.emoji(p.type, p.subtype)} ${Utils.escapeHtml(p.name)}</div>
-      <div class="pop-meta">${Utils.escapeHtml(Utils.typeLabel(p.type))}${p.side ? ' · ' + p.side : ''}${dist != null ? ' · ' + Utils.fmtDist(dist) : ''}${confText}</div>
+      <div class="pop-meta">${Utils.escapeHtml(Utils.typeLabel(p.type))}${p.side ? ' · ' + Utils.escapeHtml(p.side) : ''}${dist != null ? ' · ' + Utils.escapeHtml(Utils.fmtDist(dist)) : ''}${confText}</div>
       ${agoText ? `<div class="pop-meta" style="margin-top:2px;">📅 ${Utils.escapeHtml(agoText)}</div>` : ''}
       <button data-edit="${Utils.escapeHtml(p.id)}">✎ Edit</button>
       <button data-del="${Utils.escapeHtml(p.id)}" style="background:var(--red);color:#fff;">🗑 Delete</button>
@@ -1549,7 +1556,9 @@ const UI = {
       body.innerHTML = hint;
     } else {
       const n = aheadList[0];
-      const sideTag = n.side ? ` · ${n.side[0].toUpperCase()}` : '';
+      // v22.104: escape side initial — defensive even though side comes
+      // from a captured enum, in case import bypassed validation.
+      const sideTag = n.side ? ` · ${Utils.escapeHtml(String(n.side)[0].toUpperCase())}` : '';
       const urgent = n.dist <= 0.5 ? 'urgent' : '';
       // v22.49: proximity progress bar — fills from 0% → 100% as user
       // approaches.  Scale: 0% when point is at proximityStartM (default
@@ -1657,7 +1666,17 @@ const UI = {
    *  certain privacy settings), which made every Delete return false
    *  without ever showing UI. This replaces it with a real modal we own.
    *  Drop-in: const ok = await UI.confirm('Delete this point?'); */
+  // v22.104: reentry guard. Two parallel calls would share the same DOM
+  // and the second would overwrite the first's listeners, dropping the
+  // first promise. Refuse the second call instead — destructive action
+  // does not proceed.
+  _confirmBusy: false,
   confirm(message, opts) {
+    if (UI._confirmBusy) {
+      logEvent('UI', 'confirm refused — another confirm is already open');
+      return Promise.resolve(false);
+    }
+    UI._confirmBusy = true;
     return new Promise((resolve) => {
       const modal = document.getElementById('m-confirm');
       const titleEl = document.getElementById('confirm-title');
@@ -1673,6 +1692,7 @@ const UI = {
         cancelBtn.onclick = null;
         closeBtn.onclick = null;
         modal.classList.remove('open');
+        UI._confirmBusy = false;
         resolve(result);
       };
       okBtn.onclick = () => cleanup(true);
@@ -2095,7 +2115,11 @@ const UI = {
     }
     list.innerHTML = State.data.destinations.map(d => {
       const isActive = d.id === State.data.activeDestId;
-      const ptCount = State.data.points.filter(p => p.destId === d.id).length;
+      // v22.104: post-migration destinations carry routePointRefs[]; use it
+      // when present so the displayed count reflects the global-store model.
+      const ptCount = Array.isArray(d.routePointRefs)
+        ? d.routePointRefs.length
+        : State.data.points.filter(p => p.destId === d.id).length;
       return `
         <div class="list-row">
           <div class="em">📍</div>
@@ -2299,7 +2323,7 @@ const UI = {
         <div class="em">${Utils.emoji(p.type, p.subtype)}</div>
         <div class="info">
           <div class="name">${Utils.escapeHtml(p.name)}</div>
-          <div class="meta">${Utils.escapeHtml(Utils.typeLabel(p.type))}${p.side ? ' · ' + p.side : ''}${p.limit ? ' · ' + p.limit + ' km/h' : ''}</div>
+          <div class="meta">${Utils.escapeHtml(Utils.typeLabel(p.type))}${p.side ? ' · ' + Utils.escapeHtml(p.side) : ''}${p.limit ? ' · ' + Utils.escapeHtml(String(p.limit)) + ' km/h' : ''}</div>
         </div>
         <button class="row-btn keep ${p.status === 'active' ? 'active' : ''}" data-keep="${Utils.escapeHtml(p.id)}">✓</button>
         <button class="row-btn del ${p.status === 'no' ? 'active' : ''}" data-rem="${Utils.escapeHtml(p.id)}">✕</button>
@@ -2316,8 +2340,10 @@ const UI = {
       }
     );
     list.querySelectorAll('[data-rem]').forEach(b =>
-      b.onclick = () => {
-        if (!confirm('Delete this point?')) return;
+      b.onclick = async () => {
+        // v22.104: native confirm() is silently blocked on iOS Safari.
+        const ok = await UI.confirm('Delete this point?', { title: 'Delete point' });
+        if (!ok) return;
         State.removePointById(b.dataset.rem);
         State.saveData();
         this.renderAuditList();
@@ -2372,8 +2398,10 @@ const UI = {
       `;
     }).join('');
     list.querySelectorAll('[data-trip-del]').forEach(b =>
-      b.onclick = () => {
-        if (!confirm('Delete trip?')) return;
+      b.onclick = async () => {
+        // v22.104: native confirm() blocked on iOS Safari → in-app modal.
+        const ok = await UI.confirm('Delete trip?', { title: 'Delete trip' });
+        if (!ok) return;
         State.trips.splice(+b.dataset.tripDel, 1);
         State.saveTrips();
         this.renderTripsList();
@@ -2789,7 +2817,7 @@ function wire() {
   document.getElementById('e-gmap').onclick = () => {
     const lat = document.getElementById('e-lat').value;
     const lng = document.getElementById('e-lng').value;
-    if (lat && lng) window.open(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`, '_blank');
+    if (lat && lng) window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lat)},${encodeURIComponent(lng)}`, '_blank', 'noopener,noreferrer');
   };
   // v22.71: promote the edited point's location to a new destination.
   // Doesn't modify or delete the point — opens the destination editor
@@ -3003,7 +3031,10 @@ function wire() {
     _withLoading('btn-backup-now', '☁ Backing up…', () => Backup.push());
   };
   // v22.30: Restore — confirm first (destructive)
-  document.getElementById('btn-restore').onclick = () => {
+  // v22.104: now in-app UI.confirm (intent) + Backup.pull's second
+  // validation/report confirm (post-fetch). Backup._pulling guards
+  // against parallel pulls.
+  document.getElementById('btn-restore').onclick = async () => {
     if (!State.gh.token || !State.gh.repo || !State.gh.path) {
       Utils.toast('Set token/repo/path first', 'bad');
       return;
@@ -3013,9 +3044,9 @@ function wire() {
     const msg = (ptCount > 0 || dCount > 0)
       ? `Replace local data?\n\nCurrent: ${ptCount} points, ${dCount} destinations.\nThis cannot be undone.`
       : `Restore from GitHub?`;
-    if (confirm(msg)) {
-      _withLoading('btn-restore', '⬇ Restoring…', () => Backup.pull());
-    }
+    const ok = await UI.confirm(msg, { title: 'Restore from GitHub', okLabel: 'Restore' });
+    if (!ok) return;
+    _withLoading('btn-restore', '⬇ Restoring…', () => Backup.pull());
   };
   document.getElementById('trip-toggle').onclick = () => UI.toggleTrip();
   document.getElementById('trip-list').onclick = () => { UI.renderTripsList(); UI.openModal('m-trips'); };
@@ -3029,15 +3060,29 @@ function wire() {
     document.getElementById('json-text').value = JSON.stringify(State.data, null, 2);
     UI.openModal('m-json');
   };
-  document.getElementById('btn-json-save').onclick = () => {
+  // v22.104: route JSON-editor save through Validator + UI.confirm so the
+  // user sees the pre-apply sanitization report. Cancel leaves local data
+  // unchanged.
+  document.getElementById('btn-json-save').onclick = async () => {
+    let parsed;
     try {
-      const parsed = JSON.parse(document.getElementById('json-text').value);
-      if (!Array.isArray(parsed.points) || !Array.isArray(parsed.destinations)) throw new Error('Need points[] and destinations[]');
-      State.data = parsed;
-      State.saveData();
-      UI.closeAllModals();
-      Utils.toast('Saved', 'good');
-    } catch (e) { Utils.toast(e.message, 'bad'); }
+      parsed = JSON.parse(document.getElementById('json-text').value);
+    } catch (e) { Utils.toast(e.message, 'bad'); return; }
+    const val = Validator.validateImport(parsed);
+    if (!val.ok) { Utils.toast(val.report, 'bad'); return; }
+    const ok = await UI.confirm(val.report, {
+      title: 'JSON edit — apply this data?',
+      okLabel: 'Apply',
+    });
+    if (!ok) { Utils.toast('JSON edit cancelled', 'bad'); return; }
+    State.data = val.sanitized.data;
+    if (val.sanitized.settings) State.settings = Object.assign({}, State.settings, val.sanitized.settings);
+    if (Array.isArray(val.sanitized.trips)) State.trips = val.sanitized.trips;
+    State.saveData();
+    State.saveSettings();
+    State.saveTrips();
+    UI.closeAllModals();
+    Utils.toast('Saved', 'good');
   };
   document.getElementById('btn-json-copy').onclick = async () => {
     const ta = document.getElementById('json-text');
@@ -3047,8 +3092,10 @@ function wire() {
   document.getElementById('btn-export-trips').onclick = () => {
     downloadFile(`road-alert-trips-${Date.now()}.json`, JSON.stringify(State.trips, null, 2));
   };
-  document.getElementById('btn-clear-trips').onclick = () => {
-    if (!confirm('Clear all trips?')) return;
+  document.getElementById('btn-clear-trips').onclick = async () => {
+    // v22.104: native confirm() blocked on iOS Safari → in-app modal.
+    const ok = await UI.confirm('Clear all trips?', { title: 'Clear trips' });
+    if (!ok) return;
     State.trips = [];
     State.saveTrips();
     UI.renderTripsList();
@@ -3159,36 +3206,38 @@ function importJson(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = JSON.parse(reader.result);
-      if (parsed.data && Array.isArray(parsed.data.points)) {
-        // Merge by id to avoid duplicates
-        const existingDestIds = new Set(State.data.destinations.map(d => d.id));
-        const existingPtIds = new Set(State.data.points.map(p => p.id));
-        let dAdded = 0, pAdded = 0;
-        (parsed.data.destinations || []).forEach(d => {
-          if (d.id && !existingDestIds.has(d.id)) { State.data.destinations.push(d); dAdded++; }
-        });
-        (parsed.data.points || []).forEach(p => {
-          if (!p.id) p.id = Utils.uid();
-          if (!existingPtIds.has(p.id)) { State.data.points.push(p); pAdded++; }
-        });
-        if (parsed.settings) State.settings = { ...State.settings, ...parsed.settings };
-        if (Array.isArray(parsed.trips)) State.trips = parsed.trips;
-        State.saveData();
-        State.saveSettings();
-        State.saveTrips();
-        Utils.toast(`Imported: ${dAdded} dests, ${pAdded} pts`, 'good');
-      } else if (Array.isArray(parsed.points)) {
-        State.data = parsed;
-        State.saveData();
-        Utils.toast('Imported', 'good');
-      } else throw new Error('Unrecognized file format');
-      UI.render();
-      UI.applyTheme();
-      MapView.updatePoints();
-    } catch (err) { Utils.toast(err.message, 'bad'); }
+  // v22.104: validator-gated merge. The user sees a pre-apply sanitization
+  // report and confirms. Cancel leaves local data unchanged. Existing data
+  // is preserved by id-merging only the sanitized rows.
+  reader.onload = async () => {
+    let parsed;
+    try { parsed = JSON.parse(reader.result); }
+    catch (err) { Utils.toast(err.message, 'bad'); return; }
+    const val = Validator.validateImport(parsed);
+    if (!val.ok) { Utils.toast(val.report, 'bad'); return; }
+    const ok = await UI.confirm(val.report, {
+      title: 'Import — merge into local data?',
+      okLabel: 'Import',
+    });
+    if (!ok) { Utils.toast('Import cancelled', 'bad'); return; }
+    const existingDestIds = new Set(State.data.destinations.map(d => d.id));
+    const existingPtIds = new Set(State.data.points.map(p => p.id));
+    let dAdded = 0, pAdded = 0;
+    (val.sanitized.data.destinations || []).forEach(d => {
+      if (d.id && !existingDestIds.has(d.id)) { State.data.destinations.push(d); dAdded++; }
+    });
+    (val.sanitized.data.points || []).forEach(p => {
+      if (!existingPtIds.has(p.id)) { State.data.points.push(p); pAdded++; }
+    });
+    if (val.sanitized.settings) State.settings = { ...State.settings, ...val.sanitized.settings };
+    if (Array.isArray(val.sanitized.trips)) State.trips = val.sanitized.trips;
+    State.saveData();
+    State.saveSettings();
+    State.saveTrips();
+    Utils.toast(`Imported: ${dAdded} dests, ${pAdded} pts`, 'good');
+    UI.render();
+    UI.applyTheme();
+    MapView.updatePoints();
   };
   reader.readAsText(file);
   e.target.value = '';
@@ -3199,7 +3248,7 @@ function importJson(e) {
    ============================================================ */
 function boot() {
   try {
-    logEvent('BOOT', 'App starting (v22.98)');
+    logEvent('BOOT', `App starting (v${APP_VERSION})`);
     // v22.98: prune expired learned routes (>30 days) on every boot
     RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();

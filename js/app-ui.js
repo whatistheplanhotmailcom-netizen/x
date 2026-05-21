@@ -1564,7 +1564,13 @@ const UI = {
 
     // GPS cell
     if (gpsEl) {
-      if (State.mode === 'idle') {
+      // v23.2.1: PERMISSION_DENIED (code 1) takes precedence over every
+      // other GPS state so the warning stays visible while the user
+      // fixes their browser/device setting. Cleared on next GPS.start().
+      if (State.gpsPermissionDenied) {
+        gpsEl.textContent = 'GPS denied · check settings';
+        gpsEl.className = 'bad';
+      } else if (State.mode === 'idle') {
         gpsEl.textContent = 'GPS off';
         gpsEl.className = '';
       } else if (State.accuracy == null || State.lastFixAt == null) {

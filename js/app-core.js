@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.2.0';
+const APP_VERSION = 'v23.2.1';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1843,6 +1843,10 @@ const State = {
   prevTs: null,
   accuracy: null,
   lowAccuracy: false,
+  // v23.2.1: PERMISSION_DENIED (code 1) flag. Set when the geolocation
+  // API rejects with code 1; cleared when GPS.start() is called again.
+  // Codes 2 and 3 (POSITION_UNAVAILABLE / TIMEOUT) do NOT set this flag.
+  gpsPermissionDenied: false,
   // v22.37: GPS health tracking
   lastFixAt: null,        // timestamp of last position update
   lastFixJump: false,     // flag if the latest fix was suspiciously far from the previous one
@@ -2283,6 +2287,9 @@ const GPS = {
     logEvent('GPS', 'Tracking started');
     Audio.unlock();
     this.stop();
+    // v23.2.1: clear PERMISSION_DENIED flag on every retry so the
+    // diag-strip warning clears if the user fixed the browser setting.
+    State.gpsPermissionDenied = false;
     // v22.1: reset all runtime alert state for a fresh drive session.
     // Otherwise points that were "passed" in a previous session keep their
     // muted state and never alert again until reload.
@@ -2314,7 +2321,23 @@ const GPS = {
     await this.requestWakeLock();
     State.watchId = navigator.geolocation.watchPosition(
       pos => this.onTick(pos),
-      err => { Utils.toast('GPS: ' + err.message, 'bad'); logEvent('GPS', 'Error: ' + err.message, 'err'); this.stop(); },
+      err => {
+        // v23.2.1: PERMISSION_DENIED (code 1) gets a persistent warning.
+        // POSITION_UNAVAILABLE (2) and TIMEOUT (3) keep the v22 behavior
+        // exactly: transient toast + err log + stop. No retry change.
+        if (err && err.code === 1) {
+          State.gpsPermissionDenied = true;
+          const persistentMsg = 'Location permission is denied. Enable Location access in your device or browser settings, then press Start GPS again.';
+          logEvent('GPS', '[GPS-PERMISSION-DENIED] ' + persistentMsg, 'err');
+          Utils.toast('GPS: ' + (err.message || 'permission denied'), 'bad');
+          try { UI.renderDiagStrip(); } catch (e) {}
+          this.stop();
+          return;
+        }
+        Utils.toast('GPS: ' + err.message, 'bad');
+        logEvent('GPS', 'Error: ' + err.message, 'err');
+        this.stop();
+      },
       { enableHighAccuracy: true, maximumAge: 1000, timeout: 15000 }
     );
     UI.setBtnGoActive(true);

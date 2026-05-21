@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.3.0">
+<link rel="stylesheet" href="styles.css?v=23.4.0">
 </head>
 <body data-theme="light">
 
@@ -426,6 +426,19 @@
     <div class="row-hint">Show or hide the explanatory paragraphs (like this one) under each setting. Turn off for a denser, more compact Settings screen once you know what each row does.</div>
 
     <div class="section-title">Alerts</div>
+    <!-- v23.3.x Phase 3: alert engine mode. DEFAULT IS LEGACY ONLY.
+         Shadow mode runs the IntelligenceEngine in parallel for log
+         visibility but does NOT change real alerts. Active mode gives
+         intelligence veto power over legacy alerts — opt-in only. -->
+    <div class="row">
+      <span class="label">Alert engine</span>
+      <div class="opts" id="intel-mode-opts">
+        <button data-intel-mode="legacy">Legacy</button>
+        <button data-intel-mode="shadow">Shadow</button>
+        <button data-intel-mode="active">Active</button>
+      </div>
+    </div>
+    <div class="row-hint"><strong>Legacy</strong> · current alert engine controls real alerts (default). <strong>Shadow</strong> · legacy still controls alerts; intelligence engine evaluates in parallel and logs decisions. <strong>Active</strong> · intelligence can suppress legacy alerts on low-confidence cases. Trusted observations (confidence ≥ 3 or 3+ confirmations) are protected from suppression except on strong direction mismatch.</div>
     <div class="row">
       <span class="label">Sound</span>
       <div class="opts" id="sound-opts">
@@ -742,8 +755,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.3.0"></script>
-<script defer src="js/app-ui.js?v=23.3.0"></script>
+<script defer src="js/app-core.js?v=23.4.0"></script>
+<script defer src="js/app-ui.js?v=23.4.0"></script>
 
 </body>
 </html>

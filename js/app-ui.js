@@ -2686,6 +2686,10 @@ const UI = {
       b.classList.toggle('active', b.dataset.theme === State.settings.theme));
     document.querySelectorAll('[data-sound]').forEach(b =>
       b.classList.toggle('active', b.dataset.sound === State.settings.sound));
+    // v23.3.x Phase 3: alert engine mode (legacy / shadow / active).
+    const intelMode = State.settings.intelMode || 'legacy';
+    document.querySelectorAll('[data-intel-mode]').forEach(b =>
+      b.classList.toggle('active', b.dataset.intelMode === intelMode));
     document.querySelectorAll('[data-voice]').forEach(b =>
       b.classList.toggle('active', b.dataset.voice === State.settings.voiceGender));
     document.getElementById('t-side').classList.toggle('on', State.settings.announceSide);
@@ -3196,6 +3200,21 @@ function wire() {
       if (b.dataset.sound !== 'off') Audio.beep('petrol');
     }
   );
+  // v23.3.x Phase 3: alert engine mode segmented control. Logs the
+  // transition via [INTEL-MODE] so the audit trail is preserved.
+  document.querySelectorAll('[data-intel-mode]').forEach(b =>
+    b.onclick = () => {
+      const prev = State.settings.intelMode || 'legacy';
+      const next = b.dataset.intelMode;
+      if (prev === next) return;
+      State.settings.intelMode = next;
+      State.saveSettings();
+      IntelligenceEngine.logModeTransition(prev, next);
+      Utils.toast(`Alert engine: ${next}`,
+        next === 'active' ? 'bad' : 'good');
+      UI.syncSettings();
+    }
+  );
   document.querySelectorAll('[data-voice]').forEach(b =>
     b.onclick = () => {
       State.settings.voiceGender = b.dataset.voice;
@@ -3574,6 +3593,9 @@ function boot() {
     // (test harness, partial DOM) never aborts boot.
     applyAppVersion();
     logEvent('APP', `Version ${APP_VERSION} loaded`, 'ok');
+    // v23.3.x Phase 3: log the current alert-engine mode at every boot
+    // so the audit trail always shows whether shadow / active was on.
+    logEvent('INTEL-MODE', `[INTEL-MODE] boot · ${State.settings.intelMode || 'legacy'}`);
     RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();
     UI.applyHintsVisibility(); // v23.0.1: respect saved show/hide preference

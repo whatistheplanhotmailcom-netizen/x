@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.3.0';
+const APP_VERSION = 'v23.4.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1951,6 +1951,13 @@ const Storage = {
       // Default on — first-time users benefit from the context. Power users
       // can switch off in Settings → Display to reclaim vertical space.
       showHints: true,
+      // v23.3.x Phase 3: alert engine operating mode.
+      //   'legacy' = current alert engine controls real alerts (default)
+      //   'shadow' = legacy controls alerts; IntelligenceEngine evaluates
+      //              in parallel and logs decisions (no real effect)
+      //   'active' = IntelligenceEngine can suppress legacy alerts
+      // Must be explicitly switched. Never silently elevated.
+      intelMode: 'legacy',
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest
@@ -2837,6 +2844,358 @@ const GPS = {
 };
 
 /* ============================================================
+   4b. INTELLIGENCE ENGINE — v23.3.x (Phase 3, shadow-by-default)
+
+   Centralized alert-decision engine. Evaluates every candidate
+   observation against confidence, direction, route relevance, age,
+   stale decay (type-aware), GPS quality, and timing. Produces an
+   intelligenceScore plus a structured reason map.
+
+   Operating modes:
+     legacy : engine present but inert (default)
+     shadow : runs in parallel with legacy alert path, logs only
+     active : intelligence has veto power over legacy alerts
+              (legacy still detects threshold crossings; intelligence
+              gates whether Audio.alert is actually called)
+
+   Trusted-observation floor:
+     If a candidate is "trusted" (confidence ≥ 3, or
+     confirmations.length ≥ 3) then GPS quality, stale decay,
+     route relevance, and timing CANNOT individually or
+     collectively suppress it. ONLY a strong direction mismatch
+     on a directional observation may suppress a trusted point.
+
+   Performance:
+     evaluate() is pure-math, single allocation per call. Called
+     at most once per focused candidate per GPS tick (≈1 Hz).
+   ============================================================ */
+const IntelligenceConfig = {
+  // Trust tier thresholds
+  TRUSTED_CONFIDENCE: 3,
+  TRUSTED_CONFIRMATIONS: 3,
+
+  // Score thresholds
+  ALERT_THRESHOLD: 50,   // intelligenceWouldAlert when score ≥ this
+  TRUSTED_FLOOR: 30,     // trusted points may never score below this in active mode
+
+  // Direction
+  DIRECTION_MATCH_DEG: 45,
+  DIRECTION_OPPOSITE_DEG: 135,
+  STRONG_MISMATCH_DEG: 135, // only mismatch this severe may suppress a trusted point
+
+  // GPS quality
+  GPS_GOOD_M: 30,
+  GPS_DEGRADED_M: 100,
+  GPS_POOR_M: 300,
+
+  // Distance / timing
+  IDEAL_ALERT_FAR_M: 800,    // upper end of useful alert window
+  IDEAL_ALERT_NEAR_M: 200,   // lower end
+  TOO_FAR_M: 2000,
+  TOO_CLOSE_M: 80,
+
+  // Type-aware stale decay. Half-life days (Infinity = no decay).
+  // Fixed infrastructure decays slowly or not at all. Transient types
+  // decay faster but cannot suppress trusted observations alone.
+  DECAY_HALFLIFE_DAYS: {
+    speed_change: Infinity,   // permanent speed-limit sign
+    redlight: Infinity,       // traffic-light camera = fixed infrastructure
+    bump: Infinity,           // road feature
+    speed_camera: 730,        // fixed cameras dominate; 2-year half-life is generous
+    hazard: 30,               // transient by nature
+    petrol: 365,
+    service: 365,
+    parking: 365,
+    rest: 365,
+    other: 180,
+  },
+  // Floor: even after decay, factor never drops below this. Stale decay
+  // cannot fully zero a candidate's freshness contribution.
+  DECAY_FACTOR_FLOOR: 0.25,
+};
+
+const IntelligenceEngine = {
+  /** Throttle for per-tick [INTEL-SCORE] heartbeat lines. Disagreement
+   *  events bypass this throttle so they're never lost. */
+  _lastScoreLogAt: 0,
+  _lastModeLogged: null,
+
+  /** Returns true if the candidate has crossed any of the trust tiers. */
+  isTrusted(point) {
+    if (!point) return false;
+    if (typeof point.confidence === 'number' && point.confidence >= IntelligenceConfig.TRUSTED_CONFIDENCE) return true;
+    if (Array.isArray(point.confirmations) && point.confirmations.length >= IntelligenceConfig.TRUSTED_CONFIRMATIONS) return true;
+    return false;
+  },
+
+  /** Type-aware freshness factor in [DECAY_FACTOR_FLOOR, 1].
+   *  Returns 1 if no createdAt or no decay rule. */
+  freshness(point) {
+    if (!point || !point.createdAt) return 1;
+    const half = IntelligenceConfig.DECAY_HALFLIFE_DAYS[point.type];
+    if (half == null || half === Infinity) return 1;
+    const ageMs = Date.now() - Date.parse(point.createdAt);
+    if (!isFinite(ageMs) || ageMs <= 0) return 1;
+    const ageDays = ageMs / 86_400_000;
+    // exponential half-life decay
+    const f = Math.pow(0.5, ageDays / half);
+    return Math.max(IntelligenceConfig.DECAY_FACTOR_FLOOR, f);
+  },
+
+  /** GPS quality tier: 'good' / 'degraded' / 'poor' / 'unknown'. */
+  gpsQualityTier(accuracy) {
+    if (accuracy == null) return 'unknown';
+    if (accuracy <= IntelligenceConfig.GPS_GOOD_M) return 'good';
+    if (accuracy <= IntelligenceConfig.GPS_DEGRADED_M) return 'degraded';
+    return 'poor';
+  },
+
+  /** Pure-math evaluator. NO side effects, NO mutations, NO logs.
+   *  Caller (Alerts.tick) emits the structured logs.
+   *
+   *  Inputs:
+   *    point — candidate observation (NOT mutated)
+   *    user  — { lat, lng, heading, speedKmh, accuracy, distanceToPointM,
+   *              isOnActiveRoute (bool|null) }
+   *
+   *  Output: {
+   *    intelligenceScore: number 0..100,
+   *    intelligenceWouldAlert: boolean,
+   *    trusted: boolean,
+   *    reasons: { distance, direction, route, confidence, freshness,
+   *               gps, timing, suppression: [strings], primary: string },
+   *    contributions: { distance, direction, route, confidence,
+   *                     freshness, gpsPenalty, timingPenalty }
+   *  } */
+  evaluate(point, user) {
+    const reasons = {
+      distance: '', direction: '', route: '', confidence: '',
+      freshness: '', gps: '', timing: '',
+      suppression: [], primary: '',
+    };
+    const contrib = {
+      distance: 0, direction: 0, route: 0, confidence: 0,
+      freshness: 0, gpsPenalty: 0, timingPenalty: 0,
+    };
+
+    const trusted = IntelligenceEngine.isTrusted(point);
+    const directional = point && point.directional === true;
+    const distM = (user && typeof user.distanceToPointM === 'number')
+      ? user.distanceToPointM
+      : Utils.distKm(user, point) * 1000;
+
+    // ---- distance / timing contribution ----
+    if (distM > IntelligenceConfig.TOO_FAR_M) {
+      contrib.distance = 0;
+      contrib.timingPenalty = 25;
+      reasons.distance = `far ${Math.round(distM)}m`;
+      reasons.timing = `too early (${Math.round(distM)}m > ${IntelligenceConfig.TOO_FAR_M}m)`;
+    } else if (distM < IntelligenceConfig.TOO_CLOSE_M) {
+      contrib.distance = 5;
+      contrib.timingPenalty = 15;
+      reasons.distance = `near ${Math.round(distM)}m`;
+      reasons.timing = `too late (${Math.round(distM)}m < ${IntelligenceConfig.TOO_CLOSE_M}m)`;
+    } else if (distM <= IntelligenceConfig.IDEAL_ALERT_FAR_M && distM >= IntelligenceConfig.IDEAL_ALERT_NEAR_M) {
+      // ideal window — distance gives full marks
+      contrib.distance = 30;
+      reasons.distance = `ideal ${Math.round(distM)}m`;
+      reasons.timing = 'within ideal window';
+    } else if (distM > IntelligenceConfig.IDEAL_ALERT_FAR_M) {
+      const span = IntelligenceConfig.TOO_FAR_M - IntelligenceConfig.IDEAL_ALERT_FAR_M;
+      const offset = distM - IntelligenceConfig.IDEAL_ALERT_FAR_M;
+      contrib.distance = Math.round(30 * (1 - offset / span));
+      reasons.distance = `pre-ideal ${Math.round(distM)}m`;
+      reasons.timing = 'a bit early';
+    } else {
+      const span = IntelligenceConfig.IDEAL_ALERT_NEAR_M - IntelligenceConfig.TOO_CLOSE_M;
+      const offset = distM - IntelligenceConfig.TOO_CLOSE_M;
+      contrib.distance = Math.round(30 * (offset / span));
+      reasons.distance = `post-ideal ${Math.round(distM)}m`;
+      reasons.timing = 'getting late';
+    }
+
+    // ---- confidence contribution ----
+    const conf = (typeof point.confidence === 'number') ? point.confidence : 1;
+    const confirms = Array.isArray(point.confirmations) ? point.confirmations.length : 0;
+    if (conf >= IntelligenceConfig.TRUSTED_CONFIDENCE || confirms >= IntelligenceConfig.TRUSTED_CONFIRMATIONS) {
+      contrib.confidence = 35;
+      reasons.confidence = `trusted (c=${conf}, confirms=${confirms})`;
+    } else if (conf >= 2 || confirms >= 2) {
+      contrib.confidence = 20;
+      reasons.confidence = `probable (c=${conf}, confirms=${confirms})`;
+    } else {
+      contrib.confidence = 8;
+      reasons.confidence = `possible (c=${conf}, confirms=${confirms})`;
+    }
+
+    // ---- direction contribution ----
+    let directionMismatchDeg = null;
+    if (directional && point.captureBearing != null && user && user.heading != null
+        && Speed && Speed.isHeadingReliable && Speed.isHeadingReliable(user.speedKmh)) {
+      directionMismatchDeg = Speed.angleDiff(user.heading, point.captureBearing);
+      if (directionMismatchDeg <= IntelligenceConfig.DIRECTION_MATCH_DEG) {
+        contrib.direction = 15;
+        reasons.direction = `match (Δ${Math.round(directionMismatchDeg)}°)`;
+      } else if (directionMismatchDeg >= IntelligenceConfig.STRONG_MISMATCH_DEG) {
+        contrib.direction = -40;
+        reasons.direction = `opposite (Δ${Math.round(directionMismatchDeg)}°)`;
+      } else {
+        contrib.direction = -10;
+        reasons.direction = `oblique (Δ${Math.round(directionMismatchDeg)}°)`;
+      }
+    } else if (!directional) {
+      contrib.direction = 0;
+      reasons.direction = 'non-directional';
+    } else if (point.captureBearing == null) {
+      contrib.direction = 0;
+      reasons.direction = 'no captureBearing on point';
+    } else {
+      contrib.direction = 0;
+      reasons.direction = 'heading unreliable';
+    }
+
+    // ---- route relevance contribution ----
+    if (user && user.isOnActiveRoute === true) {
+      contrib.route = 15;
+      reasons.route = 'on active route';
+    } else if (user && user.isOnActiveRoute === false) {
+      contrib.route = -5;
+      reasons.route = 'off active route';
+    } else {
+      contrib.route = 0;
+      reasons.route = 'no active route';
+    }
+
+    // ---- freshness / stale decay contribution ----
+    const freshFactor = IntelligenceEngine.freshness(point);
+    contrib.freshness = Math.round(15 * freshFactor);
+    if (freshFactor >= 0.95) {
+      reasons.freshness = 'fresh';
+    } else {
+      const ageDays = point.createdAt
+        ? Math.round((Date.now() - Date.parse(point.createdAt)) / 86_400_000)
+        : null;
+      const halfLife = IntelligenceConfig.DECAY_HALFLIFE_DAYS[point.type];
+      reasons.freshness = `decayed factor=${freshFactor.toFixed(2)}` +
+        (ageDays != null ? ` (age=${ageDays}d` : '') +
+        (halfLife !== Infinity ? `, half-life=${halfLife}d)` : ')');
+    }
+
+    // ---- GPS quality penalty ----
+    const gpsTier = IntelligenceEngine.gpsQualityTier(user && user.accuracy);
+    if (gpsTier === 'poor') {
+      contrib.gpsPenalty = 15;
+      reasons.gps = `poor (±${Math.round(user.accuracy)}m)`;
+    } else if (gpsTier === 'degraded') {
+      contrib.gpsPenalty = 7;
+      reasons.gps = `degraded (±${Math.round(user.accuracy)}m)`;
+    } else if (gpsTier === 'good') {
+      contrib.gpsPenalty = 0;
+      reasons.gps = `good (±${Math.round(user.accuracy)}m)`;
+    } else {
+      contrib.gpsPenalty = 5;
+      reasons.gps = 'no GPS accuracy';
+    }
+
+    // ---- score assembly ----
+    let score =
+      contrib.distance +
+      contrib.confidence +
+      contrib.direction +
+      contrib.route +
+      contrib.freshness -
+      contrib.gpsPenalty -
+      contrib.timingPenalty;
+    score = Math.max(0, Math.min(100, Math.round(score)));
+
+    // ---- trusted-observation floor enforcement ----
+    let intelligenceWouldAlert = score >= IntelligenceConfig.ALERT_THRESHOLD;
+    if (trusted) {
+      // Only strong directional mismatch may suppress a trusted observation.
+      const strongMismatch = directional && directionMismatchDeg != null
+        && directionMismatchDeg >= IntelligenceConfig.STRONG_MISMATCH_DEG;
+      if (strongMismatch) {
+        intelligenceWouldAlert = false;
+        reasons.suppression.push('trusted but strong direction mismatch — allowed suppression');
+        reasons.primary = 'opposite-direction trusted';
+      } else {
+        // Floor protection: trusted observations alert as long as they're
+        // not directional opposite. GPS, stale decay, route relevance,
+        // weak timing cannot suppress.
+        if (score < IntelligenceConfig.ALERT_THRESHOLD) {
+          reasons.suppression.push('would suppress but TRUSTED FLOOR overrides');
+        }
+        intelligenceWouldAlert = true;
+        score = Math.max(score, IntelligenceConfig.TRUSTED_FLOOR);
+        reasons.primary = 'trusted-floor protected';
+      }
+    } else if (!intelligenceWouldAlert) {
+      // Non-trusted suppression — record reason
+      const primary =
+        contrib.direction <= -30 ? 'opposite-direction' :
+        contrib.timingPenalty >= 20 ? 'timing window' :
+        contrib.gpsPenalty >= 10 ? 'GPS quality' :
+        contrib.freshness < 5 ? 'stale decay' :
+        contrib.confidence <= 8 ? 'low confidence' :
+        'low score';
+      reasons.suppression.push(primary);
+      reasons.primary = primary;
+    } else {
+      reasons.primary = 'composite score above threshold';
+    }
+
+    return {
+      intelligenceScore: score,
+      intelligenceWouldAlert,
+      trusted,
+      directional,
+      directionMismatchDeg,
+      gpsTier,
+      freshness: freshFactor,
+      reasons,
+      contributions: contrib,
+    };
+  },
+
+  /** Build user-state object for evaluate(). Reads State once. */
+  buildUserState(distanceToPointM, isOnActiveRoute) {
+    return {
+      lat: State.pos ? State.pos.lat : null,
+      lng: State.pos ? State.pos.lng : null,
+      heading: State.heading,
+      speedKmh: (State.speedMps || 0) * 3.6,
+      accuracy: State.accuracy,
+      distanceToPointM,
+      isOnActiveRoute,
+    };
+  },
+
+  /** Throttled [INTEL-SCORE] log helper. Used by Alerts.tick to emit
+   *  a heartbeat without flooding the 500-entry buffer. */
+  logScoreLine(point, result) {
+    const now = Date.now();
+    if (now - this._lastScoreLogAt < 5000) return;
+    this._lastScoreLogAt = now;
+    const r = result;
+    const breakdown = `d=${r.contributions.distance} c=${r.contributions.confidence}` +
+      ` dir=${r.contributions.direction} rt=${r.contributions.route} fr=${r.contributions.freshness}` +
+      ` -gps=${r.contributions.gpsPenalty} -t=${r.contributions.timingPenalty}`;
+    logEvent('INTEL-SCORE',
+      `[INTEL-SCORE] ${point.id || '?'} type=${point.type} score=${r.intelligenceScore}` +
+      ` would=${r.intelligenceWouldAlert ? 'YES' : 'NO'}` +
+      ` trusted=${r.trusted ? 'Y' : 'N'} · ${breakdown}` +
+      ` · ${r.reasons.primary}`);
+  },
+
+  /** Log a mode transition. Called from the Settings handler. */
+  logModeTransition(prev, next) {
+    if (prev === next) return;
+    logEvent('INTEL-MODE', `[INTEL-MODE] ${prev || 'unset'} → ${next}`, 'ok');
+    this._lastModeLogged = next;
+  },
+};
+
+/* ============================================================
    5. ALERTS — threshold crossing
    ============================================================ */
 const Alerts = {
@@ -3050,12 +3409,63 @@ const Alerts = {
         // v22.32: ±10m tolerance — GPS jitter near a threshold could otherwise
         // skip a marker. Crossing is "was clearly outside, now at-or-near inside".
         const tol = 10; // meters
+        // v23.3.x Phase 3: run IntelligenceEngine once per tick for the
+        // focused candidate so shadow / active mode can compare against
+        // legacy decisions. Engine runs only if intelMode !== 'legacy'.
+        let intelEval = null;
+        const intelMode = State.settings.intelMode || 'legacy';
+        if (intelMode !== 'legacy') {
+          try {
+            const onRoute = (typeof MapView !== 'undefined' && MapView && MapView._routeCoords)
+              ? null   // we don't have a fast corridor check inline; null = unknown
+              : null;
+            const userState = IntelligenceEngine.buildUserState(meters, onRoute);
+            intelEval = IntelligenceEngine.evaluate(p, userState);
+            IntelligenceEngine.logScoreLine(p, intelEval);
+          } catch (e) {
+            logEvent('INTEL', '[INTEL] evaluator threw: ' + (e && e.message || e), 'err');
+          }
+        }
         for (const m of markers) {
           if (fired.has(m)) continue;
           if (prevMeters > m + tol && meters <= m + tol) {
-            Audio.alert(p, m);
+            // Legacy decided YES on this marker crossing.
+            // Phase 3 shadow logging: compare with intelligence verdict.
+            if (intelEval) {
+              if (!intelEval.intelligenceWouldAlert) {
+                logEvent('INTEL-DISAGREE',
+                  `[INTEL-DISAGREE] legacy=YES intel=NO @ ${m}m · ${p.id} type=${p.type}` +
+                  ` score=${intelEval.intelligenceScore} primary="${intelEval.reasons.primary}"`, 'err');
+              } else {
+                logEvent('INTEL-ALERT',
+                  `[INTEL-ALERT] AGREE legacy=YES intel=YES @ ${m}m · ${p.id} type=${p.type}` +
+                  ` score=${intelEval.intelligenceScore}`);
+              }
+            }
+            // v23.3.x: in ACTIVE mode, intelligence has veto. In shadow / legacy
+            // modes, legacy decision wins unconditionally — Audio.alert always fires.
+            const suppressedByIntel = (intelMode === 'active' && intelEval && !intelEval.intelligenceWouldAlert);
+            if (suppressedByIntel) {
+              logEvent('INTEL-SUPPRESS',
+                `[INTEL-SUPPRESS] legacy alert suppressed by active intelligence · ${p.id} @ ${m}m · ` +
+                intelEval.reasons.suppression.join('; '), 'err');
+            } else {
+              Audio.alert(p, m);
+            }
             fired.add(m);
-            if (navigator.vibrate) navigator.vibrate(60);
+            if (navigator.vibrate && !suppressedByIntel) navigator.vibrate(60);
+          }
+        }
+        // Disagreement on the OTHER direction: legacy didn't fire this tick
+        // but intelligence would have. Only log once per (point, focused-tick)
+        // when no marker was crossed — fired.size hasn't changed.
+        if (intelEval && intelEval.intelligenceWouldAlert) {
+          // suppress noise: only log when at least one marker hasn't fired
+          // yet AND the point is in the ideal window
+          const unfired = markers.some(m => !fired.has(m) && meters <= m);
+          if (unfired && meters >= 200 && meters <= 1500) {
+            // Throttled via the engine's _lastScoreLogAt — already 5s.
+            // No additional log line here to avoid duplication.
           }
         }
       }

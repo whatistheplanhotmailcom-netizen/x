@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.2.1';
+const APP_VERSION = 'v23.3.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1630,6 +1630,242 @@ const StorageInventory = {
     logEvent('STORAGE', `[STORAGE] route geometry · ${StorageInventory._fmtBytes(bytes)} in ${Storage.KEYS.learnedRoutes}` +
       (bytes > StorageInventoryConfig.ROUTE_GEOMETRY_WARN_BYTES ? ' (major storage contributor)' : ''), level);
     return { bytes };
+  },
+};
+
+/* ============================================================
+   0h. DUPLICATE DETECTOR — v23.x (Phase 2c-1c)
+
+   STRICTLY observe-only. The detector classifies pairs of stored
+   road-memory points into one of seven categories and produces a
+   report. It does NOT merge, delete, repair, archive, normalize,
+   or mutate any record. There is no auto-merge in this phase and
+   no merge button anywhere.
+
+   Determinism: distance is computed ONLY from each record's stored
+   lat/lng. No live GPS, no State.pos, no current-fix accuracy. The
+   detector produces identical output regardless of whether GPS is
+   on or off.
+
+   Manual trigger only — wired to the "🔎 Duplicates" button in
+   Settings → Storage safety net. Never invoked from boot, GPS
+   ticks, Settings repaints, or any background timer.
+
+   Classification priority order (first match wins):
+     1. Identical IDs                          → TRUE_DUPLICATE
+     2. confidence ≥ 2 on either record        → ALREADY_COLLAPSED (silent)
+     3. Different days + both have confirmations[] → LEGITIMATE_REPEAT
+     4. < 60s gap + same type + same destId + ≤ 5m → SAME_PASS_DUPLICATE
+        (referred to as "high-confidence duplicate candidate" in UI/logs.
+         There is no merge of any kind in this phase.)
+     5. Both directional + bearing diff > 25°  → DIFFERENT_CARRIAGEWAY
+     6. Different destId, not linked via
+        sourceDestinationIds                   → CROSS_DESTINATION
+     7. Everything else                        → AMBIGUOUS
+   ============================================================ */
+const DuplicateDetectorConfig = {
+  MAX_PAIR_RADIUS_M: 100,           // hard spatial prune before classification
+  SAME_PASS_MAX_DIST_M: 5,
+  SAME_PASS_MAX_TIME_MS: 60_000,
+  BEARING_DIFF_THRESHOLD_DEG: 25,
+};
+
+const DuplicateDetector = {
+  /** Run the scan against the supplied points array. Caller passes
+   *  the static snapshot — typically State.data.points. The detector
+   *  does NOT reach into State on its own.
+   *
+   *  Returns: { rows: [...flagged pairs...], counts: {...all 7 classes...},
+   *             totalPoints, candidateCount } */
+  scan(points) {
+    const startMs = Date.now();
+    const N = Array.isArray(points) ? points.length : 0;
+    logEvent('DUP-SCAN', `[DUP-SCAN] started · ${N} points`);
+
+    // Pre-filter: retired (status === 'no') points are excluded so the
+    // report doesn't relitigate things the user already disabled. Records
+    // with non-numeric coordinates are excluded (Phase 2a validation
+    // would have already flagged them).
+    const active = Array.isArray(points) ? points.filter(p =>
+      p && p.status !== 'no' &&
+      typeof p.lat === 'number' && isFinite(p.lat) &&
+      typeof p.lng === 'number' && isFinite(p.lng)
+    ) : [];
+
+    // O(n²) pair scan with hard spatial prune. Acceptable for thousands of
+    // points on a manual button click; grid-bucket optimisation is a
+    // future phase if it ever becomes a real-world problem.
+    const pairs = [];
+    for (let i = 0; i < active.length; i++) {
+      const a = active[i];
+      for (let j = i + 1; j < active.length; j++) {
+        const b = active[j];
+        const distM = DuplicateDetector._staticDistanceM(a, b);
+        if (distM > DuplicateDetectorConfig.MAX_PAIR_RADIUS_M) continue;
+        pairs.push({ a, b, distM });
+      }
+    }
+    logEvent('DUP-SCAN', `[DUP-SCAN] candidates: ${pairs.length}`);
+
+    const rows = [];
+    const counts = {
+      TRUE_DUPLICATE: 0,
+      ALREADY_COLLAPSED: 0,
+      LEGITIMATE_REPEAT: 0,
+      SAME_PASS_DUPLICATE: 0,
+      DIFFERENT_CARRIAGEWAY: 0,
+      CROSS_DESTINATION: 0,
+      AMBIGUOUS: 0,
+    };
+
+    for (const pair of pairs) {
+      const row = DuplicateDetector._classify(pair.a, pair.b, pair.distM);
+      counts[row.classification]++;
+      // ALREADY_COLLAPSED is silent — counted but not reported as a row
+      if (row.classification !== 'ALREADY_COLLAPSED') {
+        rows.push(row);
+      }
+    }
+
+    const summary = `[DUP-SCAN] classified: TRUE=${counts.TRUE_DUPLICATE} SAMEPASS=${counts.SAME_PASS_DUPLICATE} REPEAT=${counts.LEGITIMATE_REPEAT} CARRIAGEWAY=${counts.DIFFERENT_CARRIAGEWAY} CROSSDEST=${counts.CROSS_DESTINATION} AMBIG=${counts.AMBIGUOUS} (silent ALREADY_COLLAPSED=${counts.ALREADY_COLLAPSED})`;
+    logEvent('DUP-SCAN', summary, rows.length ? 'err' : 'ok');
+
+    // One log line per flagged pair. TRUE_DUPLICATE + SAME_PASS_DUPLICATE
+    // get err-level (red, persistent in the 500-entry buffer); the rest
+    // are info-level observe-only entries.
+    for (const r of rows) {
+      const gapStr = DuplicateDetector._formatGap(r.timeGapMs);
+      const level = (r.classification === 'TRUE_DUPLICATE' || r.classification === 'SAME_PASS_DUPLICATE') ? 'err' : '';
+      logEvent('DUP-SCAN', `[DUP-SCAN] ${r.classification} ${r.a.id} ↔ ${r.b.id} · ${Math.round(r.staticDistanceM)}m · Δt ${gapStr}`, level);
+    }
+
+    const elapsedMs = Date.now() - startMs;
+    logEvent('DUP-SCAN', `[DUP-SCAN] done · ${elapsedMs}ms`);
+
+    return {
+      rows,
+      counts,
+      totalPoints: N,
+      activePoints: active.length,
+      candidateCount: pairs.length,
+      elapsedMs,
+    };
+  },
+
+  /** Apply priority rules to a single pair. First match wins. */
+  _classify(a, b, distM) {
+    const gap = DuplicateDetector._timeGapMs(a, b);
+    const bearingDiff = DuplicateDetector._bearingDiff(a, b);
+
+    let classification, appliedRule;
+
+    // Rule 1 — Identical IDs
+    if (a.id != null && a.id === b.id) {
+      classification = 'TRUE_DUPLICATE'; appliedRule = 1;
+    }
+    // Rule 2 — confidence ≥ 2 on either record (already passed through merge logic)
+    else if ((a.confidence || 0) >= 2 || (b.confidence || 0) >= 2) {
+      classification = 'ALREADY_COLLAPSED'; appliedRule = 2;
+    }
+    // Rule 3 — different days AND both have non-empty confirmations[]
+    else if (DuplicateDetector._dayDifferent(a, b)
+             && DuplicateDetector._hasConfirmations(a)
+             && DuplicateDetector._hasConfirmations(b)) {
+      classification = 'LEGITIMATE_REPEAT'; appliedRule = 3;
+    }
+    // Rule 4 — same-pass: gap < 60s, same type, same destId, dist ≤ 5m
+    else if (gap != null && gap < DuplicateDetectorConfig.SAME_PASS_MAX_TIME_MS
+             && a.type === b.type
+             && a.destId != null && a.destId === b.destId
+             && distM <= DuplicateDetectorConfig.SAME_PASS_MAX_DIST_M) {
+      classification = 'SAME_PASS_DUPLICATE'; appliedRule = 4;
+    }
+    // Rule 5 — both directional, bearing diff > 25°
+    else if (a.directional === true && b.directional === true
+             && bearingDiff != null
+             && bearingDiff > DuplicateDetectorConfig.BEARING_DIFF_THRESHOLD_DEG) {
+      classification = 'DIFFERENT_CARRIAGEWAY'; appliedRule = 5;
+    }
+    // Rule 6 — different destId, not linked via sourceDestinationIds
+    else if (a.destId !== b.destId && !DuplicateDetector._linkedBySourceDests(a, b)) {
+      classification = 'CROSS_DESTINATION'; appliedRule = 6;
+    }
+    // Rule 7 — everything else
+    else {
+      classification = 'AMBIGUOUS'; appliedRule = 7;
+    }
+
+    return {
+      classification,
+      appliedRule,
+      a: DuplicateDetector._snapshot(a),
+      b: DuplicateDetector._snapshot(b),
+      staticDistanceM: distM,
+      timeGapMs: gap,
+      bearingDiffDeg: bearingDiff,
+    };
+  },
+
+  // ---- pure helpers, static persisted-data only ----
+
+  /** Static distance between two records' stored coordinates. The only
+   *  spatial primitive the detector uses. Never reads State.pos. */
+  _staticDistanceM(a, b) {
+    return Utils.distKm(a, b) * 1000;
+  },
+
+  _timeGapMs(a, b) {
+    const ta = a && a.createdAt ? Date.parse(a.createdAt) : NaN;
+    const tb = b && b.createdAt ? Date.parse(b.createdAt) : NaN;
+    if (isNaN(ta) || isNaN(tb)) return null;
+    return Math.abs(ta - tb);
+  },
+
+  _dayDifferent(a, b) {
+    if (!a || !b || !a.createdAt || !b.createdAt) return false;
+    return String(a.createdAt).slice(0, 10) !== String(b.createdAt).slice(0, 10);
+  },
+
+  _hasConfirmations(p) {
+    return !!(p && Array.isArray(p.confirmations) && p.confirmations.length > 0);
+  },
+
+  _bearingDiff(a, b) {
+    if (!a || !b || a.captureBearing == null || b.captureBearing == null) return null;
+    return Speed.angleDiff(a.captureBearing, b.captureBearing);
+  },
+
+  _linkedBySourceDests(a, b) {
+    const sa = Array.isArray(a.sourceDestinationIds) ? a.sourceDestinationIds
+             : (a.destId ? [a.destId] : []);
+    const sb = Array.isArray(b.sourceDestinationIds) ? b.sourceDestinationIds
+             : (b.destId ? [b.destId] : []);
+    if (!sa.length || !sb.length) return false;
+    return sa.some(x => sb.includes(x)) || sb.some(x => sa.includes(x));
+  },
+
+  /** Return a UI-safe snapshot of a point. NEVER includes mutable refs. */
+  _snapshot(p) {
+    return {
+      id: p.id,
+      lat: p.lat,
+      lng: p.lng,
+      type: p.type,
+      destId: p.destId,
+      createdAt: p.createdAt,
+      confidence: p.confidence || 0,
+      confirmationsCount: Array.isArray(p.confirmations) ? p.confirmations.length : 0,
+      captureBearing: p.captureBearing,
+      directional: !!p.directional,
+    };
+  },
+
+  _formatGap(ms) {
+    if (ms == null) return 'unknown';
+    if (ms < 60_000) return Math.round(ms / 1000) + 's';
+    if (ms < 3600_000) return Math.round(ms / 60_000) + 'm';
+    if (ms < 86_400_000) return Math.round(ms / 3600_000) + 'h';
+    return Math.round(ms / 86_400_000) + 'd';
   },
 };
 

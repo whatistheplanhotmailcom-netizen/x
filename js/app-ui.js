@@ -1304,6 +1304,98 @@ const UI = {
     }
   },
 
+  /** v23.x Phase 2c-1c: paint the duplicate-detector report into the
+   *  Storage safety-net results panel. STRICTLY read-only — every row
+   *  is plain text; no buttons, no click handlers, no data-* hooks
+   *  back to mutators. Caller already ran DuplicateDetector.scan(); this
+   *  method only renders. */
+  renderDuplicateScanResults(result) {
+    const host = document.getElementById('storage-dupscan-results');
+    if (!host) return;
+    if (!result) { host.innerHTML = ''; return; }
+
+    const order = [
+      'TRUE_DUPLICATE',
+      'SAME_PASS_DUPLICATE',
+      'LEGITIMATE_REPEAT',
+      'DIFFERENT_CARRIAGEWAY',
+      'CROSS_DESTINATION',
+      'AMBIGUOUS',
+    ];
+    // UI labels — SAME_PASS_DUPLICATE deliberately worded
+    // "high-confidence duplicate candidate" per spec. Phase 2c-1c has
+    // no merge of any kind.
+    const titles = {
+      TRUE_DUPLICATE:        '⚠ ID collisions',
+      SAME_PASS_DUPLICATE:   '⚠ High-confidence duplicate candidates',
+      LEGITIMATE_REPEAT:     'Legitimate repeat sightings',
+      DIFFERENT_CARRIAGEWAY: 'Different carriageway',
+      CROSS_DESTINATION:     'Cross-destination',
+      AMBIGUOUS:             'Ambiguous',
+    };
+    const colors = {
+      TRUE_DUPLICATE:        'var(--red)',
+      SAME_PASS_DUPLICATE:   'var(--red)',
+      LEGITIMATE_REPEAT:     'var(--ink-2)',
+      DIFFERENT_CARRIAGEWAY: 'var(--ink-2)',
+      CROSS_DESTINATION:     'var(--ink-2)',
+      AMBIGUOUS:             'var(--ink-3)',
+    };
+
+    const groups = {};
+    for (const r of (result.rows || [])) {
+      if (!groups[r.classification]) groups[r.classification] = [];
+      groups[r.classification].push(r);
+    }
+
+    const lines = [];
+    lines.push(
+      `<div style="margin-bottom:4px;"><strong>Scan summary</strong> · ` +
+      `${result.totalPoints} stored, ${result.activePoints} active, ` +
+      `${result.candidateCount} within ${DuplicateDetectorConfig.MAX_PAIR_RADIUS_M}m · ` +
+      `${(result.rows || []).length} pair(s) flagged · ` +
+      `${result.counts.ALREADY_COLLAPSED} silent (already-collapsed) · ` +
+      `${result.elapsedMs}ms</div>`
+    );
+
+    if (!(result.rows || []).length) {
+      lines.push('<div style="color:var(--green);">No suspicious pairs found.</div>');
+    }
+
+    for (const cls of order) {
+      const list = groups[cls] || [];
+      if (!list.length) continue;
+      lines.push(
+        `<div style="margin-top:6px;color:${colors[cls]};"><strong>` +
+        Utils.escapeHtml(titles[cls]) + `</strong> (${list.length})</div>`
+      );
+      const MAX_VIS = 10;
+      for (const r of list.slice(0, MAX_VIS)) {
+        const gap = DuplicateDetector._formatGap(r.timeGapMs);
+        const aid = Utils.escapeHtml(String(r.a.id || '?').slice(0, 8));
+        const bid = Utils.escapeHtml(String(r.b.id || '?').slice(0, 8));
+        const typeTag = (r.a.type === r.b.type) ? Utils.escapeHtml(String(r.a.type || '?')) : 'mixed';
+        const bearingTag = (r.bearingDiffDeg != null) ? ` · Δθ ${Math.round(r.bearingDiffDeg)}°` : '';
+        const confTag = ` · conf ${r.a.confidence}/${r.b.confidence}` +
+          ((r.a.confirmationsCount || r.b.confirmationsCount) ?
+            ` · conf-log ${r.a.confirmationsCount}/${r.b.confirmationsCount}` : '');
+        lines.push(
+          `<div>· ${aid} ↔ ${bid} · ${typeTag} · ` +
+          `${Math.round(r.staticDistanceM)}m · Δt ${Utils.escapeHtml(gap)}` +
+          `${bearingTag}${confTag}</div>`
+        );
+      }
+      if (list.length > MAX_VIS) {
+        lines.push(`<div style="color:var(--ink-3);">… and ${list.length - MAX_VIS} more — see debug log</div>`);
+      }
+    }
+
+    // Single innerHTML write — every interpolation goes through
+    // Utils.escapeHtml or is a number. No event handlers attached
+    // anywhere on the produced DOM.
+    host.innerHTML = lines.join('');
+  },
+
   /** v22.96: Run the dry-run migration in memory, paint the report into
    *  the modal, validate against the old data, and only enable the
    *  Run-migration button if validation passed. */
@@ -2710,6 +2802,19 @@ function wire() {
       dataReport.warnings.length ? 'bad' : 'good'
     );
     UI.refreshStorageStatus();
+  };
+  // v23.x Phase 2c-1c: duplicate detector (observe-only). Manual click
+  // only. Reads State.data.points as a static snapshot; never touches
+  // live GPS. Renders an inert, read-only result panel.
+  const _btnDup = document.getElementById('btn-storage-dupscan');
+  if (_btnDup) _btnDup.onclick = () => {
+    const points = (State.data && Array.isArray(State.data.points)) ? State.data.points : [];
+    const result = DuplicateDetector.scan(points);
+    UI.renderDuplicateScanResults(result);
+    Utils.toast(
+      `${result.rows.length} pair(s) flagged · ${result.candidateCount} within ${DuplicateDetectorConfig.MAX_PAIR_RADIUS_M}m`,
+      result.counts.TRUE_DUPLICATE > 0 || result.counts.SAME_PASS_DUPLICATE > 0 ? 'bad' : 'good'
+    );
   };
   // v22.79: debug log panel — opens the rolling-200 event history.
   document.getElementById('btn-debug').onclick = () => {

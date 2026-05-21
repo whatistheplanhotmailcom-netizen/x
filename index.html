@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.2.1">
+<link rel="stylesheet" href="styles.css?v=23.3.0">
 </head>
 <body data-theme="light">
 
@@ -586,13 +586,16 @@
       <button class="btn" id="btn-storage-inventory" style="flex:1;">📋 Report</button>
       <button class="btn" id="btn-storage-snapshot" style="flex:1;">📸 Snapshot</button>
       <button class="btn" id="btn-storage-validate" style="flex:1;">✓ Validate</button>
+      <button class="btn" id="btn-storage-dupscan" style="flex:1;">🔎 Duplicates</button>
     </div>
     <div class="row-hint">
       <strong>Report</strong> · logs an inventory of every localStorage key + sizes + schema detection.<br>
       <strong>Snapshot</strong> · creates a local safety snapshot under <code>roadalert:migrationSnapshot:*</code> (separate from GitHub Backup; never modifies live road memory).<br>
-      <strong>Validate</strong> · validates every snapshot + the live data without writing anything.
+      <strong>Validate</strong> · validates every snapshot + the live data without writing anything.<br>
+      <strong>Duplicates</strong> · static classification of suspicious point pairs from stored coords only (no GPS). Observe-only — no merge, no delete, no mutation.
     </div>
     <div id="storage-snapshots" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:var(--ink-3);"></div>
+    <div id="storage-dupscan-results" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:var(--ink-2);"></div>
 
     <!-- v22.98: bottom-of-page close button — gives users an escape from
          the long Settings page without scrolling back to the top × -->
@@ -739,8 +742,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.2.1"></script>
-<script defer src="js/app-ui.js?v=23.2.1"></script>
+<script defer src="js/app-core.js?v=23.3.0"></script>
+<script defer src="js/app-ui.js?v=23.3.0"></script>
 
 </body>
 </html>

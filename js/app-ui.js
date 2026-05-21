@@ -113,6 +113,10 @@ const MapView = {
   _routeDistanceM: null,
   _routeDurationS: null,
   _routeDestCoords: null,          // {lat,lng} of the destination at fetch time
+  // v23.5 Phase 4: offline routing back-off. When OSRM fetch fails, set
+  // this to a future timestamp; _checkRouteDeviation refuses to call
+  // _fetchAndDrawRoute until then. Last-known-good route stays drawn.
+  _offlineRouteBackoffUntil: 0,
   // v22.104: arrival detection — when GPS gets within ARRIVAL_RADIUS_M of
   // the active destination, flip the stored route to confirmed and clear
   // the drawn line. Session-scoped Set prevents re-firing on every tick.
@@ -844,6 +848,11 @@ const MapView = {
             State.pos
           );
         }
+        // v23.5 Phase 4: signal NetworkMonitor + clear any route backoff
+        // so the next deviation check can issue a fresh request.
+        try { NetworkMonitor.recordFetchResult('route', true); } catch (e) {}
+        this._offlineRouteBackoffUntil = 0;
+        try { if (typeof UI !== 'undefined' && UI.applyOfflineIndicator) UI.applyOfflineIndicator(); } catch (e) {}
       })
       .catch(e => {
         console.warn('Route fetch failed:', e);
@@ -855,6 +864,16 @@ const MapView = {
         } else {
           logEvent('ROUTE', 'Fetch failed: ' + msg, 'err');
         }
+        // v23.5 Phase 4: routing-provider failure is an authoritative
+        // offline signal. Keep the existing route line + destination
+        // intact (clearRoute is NEVER called from this branch). Apply a
+        // longer backoff so we don't hammer a dead network.
+        try { NetworkMonitor.recordFetchResult('route', false, msg); } catch (err2) {}
+        this._offlineRouteBackoffUntil = Date.now() + (typeof NetworkMonitorConfig !== 'undefined' ? NetworkMonitorConfig.ROUTE_BACKOFF_MS : 30000);
+        logEvent('OFFLINE-ROUTE',
+          `[OFFLINE-ROUTE] route fetch failed · keeping last-known-good route + active destination · backoff ${Math.round((this._offlineRouteBackoffUntil - Date.now())/1000)}s`,
+          'err');
+        try { if (typeof UI !== 'undefined' && UI.applyOfflineIndicator) UI.applyOfflineIndicator(); } catch (e2) {}
       })
       .finally(() => { this._routeFetching = false; });
   },
@@ -1032,6 +1051,20 @@ const MapView = {
         const left = Math.ceil((this._rerouteCooldownMs - sinceLast) / 1000);
         logEvent('ROUTE', `[ROUTE-DEVIATION] check skipped: reroute debounce (${left}s remaining)`);
         logEvent('ROUTE', `reroute skipped — debounce (${left}s remaining)`);
+      }
+      return;
+    }
+
+    // v23.5 Phase 4: extended back-off when the routing provider is
+    // currently unavailable. Keeps the existing route line + destination
+    // intact; does NOT block GPS alerts (this is the deviation check,
+    // not the alert tick).
+    if (this._offlineRouteBackoffUntil && now < this._offlineRouteBackoffUntil) {
+      if (!this._loggedDebounceAt || now - this._loggedDebounceAt > 5000) {
+        this._loggedDebounceAt = now;
+        const left = Math.ceil((this._offlineRouteBackoffUntil - now) / 1000);
+        logEvent('OFFLINE-ROUTE',
+          `[OFFLINE-ROUTE] reroute deferred — routing offline · ${left}s back-off remaining`);
       }
       return;
     }
@@ -2250,6 +2283,18 @@ const UI = {
     State.pendingCapture = null;
     State.captureLocationOverride = null; // v22.39: clear map-tap override
     State.saveData();
+    // v23.5 Phase 4: audit trail — note when capture happens while
+    // network is degraded/offline. Local save already succeeded above;
+    // remote backup will queue via tryAuto's next tick.
+    try {
+      const ns = NetworkMonitor.getStatus();
+      if (ns.state !== 'online' || ns.backupPending) {
+        logEvent('OFFLINE-CAPTURE',
+          `[OFFLINE-CAPTURE] saved locally · network=${ns.state}` +
+          (ns.backupPending ? ' · backup queued' : ''),
+          'ok');
+      }
+    } catch (e) {}
     // v22.9: force immediate map refresh (bypass the 5s throttle)
     if (MapView.m) {
       MapView._lastPointRefresh = Date.now();
@@ -2741,6 +2786,47 @@ const UI = {
   applyHintsVisibility() {
     const hide = State.settings.showHints === false;
     document.body.setAttribute('data-hide-hints', hide ? 'true' : 'false');
+  },
+
+  /** v23.5 Phase 4: paint the offline / degraded chip in the top bar.
+   *  Hidden when state === 'online'. Driven by NetworkMonitor.getStatus().
+   *  Tooltip carries the full breakdown — state, last failure scope,
+   *  backupPending, routeUnavailable. */
+  applyOfflineIndicator() {
+    const chip = document.getElementById('offline-indicator');
+    if (!chip) return;
+    let status;
+    try { status = NetworkMonitor.getStatus(); }
+    catch (e) { status = { state: 'online' }; }
+    chip.classList.remove('suspected', 'offline');
+    if (status.state === 'online' && !status.backupPending && !status.routeUnavailable) {
+      chip.textContent = '';
+      chip.hidden = true;
+      chip.title = '';
+      return;
+    }
+    chip.hidden = false;
+    // Labels priority: confirmed-offline → routing unavailable → backup queued → suspected
+    let label, cls;
+    if (status.state === 'confirmed-offline') {
+      label = 'OFFLINE'; cls = 'offline';
+    } else if (status.routeUnavailable) {
+      label = 'NO ROUTE'; cls = 'offline';
+    } else if (status.backupPending) {
+      label = 'BACKUP QUEUED'; cls = 'suspected';
+    } else if (status.state === 'suspected-offline') {
+      label = 'DEGRADED'; cls = 'suspected';
+    } else {
+      label = '';
+      cls = '';
+    }
+    chip.textContent = label;
+    if (cls) chip.classList.add(cls);
+    chip.title = `network: ${status.state} · ` +
+      `route: ${status.routeUnavailable ? 'unavailable' : 'ok'} · ` +
+      `backup: ${status.backupPending ? 'queued' : 'ok'} · ` +
+      `consec failures: ${status.consecutiveFailures}` +
+      (status.lastFailureScope ? ` · last failure: ${status.lastFailureScope} (${status.lastFailureMessage || ''})` : '');
   },
 
   /** v23.4.1: paint the alert-engine visibility chip in the top bar.
@@ -3552,8 +3638,29 @@ function wire() {
     m.addEventListener('click', e => { if (e.target === m) UI.closeAllModals(); })
   );
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && State.mode === 'gps') {
+    if (document.visibilityState !== 'visible') return;
+    // Existing v22 behavior — request wake lock on resume during a GPS session.
+    if (State.mode === 'gps') {
       GPS.requestWakeLock();
+    }
+    // v23.5 Phase 4: iOS Safari suspension handling. On resume:
+    //   - re-check the pending backup retry queue and drain it
+    //   - refresh the offline indicator from current monitor state
+    //   - the next real fetch (route or backup) will re-confirm
+    //     network state authoritatively
+    // Reuses this single visibilitychange listener — no parallel
+    // resume path is added.
+    try {
+      const hasPending = BackupQueue.hasPending();
+      logEvent('OFFLINE-RESUME',
+        `[OFFLINE-RESUME] visibility=visible · backupQueue=${hasPending ? 'pending' : 'empty'}`);
+      if (hasPending) {
+        // fire-and-forget; drain handles its own logging
+        BackupQueue.drain();
+      }
+      UI.applyOfflineIndicator();
+    } catch (e) {
+      logEvent('OFFLINE-RESUME', '[OFFLINE-RESUME] handler threw: ' + (e && e.message || e), 'err');
     }
   });
 }
@@ -3658,11 +3765,40 @@ function boot() {
     UI.applyTheme();
     UI.applyHintsVisibility(); // v23.0.1: respect saved show/hide preference
     UI.applyIntelIndicator();  // v23.4.1: paint the top-bar engine chip
+    // v23.5 Phase 4: prime the network monitor from the navigator hint,
+    // paint the offline chip, and opportunistically drain any backup
+    // retry queue left over from a previous (suspended/closed) session.
+    try {
+      const init = (typeof navigator !== 'undefined' && navigator.onLine !== false);
+      NetworkMonitor.recordNavigatorOnline(init);
+      UI.applyOfflineIndicator();
+      if (BackupQueue.hasPending()) {
+        const entry = BackupQueue.inspect();
+        logEvent('OFFLINE-BACKUP',
+          `[OFFLINE-BACKUP] queue restored from previous session · attempts=${entry.attempts} · since ${entry.queuedAt} · last="${entry.lastError}"`);
+        // fire-and-forget; success or failure both update the chip
+        BackupQueue.drain();
+      }
+    } catch (e) {
+      logEvent('OFFLINE', '[OFFLINE] boot prime threw: ' + (e && e.message || e), 'err');
+    }
     // v23.1.1: live online/offline cell in diag-strip. Re-render on the
     // connectivity events so the indicator flips immediately, not on the
     // next GPS tick. Log so the debug panel records the transition.
-    window.addEventListener('online',  () => { logEvent('NET', 'online',  'ok');  UI.renderDiagStrip(); });
-    window.addEventListener('offline', () => { logEvent('NET', 'offline', 'err'); UI.renderDiagStrip(); });
+    window.addEventListener('online',  () => {
+      logEvent('NET', 'online',  'ok');
+      try { NetworkMonitor.recordNavigatorOnline(true); } catch (e) {}
+      UI.renderDiagStrip();
+      UI.applyOfflineIndicator();
+      // Drain the persistent backup queue opportunistically.
+      try { if (BackupQueue.hasPending()) BackupQueue.drain(); } catch (e) {}
+    });
+    window.addEventListener('offline', () => {
+      logEvent('NET', 'offline', 'err');
+      try { NetworkMonitor.recordNavigatorOnline(false); } catch (e) {}
+      UI.renderDiagStrip();
+      UI.applyOfflineIndicator();
+    });
     wire();
     // v22.82: try to subscribe to the device compass. iOS will defer the
     // actual permission request to the first user tap.

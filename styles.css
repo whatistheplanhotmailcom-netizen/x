@@ -157,6 +157,39 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .brand .intel-indicator.active { animation: none; }
 }
+/* v23.5 Phase 4: offline / degraded chip. Hidden when fully online.
+   Amber when suspected (navigator hint or single recent failure);
+   red when confirmed (real fetch failures). */
+.brand .offline-indicator {
+  display: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 4px;
+  line-height: 1.2;
+}
+.brand .offline-indicator.suspected {
+  display: inline-block;
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--amber-2);
+  border: 1px solid var(--amber-2);
+}
+.brand .offline-indicator.offline {
+  display: inline-block;
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--red);
+  border: 1px solid var(--red);
+  animation: offline-pulse 2.4s ease-in-out infinite;
+}
+@keyframes offline-pulse {
+  0%, 100% { box-shadow: 0 0 0 0   rgba(239,68,68,0.0); }
+  50%      { box-shadow: 0 0 6px 1px rgba(239,68,68,0.4); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand .offline-indicator.offline { animation: none; }
+}
 .topbar-spacer { flex: 1; }
 .topbar-actions {
   display: flex;

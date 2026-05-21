@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.4.1';
+const APP_VERSION = 'v23.5.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1891,6 +1891,10 @@ const Storage = {
     migrationCompletedAt: 'roadAlert.v22.96.migrationCompletedAt',
     // v22.98: learned-route memory (RouteMemory module)
     learnedRoutes: 'roadAlert.v22.98.learnedRoutes',
+    // v23.5: persistent backup retry queue (Phase 4 offline resilience).
+    // Survives iOS Safari suspension, lock screen, page reload, killed
+    // timers. Cleared on first successful Backup.push after a failure.
+    backupQueue: 'roadAlert.v23.5.backupQueue',
   },
   load(key, def) {
     try {
@@ -2068,6 +2072,203 @@ const Storage = {
 };
 
 Storage.migrate();
+
+/* ============================================================
+   1b. NETWORK MONITOR — v23.5 (Phase 4, offline resilience)
+
+   Tracks network health from MULTIPLE signals, with the spec's
+   explicit hint-vs-authoritative distinction:
+
+     HINT (cheap but unreliable):
+       navigator.onLine          — set by the browser; can lie on
+                                   captive portals, VPNs, hotspots.
+       online / offline events   — fired when the OS thinks state
+                                   changed. Treated as hints only.
+
+     AUTHORITATIVE (expensive but truthful):
+       Real fetch outcomes from existing call sites:
+         - MapView._fetchAndDrawRoute → recordFetchResult('route', ok)
+         - Backup.push                → recordFetchResult('backup', ok)
+       These are the only signals that can promote state to
+       'confirmed-offline'.
+
+   Derived state:
+       online              — recent success on any scope, no recent
+                             failures
+       suspected-offline   — navigator.onLine === false OR a single
+                             recent failure
+       confirmed-offline   — ≥ 2 consecutive failures across scopes,
+                             OR navigator.onLine false + recent failure
+
+   Per-scope flags also tracked:
+       routeUnavailable    — true if last route fetch failed and not
+                             yet succeeded again
+       backupPending       — true if a backup attempt failed; cleared
+                             when BackupQueue drains successfully
+   ============================================================ */
+const NetworkMonitorConfig = {
+  FAILURE_PROMOTION_THRESHOLD: 2,        // ≥ N consecutive failures → confirmed-offline
+  FAILURE_FORGET_MS: 5 * 60 * 1000,      // clear "recent" flag after 5 min of silence
+  ROUTE_BACKOFF_MS: 30 * 1000,           // suggested gap between route retries when offline
+};
+
+const NetworkMonitor = {
+  _consecutiveFailures: 0,
+  _lastSuccessAt: null,
+  _lastFailureAt: null,
+  _lastFailureScope: null,
+  _lastFailureMessage: null,
+  _routeUnavailable: false,
+  _backupPending: false,
+  _navigatorOnlineHint: null,            // last value of navigator.onLine
+
+  /** Called on real network outcomes. scope is 'route' | 'backup' |
+   *  any future call site. ok = true on success, false on failure. */
+  recordFetchResult(scope, ok, message) {
+    if (ok) {
+      const wasOffline = NetworkMonitor.getState() !== 'online';
+      NetworkMonitor._consecutiveFailures = 0;
+      NetworkMonitor._lastSuccessAt = Date.now();
+      NetworkMonitor._lastFailureMessage = null;
+      if (scope === 'route') NetworkMonitor._routeUnavailable = false;
+      if (scope === 'backup') NetworkMonitor._backupPending = false;
+      if (wasOffline) {
+        logEvent('OFFLINE-NETWORK',
+          `[OFFLINE-NETWORK] recovered · ${scope} succeeded after ${NetworkMonitor._consecutiveFailures + 0} failures`, 'ok');
+      }
+      return;
+    }
+    NetworkMonitor._consecutiveFailures++;
+    NetworkMonitor._lastFailureAt = Date.now();
+    NetworkMonitor._lastFailureScope = scope;
+    NetworkMonitor._lastFailureMessage = message || null;
+    if (scope === 'route') NetworkMonitor._routeUnavailable = true;
+    if (scope === 'backup') NetworkMonitor._backupPending = true;
+    const state = NetworkMonitor.getState();
+    const prefix = scope === 'route' ? 'OFFLINE-ROUTE'
+                 : scope === 'backup' ? 'OFFLINE-BACKUP'
+                 : 'OFFLINE-NETWORK';
+    logEvent(prefix,
+      `[${prefix}] ${scope} failed · state=${state} · consec=${NetworkMonitor._consecutiveFailures}` +
+      (message ? ` · ${message}` : ''),
+      'err');
+  },
+
+  /** Hint signal from window.online / window.offline events. */
+  recordNavigatorOnline(bool) {
+    NetworkMonitor._navigatorOnlineHint = !!bool;
+    logEvent('OFFLINE-NETWORK',
+      `[OFFLINE-NETWORK] hint navigator.onLine=${bool}`,
+      bool ? 'ok' : '');
+  },
+
+  /** Derived state. Authoritative failures dominate the hint. */
+  getState() {
+    const hintOffline = (NetworkMonitor._navigatorOnlineHint === false);
+    const confirmedOffline = NetworkMonitor._consecutiveFailures >= NetworkMonitorConfig.FAILURE_PROMOTION_THRESHOLD
+      || (hintOffline && NetworkMonitor._consecutiveFailures >= 1);
+    if (confirmedOffline) return 'confirmed-offline';
+    if (hintOffline || NetworkMonitor._consecutiveFailures >= 1) return 'suspected-offline';
+    return 'online';
+  },
+
+  /** Full snapshot for UI / debug. */
+  getStatus() {
+    return {
+      state: NetworkMonitor.getState(),
+      routeUnavailable: NetworkMonitor._routeUnavailable,
+      backupPending: NetworkMonitor._backupPending,
+      consecutiveFailures: NetworkMonitor._consecutiveFailures,
+      lastSuccessAt: NetworkMonitor._lastSuccessAt,
+      lastFailureAt: NetworkMonitor._lastFailureAt,
+      lastFailureScope: NetworkMonitor._lastFailureScope,
+      lastFailureMessage: NetworkMonitor._lastFailureMessage,
+      navigatorOnlineHint: NetworkMonitor._navigatorOnlineHint,
+    };
+  },
+};
+
+/* ============================================================
+   1c. BACKUP QUEUE — v23.5 (Phase 4, persistent retry across
+   iOS Safari suspension / page reload / killed timers)
+   ============================================================ */
+const BackupQueue = {
+  /** Read the queue. Returns the single pending push entry, or null. */
+  read() {
+    try {
+      const raw = localStorage.getItem(Storage.KEYS.backupQueue);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return (parsed && parsed.push) ? parsed : null;
+    } catch (e) {
+      logEvent('OFFLINE-BACKUP', '[OFFLINE-BACKUP] queue read failed: ' + (e && e.message || e), 'err');
+      return null;
+    }
+  },
+
+  /** Record a failed push so the retry survives reload / suspension. */
+  enqueueFailedPush(err) {
+    const existing = BackupQueue.read();
+    const entry = {
+      push: {
+        queuedAt: existing && existing.push ? existing.push.queuedAt : new Date().toISOString(),
+        attempts: (existing && existing.push ? existing.push.attempts : 0) + 1,
+        lastError: String((err && err.message) || err || ''),
+        lastAttemptAt: new Date().toISOString(),
+      },
+    };
+    try {
+      localStorage.setItem(Storage.KEYS.backupQueue, JSON.stringify(entry));
+      logEvent('OFFLINE-BACKUP',
+        `[OFFLINE-BACKUP] queued failed push · attempts=${entry.push.attempts} · since ${entry.push.queuedAt}`,
+        'err');
+    } catch (e) {
+      logEvent('OFFLINE-BACKUP', '[OFFLINE-BACKUP] queue write failed: ' + (e && e.message || e), 'err');
+    }
+  },
+
+  /** Clear the queue after a successful push. */
+  clear() {
+    try {
+      localStorage.removeItem(Storage.KEYS.backupQueue);
+    } catch (e) {}
+  },
+
+  /** True iff there's a pending entry the resume/visibility path
+   *  should attempt to drain. */
+  hasPending() {
+    return !!BackupQueue.read();
+  },
+
+  /** Returns the current entry (or null) so callers can log it. */
+  inspect() {
+    const q = BackupQueue.read();
+    return q && q.push ? q.push : null;
+  },
+
+  /** Drain the queue. Best-effort single retry of Backup.push.
+   *  Idempotent: caller (visibility/resume) may call this multiple
+   *  times; the first successful push removes the entry. */
+  async drain() {
+    if (!BackupQueue.hasPending()) return { ok: true, drained: false };
+    const before = BackupQueue.inspect();
+    logEvent('OFFLINE-BACKUP',
+      `[OFFLINE-BACKUP] draining queue · attempts=${before.attempts} · last="${before.lastError}"`);
+    try {
+      const result = await Backup.push({ silent: true });
+      if (result) {
+        BackupQueue.clear();
+        logEvent('OFFLINE-BACKUP', '[OFFLINE-BACKUP] drained successfully', 'ok');
+        return { ok: true, drained: true };
+      }
+      // Backup.push handles its own failure logging via NetworkMonitor.
+      return { ok: false, drained: false };
+    } catch (e) {
+      logEvent('OFFLINE-BACKUP', '[OFFLINE-BACKUP] drain threw: ' + (e && e.message || e), 'err');
+      return { ok: false, drained: false };
+    }
+  },
+};
 
 /* ============================================================
    2. STATE
@@ -3918,6 +4119,10 @@ const Backup = {
         const msg = err.message || ('HTTP ' + resp.status);
         if (!opts.silent) Utils.toast('Backup failed: ' + msg, 'bad');
         logEvent('BACKUP', `push HTTP ${resp.status}: ${msg}`, 'err');
+        // v23.5 Phase 4: queue the failed push and signal NetworkMonitor.
+        try { NetworkMonitor.recordFetchResult('backup', false, msg); } catch (e) {}
+        try { BackupQueue.enqueueFailedPush(new Error(msg)); } catch (e) {}
+        try { if (typeof UI !== 'undefined' && UI.applyOfflineIndicator) UI.applyOfflineIndicator(); } catch (e) {}
         return false;
       }
       State.lastBackup = Date.now();
@@ -3925,10 +4130,19 @@ const Backup = {
       UI.updateBackupStatus();
       if (!opts.silent) Utils.toast('Backed up ✓', 'good');
       logEvent('BACKUP', `push ok (${(payload.length / 1024).toFixed(1)}KB, ${tag})`, 'ok');
+      // v23.5 Phase 4: success clears the persistent retry queue and
+      // signals the network monitor.
+      try { NetworkMonitor.recordFetchResult('backup', true); } catch (e) {}
+      try { BackupQueue.clear(); } catch (e) {}
+      try { if (typeof UI !== 'undefined' && UI.applyOfflineIndicator) UI.applyOfflineIndicator(); } catch (e) {}
       return true;
     } catch (e) {
       if (!opts.silent) Utils.toast('Backup error', 'bad');
       logEvent('BACKUP', 'push exception: ' + (e && e.message || e), 'err');
+      // v23.5 Phase 4: network exception = authoritative offline signal.
+      try { NetworkMonitor.recordFetchResult('backup', false, (e && e.message) || String(e)); } catch (err) {}
+      try { BackupQueue.enqueueFailedPush(e); } catch (err) {}
+      try { if (typeof UI !== 'undefined' && UI.applyOfflineIndicator) UI.applyOfflineIndicator(); } catch (err) {}
       return false;
     }
   },

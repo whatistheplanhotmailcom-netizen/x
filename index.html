@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.4.1">
+<link rel="stylesheet" href="styles.css?v=23.5.0">
 </head>
 <body data-theme="light">
 
@@ -30,6 +30,11 @@
       <!-- v23.4.1: alert-engine visibility chip. Hidden in Legacy mode;
            amber in Shadow; red+pulse in Active. Driven from UI.applyIntelIndicator. -->
       <span class="intel-indicator" id="intel-indicator" hidden></span>
+      <!-- v23.5 Phase 4: offline / degraded-network persistent chip.
+           Hidden when fully online. Amber when suspected; red when
+           confirmed via real fetch failures. Title carries the full
+           breakdown for hover/longpress. -->
+      <span class="offline-indicator" id="offline-indicator" hidden></span>
     </div>
     <span class="topbar-spacer"></span>
     <div class="topbar-actions">
@@ -765,8 +770,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.4.1"></script>
-<script defer src="js/app-ui.js?v=23.4.1"></script>
+<script defer src="js/app-core.js?v=23.5.0"></script>
+<script defer src="js/app-ui.js?v=23.5.0"></script>
 
 </body>
 </html>

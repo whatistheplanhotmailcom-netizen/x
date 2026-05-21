@@ -825,6 +825,7 @@ const MapView = {
         // v22.97: log line names "reroute" when this fetch was triggered
         // by _checkRouteDeviation (the _isReroute flag) vs an initial fetch.
         if (this._isReroute) {
+          logEvent('ROUTE', '[ROUTE-DEVIATION] reroute success', 'ok');
           logEvent('ROUTE', `reroute completed — ${km}km / ~${min}min`, 'ok');
           this._isReroute = false;
         } else {
@@ -848,6 +849,7 @@ const MapView = {
         console.warn('Route fetch failed:', e);
         const msg = (e && e.message) || String(e);
         if (this._isReroute) {
+          logEvent('ROUTE', '[ROUTE-DEVIATION] reroute failed: ' + msg, 'err');
           logEvent('ROUTE', 'reroute failed: ' + msg, 'err');
           this._isReroute = false;
         } else {
@@ -948,25 +950,54 @@ const MapView = {
    *  Refetch is just "clear the destId cache and call _fetchAndDrawRoute"
    *  — the existing fetch path then builds a fresh route from current pos. */
   _checkRouteDeviation() {
-    if (!this.m || !this._mapLoaded) return;
-    if (!State.pos) return;
-    if (!this._routeCoords || this._routeCoords.length < 2) return;
-    if (this._routeFetching) return;
-    const dest = State.activeDest();
-    if (!dest) return;
-
     const now = Date.now();
+    // v23.1.12 (Phase 1): throttled diagnostic beacons. The `_rdBeaconAt`
+    // gate fires the high-frequency labels at most once per 5s so the
+    // debug log isn't flooded by the per-GPS-tick heartbeat. Strike,
+    // request, success and failure labels are inherently low-frequency
+    // and bypass the throttle.
+    const rdBeacon = !this._rdBeaconAt || now - this._rdBeaconAt > 5000;
+    if (rdBeacon) {
+      this._rdBeaconAt = now;
+      logEvent('ROUTE', '[ROUTE-DEVIATION] gps update received');
+    }
+
+    if (!this.m || !this._mapLoaded) {
+      if (rdBeacon) logEvent('ROUTE', '[ROUTE-DEVIATION] check skipped: map not ready');
+      return;
+    }
+    if (!State.pos) {
+      if (rdBeacon) logEvent('ROUTE', '[ROUTE-DEVIATION] check skipped: no GPS pos');
+      return;
+    }
+    if (!this._routeCoords || this._routeCoords.length < 2) {
+      if (rdBeacon) logEvent('ROUTE', '[ROUTE-DEVIATION] check skipped: no active route geometry');
+      return;
+    }
+    if (this._routeFetching) {
+      if (rdBeacon) logEvent('ROUTE', '[ROUTE-DEVIATION] check skipped: fetch in flight');
+      return;
+    }
+    const dest = State.activeDest();
+    if (!dest) {
+      if (rdBeacon) logEvent('ROUTE', '[ROUTE-DEVIATION] check skipped: no active destination');
+      return;
+    }
 
     // v22.97: GPS accuracy gate — don't make routing decisions on a poor
     // fix. The check still runs every GPS update; we just refuse to
     // strike or trigger when the position itself is too noisy.
     if (State.accuracy != null && State.accuracy > this._offRouteAccuracyMaxM) {
+      if (rdBeacon) logEvent('ROUTE', `[ROUTE-DEVIATION] check skipped: accuracy ±${Math.round(State.accuracy)}m > ${this._offRouteAccuracyMaxM}m`);
       if (!this._lastDevDistLogAt || now - this._lastDevDistLogAt > 5000) {
         this._lastDevDistLogAt = now;
         logEvent('ROUTE', `GPS update · accuracy ±${Math.round(State.accuracy)}m > ${this._offRouteAccuracyMaxM}m — deviation check skipped`);
       }
       return;
     }
+
+    // All guards passed — distance computation runs this tick
+    if (rdBeacon) logEvent('ROUTE', '[ROUTE-DEVIATION] check running');
 
     const distM = this._distanceToRouteMeters(State.pos, this._routeCoords);
 
@@ -987,6 +1018,7 @@ const MapView = {
 
     // Off-route this update — accumulate a strike
     this._offRouteStrikes = (this._offRouteStrikes || 0) + 1;
+    logEvent('ROUTE', `[ROUTE-DEVIATION] off route detected — ${Math.round(distM)}m, strike ${this._offRouteStrikes}/${this._offRouteStrikesRequired}`);
     logEvent('ROUTE', `off-route strike ${this._offRouteStrikes}/${this._offRouteStrikesRequired}: ${Math.round(distM)}m from route`);
 
     // Need N consecutive strikes before we trigger
@@ -998,6 +1030,7 @@ const MapView = {
       if (!this._loggedDebounceAt || now - this._loggedDebounceAt > 5000) {
         this._loggedDebounceAt = now;
         const left = Math.ceil((this._rerouteCooldownMs - sinceLast) / 1000);
+        logEvent('ROUTE', `[ROUTE-DEVIATION] check skipped: reroute debounce (${left}s remaining)`);
         logEvent('ROUTE', `reroute skipped — debounce (${left}s remaining)`);
       }
       return;
@@ -1008,6 +1041,7 @@ const MapView = {
     this._lastRefetchAt = now;
     this._offRouteStrikes = 0;
     this._isReroute = true;
+    logEvent('ROUTE', `[ROUTE-DEVIATION] reroute requested — ${Math.round(distM)}m off route`, 'ok');
     logEvent('ROUTE', `reroute started — ${Math.round(distM)}m off route, recalculating from current GPS`, 'ok');
     // v23.1.0: status sits in the diag-strip now; no toast for reroute.
     // Clearing the cached destId forces _fetchAndDrawRoute to re-issue.

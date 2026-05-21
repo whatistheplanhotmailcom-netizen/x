@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.4.0';
+const APP_VERSION = 'v23.4.1';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -3192,6 +3192,116 @@ const IntelligenceEngine = {
     if (prev === next) return;
     logEvent('INTEL-MODE', `[INTEL-MODE] ${prev || 'unset'} → ${next}`, 'ok');
     this._lastModeLogged = next;
+    // v23.4.1: any mode change resets the runaway counter so a fresh
+    // session doesn't carry over an old streak.
+    IntelligenceEngine._suppressionStreak = 0;
+    IntelligenceEngine._recentSuppressions = [];
+  },
+
+  /** v23.4.1 — Active-mode runaway guard.
+   *  Counter increments only when intelligence suppresses a legacy
+   *  threshold-crossing alert. Counter resets on:
+   *    - any allowed alert (legacy + intel agree to fire)
+   *    - mode change
+   *    - app cold start (in-memory only; nothing persisted)
+   *  When >3 consecutive suppressions accumulate without a fired alert,
+   *  the engine reverts itself to Legacy mode for the rest of this
+   *  driving session. */
+  _suppressionStreak: 0,
+  _recentSuppressions: [],
+  RUNAWAY_THRESHOLD: 4, // >3 means counter reaches 4
+
+  /** Called from Alerts.tick when active mode suppresses a legacy
+   *  threshold-crossing alert. Records diagnostic snapshot and may
+   *  trigger automatic revert. */
+  noteSuppression(point, evalResult, distM, ring) {
+    const entry = {
+      ts: new Date().toISOString(),
+      pointId: point && point.id,
+      type: point && point.type,
+      distanceM: Math.round(distM),
+      ring,
+      confidence: (point && typeof point.confidence === 'number') ? point.confidence : 0,
+      score: evalResult ? evalResult.intelligenceScore : null,
+      reasonsPrimary: evalResult && evalResult.reasons ? evalResult.reasons.primary : null,
+      suppressionReasons: (evalResult && evalResult.reasons && evalResult.reasons.suppression) ? evalResult.reasons.suppression.slice() : [],
+      contributions: evalResult ? Object.assign({}, evalResult.contributions) : null,
+    };
+    IntelligenceEngine._recentSuppressions.push(entry);
+    if (IntelligenceEngine._recentSuppressions.length > 3) {
+      IntelligenceEngine._recentSuppressions.shift();
+    }
+    IntelligenceEngine._suppressionStreak++;
+
+    // Detailed structured log per spec — point ID, type, distance,
+    // confidence, reason, score breakdown.
+    const breakdown = entry.contributions
+      ? `d=${entry.contributions.distance} c=${entry.contributions.confidence} dir=${entry.contributions.direction} rt=${entry.contributions.route} fr=${entry.contributions.freshness} -gps=${entry.contributions.gpsPenalty} -t=${entry.contributions.timingPenalty}`
+      : '';
+    logEvent('INTEL-SUPPRESS',
+      `[INTEL-SUPPRESS] ${entry.pointId} type=${entry.type} @ ${entry.distanceM}m (ring ${ring}m)` +
+      ` conf=${entry.confidence} score=${entry.score} primary="${entry.reasonsPrimary}"` +
+      (breakdown ? ` · ${breakdown}` : '') +
+      ` · streak ${IntelligenceEngine._suppressionStreak}/${IntelligenceEngine.RUNAWAY_THRESHOLD}`,
+      'err');
+
+    if (IntelligenceEngine._suppressionStreak >= IntelligenceEngine.RUNAWAY_THRESHOLD) {
+      IntelligenceEngine._triggerRunawayRevert();
+    }
+  },
+
+  /** Called when an alert fires (legacy + intelligence agree to alert).
+   *  Resets the suppression streak. */
+  noteAlertFired() {
+    if (IntelligenceEngine._suppressionStreak > 0) {
+      logEvent('INTEL', `[INTEL] alert fired — suppression streak reset (was ${IntelligenceEngine._suppressionStreak})`);
+    }
+    IntelligenceEngine._suppressionStreak = 0;
+    IntelligenceEngine._recentSuppressions = [];
+  },
+
+  /** Conservative safety trip — revert to Legacy and log the last 3
+   *  suppression reasons. The user can re-enable Active from Settings;
+   *  a runaway revert is NOT proof of engine failure, just a guardrail. */
+  _triggerRunawayRevert() {
+    const snapshot = IntelligenceEngine._recentSuppressions.slice();
+    const detail = snapshot.map(e =>
+      `${e.pointId}(${e.type},c=${e.confidence},score=${e.score},"${e.reasonsPrimary}")`
+    ).join(' · ');
+    logEvent('INTEL-SUPPRESS',
+      `[INTEL-SUPPRESS] runaway-suppression-revert · streak=${IntelligenceEngine._suppressionStreak} · last3: ${detail || '(none)'}`,
+      'err');
+    logEvent('INTEL-MODE', `[INTEL-MODE] active → legacy (runaway revert)`, 'err');
+    State.settings.intelMode = 'legacy';
+    try { State.saveSettings(); } catch (e) {}
+    IntelligenceEngine._suppressionStreak = 0;
+    IntelligenceEngine._recentSuppressions = [];
+    // Update visible UI when available
+    try { if (typeof UI !== 'undefined' && UI.syncSettings) UI.syncSettings(); } catch (e) {}
+    try { if (typeof UI !== 'undefined' && UI.applyIntelIndicator) UI.applyIntelIndicator(); } catch (e) {}
+    try { Utils.toast('Alert engine reverted to Legacy (runaway guard)', 'bad'); } catch (e) {}
+  },
+
+  /** Boot-time sanity check — if intelMode is non-legacy but the engine
+   *  cannot evaluate a trivial input, fall back to Legacy and log.
+   *  Returns the effective mode. */
+  bootCheck() {
+    const mode = (State && State.settings && State.settings.intelMode) || 'legacy';
+    if (mode === 'legacy') return 'legacy';
+    try {
+      // Trivial sanity evaluation — must not throw.
+      const probe = IntelligenceEngine.evaluate(
+        { id: '_probe', type: 'other', lat: 0, lng: 0, confidence: 1, createdAt: new Date().toISOString() },
+        { lat: 0, lng: 0, heading: null, speedKmh: 0, accuracy: null, distanceToPointM: 500, isOnActiveRoute: null }
+      );
+      if (!probe || typeof probe.intelligenceScore !== 'number') throw new Error('probe returned malformed result');
+      return mode;
+    } catch (e) {
+      logEvent('INTEL-MODE', `[INTEL-MODE] fallback-to-legacy · ${e && e.message || e}`, 'err');
+      State.settings.intelMode = 'legacy';
+      try { State.saveSettings(); } catch (e2) {}
+      return 'legacy';
+    }
   },
 };
 
@@ -3444,13 +3554,13 @@ const Alerts = {
             }
             // v23.3.x: in ACTIVE mode, intelligence has veto. In shadow / legacy
             // modes, legacy decision wins unconditionally — Audio.alert always fires.
+            // v23.4.1: feed the runaway counter on both branches.
             const suppressedByIntel = (intelMode === 'active' && intelEval && !intelEval.intelligenceWouldAlert);
             if (suppressedByIntel) {
-              logEvent('INTEL-SUPPRESS',
-                `[INTEL-SUPPRESS] legacy alert suppressed by active intelligence · ${p.id} @ ${m}m · ` +
-                intelEval.reasons.suppression.join('; '), 'err');
+              IntelligenceEngine.noteSuppression(p, intelEval, meters, m);
             } else {
               Audio.alert(p, m);
+              if (intelMode === 'active') IntelligenceEngine.noteAlertFired();
             }
             fired.add(m);
             if (navigator.vibrate && !suppressedByIntel) navigator.vibrate(60);

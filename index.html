@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.4.0">
+<link rel="stylesheet" href="styles.css?v=23.4.1">
 </head>
 <body data-theme="light">
 
@@ -27,6 +27,9 @@
       <span class="dot"></span>
       <span>X</span>
       <span class="version" id="app-version-label"></span>
+      <!-- v23.4.1: alert-engine visibility chip. Hidden in Legacy mode;
+           amber in Shadow; red+pulse in Active. Driven from UI.applyIntelIndicator. -->
+      <span class="intel-indicator" id="intel-indicator" hidden></span>
     </div>
     <span class="topbar-spacer"></span>
     <div class="topbar-actions">
@@ -439,6 +442,13 @@
       </div>
     </div>
     <div class="row-hint"><strong>Legacy</strong> · current alert engine controls real alerts (default). <strong>Shadow</strong> · legacy still controls alerts; intelligence engine evaluates in parallel and logs decisions. <strong>Active</strong> · intelligence can suppress legacy alerts on low-confidence cases. Trusted observations (confidence ≥ 3 or 3+ confirmations) are protected from suppression except on strong direction mismatch.</div>
+    <!-- v23.4.1: one-tap rollback to Legacy. Shown only when current
+         mode is Shadow or Active. Always available so the driver can
+         restore Legacy with a single press if anything feels wrong. -->
+    <div class="row" id="intel-rollback-row" style="display:none;">
+      <button class="btn" id="btn-intel-rollback" style="flex:1;background:rgba(239,68,68,0.18);color:var(--red);border-color:var(--red);font-weight:700;">↻ Revert to Legacy</button>
+    </div>
+    <div class="row-hint" id="intel-rollback-hint" style="display:none;">One-tap restore of the original alert engine. Use this immediately if Shadow or Active mode does anything unexpected while you're driving — it's always available, and Legacy is the safe fallback.</div>
     <div class="row">
       <span class="label">Sound</span>
       <div class="opts" id="sound-opts">
@@ -755,8 +765,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.4.0"></script>
-<script defer src="js/app-ui.js?v=23.4.0"></script>
+<script defer src="js/app-core.js?v=23.4.1"></script>
+<script defer src="js/app-ui.js?v=23.4.1"></script>
 
 </body>
 </html>

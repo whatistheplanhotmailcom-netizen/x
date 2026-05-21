@@ -124,6 +124,39 @@ body {
   font-size: 11px;
   font-weight: 600;
 }
+/* v23.4.1: alert-engine visibility chip. Hidden in Legacy. Amber in
+   Shadow. Red + slow pulse in Active so the driver always knows live
+   intelligence has control. */
+.brand .intel-indicator {
+  display: none;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 4px;
+  line-height: 1.2;
+}
+.brand .intel-indicator.shadow {
+  display: inline-block;
+  background: rgba(245, 158, 11, 0.18);
+  color: var(--amber-2);
+  border: 1px solid var(--amber-2);
+}
+.brand .intel-indicator.active {
+  display: inline-block;
+  background: rgba(239, 68, 68, 0.18);
+  color: var(--red);
+  border: 1px solid var(--red);
+  animation: intel-active-pulse 2s ease-in-out infinite;
+}
+@keyframes intel-active-pulse {
+  0%, 100% { box-shadow: 0 0 0 0   rgba(239,68,68,0.0); }
+  50%      { box-shadow: 0 0 6px 1px rgba(239,68,68,0.55); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand .intel-indicator.active { animation: none; }
+}
 .topbar-spacer { flex: 1; }
 .topbar-actions {
   display: flex;

@@ -2690,6 +2690,7 @@ const UI = {
     const intelMode = State.settings.intelMode || 'legacy';
     document.querySelectorAll('[data-intel-mode]').forEach(b =>
       b.classList.toggle('active', b.dataset.intelMode === intelMode));
+    UI.applyIntelIndicator(); // v23.4.1: paint chip + rollback-row visibility
     document.querySelectorAll('[data-voice]').forEach(b =>
       b.classList.toggle('active', b.dataset.voice === State.settings.voiceGender));
     document.getElementById('t-side').classList.toggle('on', State.settings.announceSide);
@@ -2740,6 +2741,34 @@ const UI = {
   applyHintsVisibility() {
     const hide = State.settings.showHints === false;
     document.body.setAttribute('data-hide-hints', hide ? 'true' : 'false');
+  },
+
+  /** v23.4.1: paint the alert-engine visibility chip in the top bar.
+   *  Hidden in Legacy. Amber in Shadow. Red + pulse in Active so the
+   *  driver always knows that live intelligence has alert control.
+   *  Also toggles the "Revert to Legacy" rollback row in Settings. */
+  applyIntelIndicator() {
+    const mode = (State.settings && State.settings.intelMode) || 'legacy';
+    const chip = document.getElementById('intel-indicator');
+    if (chip) {
+      chip.classList.remove('shadow', 'active');
+      if (mode === 'shadow') {
+        chip.textContent = 'SHADOW';
+        chip.title = 'Shadow mode: intelligence logs decisions in parallel';
+        chip.hidden = false;
+        chip.classList.add('shadow');
+      } else if (mode === 'active') {
+        chip.textContent = 'INTEL';
+        chip.title = 'Active Intelligence: engine can suppress legacy alerts';
+        chip.hidden = false;
+        chip.classList.add('active');
+      } else {
+        chip.textContent = '';
+        chip.hidden = true;
+      }
+    }
+    const rollbackRow = document.getElementById('intel-rollback-row');
+    if (rollbackRow) rollbackRow.style.display = (mode === 'legacy') ? 'none' : '';
   },
 
   updateBackupStatus() {
@@ -3210,11 +3239,27 @@ function wire() {
       State.settings.intelMode = next;
       State.saveSettings();
       IntelligenceEngine.logModeTransition(prev, next);
+      if (next === 'active') {
+        logEvent('INTEL-MODE', '[INTEL-MODE] active', 'ok');
+      }
       Utils.toast(`Alert engine: ${next}`,
         next === 'active' ? 'bad' : 'good');
       UI.syncSettings();
     }
   );
+  // v23.4.1: one-tap rollback to Legacy. Same code path as tapping the
+  // Legacy button in the segmented control, exposed as a prominent
+  // separate button so it's reachable in a single press while driving.
+  const _btnRollback = document.getElementById('btn-intel-rollback');
+  if (_btnRollback) _btnRollback.onclick = () => {
+    const prev = State.settings.intelMode || 'legacy';
+    if (prev === 'legacy') return;
+    State.settings.intelMode = 'legacy';
+    State.saveSettings();
+    IntelligenceEngine.logModeTransition(prev, 'legacy');
+    Utils.toast('Reverted to Legacy', 'good');
+    UI.syncSettings();
+  };
   document.querySelectorAll('[data-voice]').forEach(b =>
     b.onclick = () => {
       State.settings.voiceGender = b.dataset.voice;
@@ -3593,12 +3638,26 @@ function boot() {
     // (test harness, partial DOM) never aborts boot.
     applyAppVersion();
     logEvent('APP', `Version ${APP_VERSION} loaded`, 'ok');
-    // v23.3.x Phase 3: log the current alert-engine mode at every boot
-    // so the audit trail always shows whether shadow / active was on.
-    logEvent('INTEL-MODE', `[INTEL-MODE] boot · ${State.settings.intelMode || 'legacy'}`);
+    // v23.4.1: boot-time safety check. If intelMode was active or shadow
+    // and the engine fails to evaluate a probe, bootCheck reverts to
+    // legacy and logs [INTEL-MODE] fallback-to-legacy. Always returns the
+    // effective mode (post-fallback if needed).
+    let effectiveIntelMode = 'legacy';
+    try {
+      effectiveIntelMode = IntelligenceEngine.bootCheck();
+    } catch (e) {
+      logEvent('INTEL-MODE', `[INTEL-MODE] fallback-to-legacy · bootCheck threw: ${e && e.message || e}`, 'err');
+      try { State.settings.intelMode = 'legacy'; State.saveSettings(); } catch (e2) {}
+    }
+    logEvent('INTEL-MODE', `[INTEL-MODE] boot · ${effectiveIntelMode}`,
+      effectiveIntelMode === 'active' ? 'ok' : '');
+    if (effectiveIntelMode === 'active') {
+      logEvent('INTEL-MODE', '[INTEL-MODE] active', 'ok');
+    }
     RouteMemory.cleanupExpiredRoutes();
     UI.applyTheme();
     UI.applyHintsVisibility(); // v23.0.1: respect saved show/hide preference
+    UI.applyIntelIndicator();  // v23.4.1: paint the top-bar engine chip
     // v23.1.1: live online/offline cell in diag-strip. Re-render on the
     // connectivity events so the indicator flips immediately, not on the
     // next GPS tick. Log so the debug panel records the transition.

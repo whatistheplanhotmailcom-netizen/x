@@ -1804,6 +1804,18 @@ const UI = {
     document.getElementById('route-name').textContent = d ? d.name : 'Pick a destination';
   },
 
+  /** v23.5.4: display-only setter for the ROAD row under the destination
+   *  bar. A future commit can call UI.setCurrentRoad('M-1 Riyadh→Jeddah')
+   *  whenever a real road-name source becomes available. Falls back to
+   *  "Unknown" on empty/null. The value is NEVER used by alert scoring,
+   *  speed-limit matching, capture, or route deviation. */
+  setCurrentRoad(name) {
+    const el = document.getElementById('road-name');
+    if (!el) return;
+    const v = (name == null || String(name).trim() === '') ? 'Unknown' : String(name).trim();
+    if (el.textContent !== v) el.textContent = v;
+  },
+
   renderStats() {
     const limit = Alerts.currentLimit();
     // v23.5.1 fix 1: explicit unknown state instead of "—". Visually

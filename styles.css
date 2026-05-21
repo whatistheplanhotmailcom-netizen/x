@@ -217,6 +217,39 @@ body {
   grid-template-columns: 1fr;
   gap: 6px;
 }
+/* v23.5.4: compact ROAD row under the destination bar. One line only;
+   ellipsis on overflow; mobile-friendly height (≈ same as a single
+   diag-strip row). Display-only — no interaction. */
+.road-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 10px;
+  margin-top: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: var(--mono, monospace);
+  font-size: 11px;
+  line-height: 1.3;
+  min-width: 0;
+}
+.road-bar .road-label {
+  color: var(--ink-3);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: 9px;
+  flex: 0 0 auto;
+}
+.road-bar .road-name {
+  color: var(--ink);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 /* v22.12: tiny live diagnostic strip — easy to glance at while driving */
 /* v23.1.4: diag-strip is now a layout shell only — each of the three
    groups is its own card (surface + border + radius), modeled on the
@@ -1621,6 +1654,9 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   /* Destination + diag strips compact */
   .route-current { padding: 3px 10px; font-size: 12px; }
   .diag-strip { font-size: 9px; padding: 2px 5px; line-height: 1.2; }
+  /* v23.5.4: ROAD row compaction matches the same ultra-narrow profile. */
+  .road-bar { padding: 2px 8px; font-size: 10px; margin-top: 3px; }
+  .road-bar .road-label { font-size: 8px; }
   /* Speed + Next-ahead cards much smaller */
   .stat-card { padding: 4px 6px; }
   .stat-label { font-size: 9px; margin-bottom: 2px; }

@@ -1803,7 +1803,26 @@ const UI = {
 
   renderStats() {
     const limit = Alerts.currentLimit();
-    document.getElementById('sign-value').textContent = limit != null ? limit : '—';
+    // v23.5.1 fix 1: explicit unknown state instead of "—". Visually
+    // stable, never blank, never zero. The null-check inside
+    // Alerts.checkSpeed (app-core.js) still prevents overspeed alerts
+    // when the limit is unknown — we don't rebuild that logic here.
+    const sign = document.getElementById('sign-value');
+    if (sign) sign.textContent = (limit != null) ? String(limit) : 'UNK';
+    // Throttled transition log so the debug buffer records when the
+    // sign goes UNK or returns to a known value, without flooding.
+    if (this._lastLimitDisplayed !== limit) {
+      const now = Date.now();
+      if (!this._lastLimitLogAt || now - this._lastLimitLogAt > 1000) {
+        this._lastLimitLogAt = now;
+        if (limit == null) {
+          logEvent('SPEED', '[SPEED] unknown speed displayed (UNK)');
+        } else {
+          logEvent('SPEED', `[SPEED] active limit resolved → ${limit} km/h`, 'ok');
+        }
+      }
+      this._lastLimitDisplayed = limit;
+    }
     const kmh = Math.round(State.speedMps * 3.6);
     const speedo = document.getElementById('speedo-val');
     speedo.textContent = kmh;
@@ -2252,23 +2271,122 @@ const UI = {
         c.speedLimit = c.limit;
       }
     }
-    const nearby = State.data.points.find(p =>
-      p.type === c.type && p.destId === c.destId && Utils.distKm(p, c) * 1000 < 100
-    );
+    // v23.5.1 fix 3: speed_change uses bearing-aware dedup matching the
+    // MigrationConfig rules (25m / 25°). Opposite-direction signs and
+    // parallel-road signs no longer merge. Other types keep the legacy
+    // 100m simple rule — no behavior change for them.
+    const isSpeedChange = (c.type === 'speed_change');
+    const SPEED_DEDUPE_DIST_M = (typeof MigrationConfig !== 'undefined' && MigrationConfig.DEDUPE_DISTANCE_METERS)
+      || 30;
+    const SPEED_DEDUPE_BEARING_DEG = (typeof MigrationConfig !== 'undefined' && MigrationConfig.DEDUPE_BEARING_DIFF_DEGREES)
+      || 35;
+
+    const nearby = State.data.points.find(p => {
+      if (p.type !== c.type || p.destId !== c.destId) return false;
+      const distM = Utils.distKm(p, c) * 1000;
+      if (isSpeedChange) {
+        if (distM > SPEED_DEDUPE_DIST_M) return false;
+        // Bearing guard: when both records have a captureBearing, require
+        // them to be aligned. Skip when either is missing (legacy data
+        // gets the benefit of the doubt).
+        if (p.captureBearing != null && c.captureBearing != null) {
+          const diff = Speed.angleDiff(p.captureBearing, c.captureBearing);
+          if (diff > SPEED_DEDUPE_BEARING_DEG) return false;
+        }
+        return true;
+      }
+      return distM < 100;
+    });
+
     let announce;
     let trackedId;
     if (nearby) {
-      const n = (nearby.confidence || 0) + 1;
-      nearby.lat = +((nearby.lat * (n - 1) + c.lat) / n).toFixed(5);
-      nearby.lng = +((nearby.lng * (n - 1) + c.lng) / n).toFixed(5);
-      nearby.confidence = n;
-      nearby.status = 'active';
-      if (c.side) nearby.side = c.side;
-      if (c.limit) { nearby.limit = c.limit; nearby.name = c.name; }
-      Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
-      announce = Utils.typeLabel(c.type) + ' updated';
-      trackedId = nearby.id;
-      logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
+      // v23.5.1 fix 2: protect the existing speedLimit when a different
+      // value is captured nearby. First different-speed sighting goes to
+      // pendingSpeedLimitChange; a SECOND matching different-speed sighting
+      // (same bearing-aware dedup as fix 3) promotes the new value AND
+      // archives the old into speedHistory[].
+      const incomingLimit = (typeof c.limit === 'number') ? c.limit
+        : (typeof c.speedLimit === 'number' ? c.speedLimit : null);
+      const existingLimit = (typeof nearby.limit === 'number') ? nearby.limit
+        : (typeof nearby.speedLimit === 'number' ? nearby.speedLimit : null);
+      const differentSpeed = isSpeedChange
+        && incomingLimit != null
+        && existingLimit != null
+        && incomingLimit !== existingLimit;
+
+      if (differentSpeed) {
+        const pend = nearby.pendingSpeedLimitChange;
+        const pendMatches = pend && pend.newLimit === incomingLimit;
+        if (pendMatches) {
+          // Promote — preserve old speed in speedHistory[]
+          if (!Array.isArray(nearby.speedHistory)) nearby.speedHistory = [];
+          nearby.speedHistory.push({
+            old: existingLimit,
+            new: incomingLimit,
+            ts: new Date().toISOString(),
+            lat: nearby.lat,
+            lng: nearby.lng,
+            captureBearing: nearby.captureBearing,
+            previousConfidence: nearby.confidence || 1,
+          });
+          nearby.limit = incomingLimit;
+          nearby.speedLimit = incomingLimit;
+          if (c.name) nearby.name = c.name;
+          nearby.confidence = (nearby.confidence || 1) + 1;
+          nearby.updatedAt = new Date().toISOString();
+          nearby.status = 'active';
+          delete nearby.pendingSpeedLimitChange;
+          Utils.toast(`Speed limit updated ${existingLimit}→${incomingLimit}`, 'good');
+          announce = `Speed limit updated to ${incomingLimit}`;
+          trackedId = nearby.id;
+          logEvent('SPEED',
+            `[SPEED] different-speed promoted: ${existingLimit}→${incomingLimit} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)} · history+1 · confidence ${nearby.confidence}`,
+            'ok');
+        } else {
+          // Record the pending change without touching the active value.
+          nearby.pendingSpeedLimitChange = {
+            newLimit: incomingLimit,
+            observedAt: new Date().toISOString(),
+            lat: c.lat,
+            lng: c.lng,
+            captureBearing: c.captureBearing,
+            confidence: 1,
+          };
+          Utils.toast(`Speed change pending: ${existingLimit}→${incomingLimit} · capture again to confirm`, 'good');
+          announce = `Pending speed change to ${incomingLimit}`;
+          trackedId = nearby.id;
+          logEvent('SPEED',
+            `[SPEED] different-speed pending: ${existingLimit}→${incomingLimit} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)} (awaiting confirmation)`,
+            'ok');
+        }
+      } else {
+        // Same speed (or non-speed-change): legacy merge + confidence bump.
+        const n = (nearby.confidence || 0) + 1;
+        nearby.lat = +((nearby.lat * (n - 1) + c.lat) / n).toFixed(5);
+        nearby.lng = +((nearby.lng * (n - 1) + c.lng) / n).toFixed(5);
+        nearby.confidence = n;
+        nearby.status = 'active';
+        nearby.updatedAt = new Date().toISOString();
+        if (c.side) nearby.side = c.side;
+        if (c.limit) { nearby.limit = c.limit; nearby.name = c.name; }
+        // Same-speed re-confirmation discards any stale pendingSpeedLimitChange
+        // that targeted a different value — the driver just re-confirmed the
+        // existing reading.
+        if (isSpeedChange && nearby.pendingSpeedLimitChange
+            && nearby.pendingSpeedLimitChange.newLimit !== existingLimit) {
+          delete nearby.pendingSpeedLimitChange;
+        }
+        Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
+        announce = Utils.typeLabel(c.type) + ' updated';
+        trackedId = nearby.id;
+        if (isSpeedChange) {
+          logEvent('SPEED',
+            `[SPEED] same-speed confidence increased to ${n} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)} (limit ${existingLimit != null ? existingLimit : 'unset'})`,
+            'ok');
+        }
+        logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
+      }
     } else {
       // v22.101: route via State.addPointToActiveDest so the new id is
       // appended to dest.routePointRefs[] post-migration. Direct
@@ -2278,6 +2396,13 @@ const UI = {
       announce = Utils.typeLabel(c.type) + ' captured';
       trackedId = c.id;
       logEvent('CAPTURE', `${Utils.typeLabel(c.type)} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
+      if (isSpeedChange) {
+        const ll = (typeof c.limit === 'number') ? c.limit
+          : (typeof c.speedLimit === 'number' ? c.speedLimit : null);
+        logEvent('SPEED',
+          `[SPEED] speed_change captured: limit=${ll != null ? ll : 'unset'} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)} bearing=${c.captureBearing != null ? Math.round(c.captureBearing) : '—'}°`,
+          'ok');
+      }
     }
     State.lastTripCaptureId = trackedId; // v22.10: track for double-tap recall
     State.pendingCapture = null;

@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.5.2">
+<link rel="stylesheet" href="styles.css?v=23.5.3">
 </head>
 <body data-theme="light">
 
@@ -80,18 +80,15 @@
   </div>
 
   <!-- STATS -->
+  <!-- v23.5.3: speed-limit sign moved out of this card; it now lives at the
+       top of the right-side tools-rail. SPEED card here keeps only the
+       current-speed readout. -->
   <div class="stats">
     <div class="stat-card">
       <div class="stat-label">Speed</div>
-      <div class="speed-row">
-        <div class="sign" id="sign" title="Tap to set limit">
-          <div class="sign-value" id="sign-value">UNK</div>
-          <div class="sign-label">LIMIT</div>
-        </div>
-        <div class="speedo">
-          <div class="speedo-val" id="speedo-val">0</div>
-          <div class="speedo-unit">KM/H</div>
-        </div>
+      <div class="speedo">
+        <div class="speedo-val" id="speedo-val">0</div>
+        <div class="speedo-unit">KM/H</div>
       </div>
     </div>
     <div class="stat-card" id="next-card" style="cursor:pointer;-webkit-user-select:none;user-select:none;touch-action:manipulation;">
@@ -140,7 +137,16 @@
     </div>
 
     <!-- TOOLS RAIL — vertical strip on the right, spans map + actions rows -->
-    <aside class="tools-rail" id="tools-rail" aria-label="Recent captures"></aside>
+    <!-- v23.5.3: speed-limit sign sits at the top of the rail (relocated
+         from the SPEED card). Captured-points list is now a child
+         element so renderTimeline() doesn't clobber the sign. -->
+    <aside class="tools-rail" id="tools-rail" aria-label="Speed limit and recent captures">
+      <div class="sign rail-sign" id="sign" title="Tap to set limit">
+        <div class="sign-value" id="sign-value">UNK</div>
+        <div class="sign-label">LIMIT</div>
+      </div>
+      <div class="rail-list" id="rail-list"></div>
+    </aside>
   </div>
 
   <!-- STATUS LINE -->
@@ -768,8 +774,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.5.2"></script>
-<script defer src="js/app-ui.js?v=23.5.2"></script>
+<script defer src="js/app-core.js?v=23.5.3"></script>
+<script defer src="js/app-ui.js?v=23.5.3"></script>
 
 </body>
 </html>

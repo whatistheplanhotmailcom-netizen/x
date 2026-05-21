@@ -1566,7 +1566,10 @@ const UI = {
   _lastFocusedTimelineId: null,
 
   renderTimeline() {
-    const rail = document.getElementById('tools-rail');
+    // v23.5.3: the rail now hosts the speed-limit sign + this list. Write
+    // into the dedicated child #rail-list so the sign survives every render.
+    // Fall back to the old #tools-rail target on legacy markup just in case.
+    const rail = document.getElementById('rail-list') || document.getElementById('tools-rail');
     if (!rail) return;
 
     // v22.66: simple distance sort — order ALL active points by how far

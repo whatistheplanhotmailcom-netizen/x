@@ -373,15 +373,39 @@ body {
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 10px;
-  overflow-y: auto;
+  /* v23.5.3: sign pinned at top, list scrolls below. Rail itself no
+     longer scrolls — the inner .rail-list owns scroll. */
+  overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 4px;
+  gap: 6px;
+  padding: 6px 4px 4px;
   font-family: ui-monospace, monospace;
   min-height: 0;
   height: 100%;
   align-self: stretch;
+}
+/* v23.5.3: speed-limit sign in the rail. Smaller than the previous SPEED
+   card variant (76px vs 80px) so it fits a 96px-wide rail with breathing
+   room. Centered horizontally. margin-bottom creates the spacing the spec
+   asked for so the captured-point list sits clearly BELOW the sign. */
+.tools-rail .rail-sign {
+  width: 76px;
+  height: 76px;
+  flex-shrink: 0;
+  align-self: center;
+  margin-bottom: 2px;
+}
+.tools-rail .rail-sign .sign-value { font-size: 30px; }
+.tools-rail .rail-sign .sign-label { bottom: 7px; font-size: 8px; }
+/* The list takes the remaining vertical space and owns the scroll. */
+.tools-rail .rail-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 .timeline-entry {
   display: flex;
@@ -1574,6 +1598,10 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   .sign { width: 66px; height: 66px; border-width: 5px; }
   .sign-value { font-size: 28px; }
   .sign-label { bottom: 7px; font-size: 8px; }
+  /* v23.5.3: rail-sign tracks the same scale-down at narrow heights. */
+  .tools-rail .rail-sign { width: 64px; height: 64px; border-width: 4px; }
+  .tools-rail .rail-sign .sign-value { font-size: 26px; }
+  .tools-rail .rail-sign .sign-label { bottom: 6px; font-size: 7px; }
   .speedo-val { font-size: 32px; padding: 10px 4px; }
   .speedo-val.three-digit { font-size: 26px; padding: 12px 4px; }
   .next-dist { font-size: 18px; }
@@ -1599,6 +1627,11 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   .sign { width: 48px; height: 48px; border-width: 3px; }
   .sign-value { font-size: 20px; }
   .sign-label { display: none; }
+  /* v23.5.3: rail-sign at ultra-narrow heights — matches the tight
+     SPEED-card sizing so the rail stays usable in landscape phones. */
+  .tools-rail .rail-sign { width: 48px; height: 48px; border-width: 3px; }
+  .tools-rail .rail-sign .sign-value { font-size: 20px; }
+  .tools-rail .rail-sign .sign-label { display: none; }
   .speedo-val { font-size: 22px; padding: 6px 4px; }
   .speedo-val.three-digit { font-size: 18px; padding: 8px 4px; }
   .speedo-unit { font-size: 8px; }

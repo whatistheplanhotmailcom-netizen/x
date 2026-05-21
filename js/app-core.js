@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.1.12';
+const APP_VERSION = 'v23.2.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1199,6 +1199,437 @@ const Validator = {
   _safeShort(s) {
     if (s == null) return '?';
     return String(s).slice(0, 40);
+  },
+};
+
+/* ============================================================
+   0g. STORAGE INVENTORY — v23.x (Phase 2a, safety net)
+   Read-only observability + local snapshot creation around the
+   existing localStorage layout. NEVER mutates road memory.
+   No schemaVersion is written; no migration is run; the existing
+   Storage / Backup / Migration modules are not modified.
+
+   Public surface:
+     StorageInventory.inventoryReport()      — log [STORAGE] inventory
+     StorageInventory.detectSchema(data)     — return 0|1, no write
+     StorageInventory.validateRoadMemory(d)  — return {ok, warnings, ...}
+     StorageInventory.routeGeometryReport()  — log size of learnedRoutes
+     StorageInventory.createSnapshot()       — write a safety snapshot
+     StorageInventory.listSnapshots()        — array of {key, ts, bytes}
+     StorageInventory.validateSnapshot(key)  — return {ok, errors, parsed}
+     StorageInventory.restoreSnapshot(k,o)   — stubbed manual restore
+     StorageInventory.pruneSnapshots(retain) — keep newest N
+
+   All log lines use one of the prefixes the spec mandates:
+     [STORAGE]            general inventory / schema / route warnings
+     [STORAGE-VALIDATION] corruption-report findings
+     [STORAGE-SNAPSHOT]   snapshot create / prune / read-back
+     [STORAGE-QUOTA]      quota estimates and quota failures
+   ============================================================ */
+const StorageInventoryConfig = {
+  SNAPSHOT_PREFIX: 'roadalert:migrationSnapshot:', // explicitly outside roadAlert.v22.* namespace
+  SNAPSHOT_RETAIN: 3,
+  QUOTA_TYPICAL_BYTES: 5 * 1024 * 1024, // 5 MB — typical browser limit
+  QUOTA_WARN_BYTES: 4 * 1024 * 1024,    // warn at 80% of typical
+  ROUTE_GEOMETRY_WARN_BYTES: 256 * 1024, // 256 KB
+};
+
+const StorageInventory = {
+  /** Best-effort UTF-16 byte count for a localStorage value. localStorage
+   *  stores DOMString (UTF-16) so length * 2 is the safe upper bound. */
+  _bytesOf(value) {
+    if (value == null) return 0;
+    return String(value).length * 2;
+  },
+
+  /** All localStorage keys + their byte sizes. Includes keys we don't own
+   *  so the report can surface foreign tenants. */
+  _allKeyBytes() {
+    const out = [];
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k == null) continue;
+        const v = localStorage.getItem(k);
+        out.push({ key: k, bytes: StorageInventory._bytesOf(k) + StorageInventory._bytesOf(v) });
+      }
+    } catch (e) {
+      logEvent('STORAGE', '[STORAGE] enumerate failed: ' + (e && e.message || e), 'err');
+    }
+    return out;
+  },
+
+  /** True if the key belongs to this app (any roadAlert.* or roadalert:*). */
+  _isAppKey(k) {
+    if (typeof k !== 'string') return false;
+    return k.indexOf('roadAlert.') === 0 || k.indexOf('roadalert:') === 0;
+  },
+
+  /** Section 1 — inventory report. Logs total + per-key sizes + flags
+   *  unknown app keys. Returns the same structure for callers/UI. */
+  inventoryReport() {
+    const all = StorageInventory._allKeyBytes();
+    const totalBytes = all.reduce((s, e) => s + e.bytes, 0);
+
+    const known = new Set(Object.values(Storage.KEYS));
+    // Also recognize the well-known one-shot flag keys + snapshots
+    const knownExtras = [
+      'roadAlert.v22.3.orphansMigrated',
+      'roadAlert.v22.64.navModeDefault',
+      'roadAlert.v22.69.navModeRefresh',
+      'roadAlert.v22.91.speedPointsMigrated',
+    ];
+    knownExtras.forEach(k => known.add(k));
+
+    const appKeys = all.filter(e => StorageInventory._isAppKey(e.key));
+    const snapshotKeys = appKeys.filter(e => e.key.indexOf(StorageInventoryConfig.SNAPSHOT_PREFIX) === 0);
+    const otherAppKeys = appKeys.filter(e => e.key.indexOf(StorageInventoryConfig.SNAPSHOT_PREFIX) !== 0);
+    const foreignKeys = all.filter(e => !StorageInventory._isAppKey(e.key));
+
+    const unknownAppKeys = otherAppKeys.filter(e => !known.has(e.key));
+    const snapshotBytes = snapshotKeys.reduce((s, e) => s + e.bytes, 0);
+    const knownBytes = otherAppKeys.reduce((s, e) => s + e.bytes, 0);
+    const foreignBytes = foreignKeys.reduce((s, e) => s + e.bytes, 0);
+
+    const top = appKeys.slice().sort((a, b) => b.bytes - a.bytes).slice(0, 5);
+
+    logEvent('STORAGE', `[STORAGE] inventory · total ${StorageInventory._fmtBytes(totalBytes)} · app ${StorageInventory._fmtBytes(knownBytes)} · snapshots ${StorageInventory._fmtBytes(snapshotBytes)} · foreign ${StorageInventory._fmtBytes(foreignBytes)}`);
+    for (const e of top) {
+      logEvent('STORAGE', `[STORAGE] inventory · ${e.key} = ${StorageInventory._fmtBytes(e.bytes)}`);
+    }
+    if (unknownAppKeys.length) {
+      logEvent('STORAGE', `[STORAGE] inventory · ${unknownAppKeys.length} unknown app-namespaced key(s): ` +
+        unknownAppKeys.map(e => e.key).slice(0, 5).join(', '), 'err');
+    }
+    if (totalBytes > StorageInventoryConfig.QUOTA_WARN_BYTES) {
+      logEvent('STORAGE-QUOTA', `[STORAGE-QUOTA] total ${StorageInventory._fmtBytes(totalBytes)} exceeds warn threshold ${StorageInventory._fmtBytes(StorageInventoryConfig.QUOTA_WARN_BYTES)}`, 'err');
+    }
+
+    return {
+      totalBytes,
+      knownBytes,
+      snapshotBytes,
+      foreignBytes,
+      keys: all,
+      appKeys,
+      snapshotKeys,
+      unknownAppKeys,
+      foreignKeys,
+      topByBytes: top,
+    };
+  },
+
+  _fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(2) + ' MB';
+  },
+
+  /** Section 2 — schema detection, READ-ONLY. Returns:
+   *    0 — pre-v22.96 legacy: points carry destId; destinations have no routePointRefs.
+   *    1 — post-v22.96 global store: destinations carry routePointRefs[].
+   *  Does NOT write any schemaVersion field anywhere. */
+  detectSchema(data) {
+    let schema = 0;
+    try {
+      if (data && Array.isArray(data.destinations)) {
+        const anyRefs = data.destinations.some(d => Array.isArray(d && d.routePointRefs));
+        if (anyRefs) schema = 1;
+      }
+      const migratedAt = localStorage.getItem(Storage.KEYS.migrationCompletedAt);
+      if (migratedAt) schema = 1; // migration timestamp present → migrated
+    } catch (e) {
+      logEvent('STORAGE', '[STORAGE] schema detect threw: ' + (e && e.message || e), 'err');
+    }
+    logEvent('STORAGE', `[STORAGE] schema detected: ${schema}${schema === 0 ? ' (legacy, pre-v22.96)' : ' (global store, v22.96+)'}`);
+    return schema;
+  },
+
+  /** Section 3 — corruption detection, REPORT-ONLY. Invalid records are
+   *  recorded in `warnings[]`. The data is NEVER mutated. Caller decides
+   *  what to do with the report. */
+  validateRoadMemory(data) {
+    const warnings = [];
+    const errors = [];
+    let pointsValid = 0, pointsInvalid = 0;
+    let destsValid = 0, destsInvalid = 0;
+    let danglingRefs = 0;
+    let duplicatePointIds = 0;
+    let duplicateDestIds = 0;
+
+    if (!data || typeof data !== 'object') {
+      errors.push('road-memory is not an object');
+      logEvent('STORAGE-VALIDATION', '[STORAGE-VALIDATION] report · road-memory is not an object', 'err');
+      return { ok: false, warnings, errors, stats: {} };
+    }
+
+    const points = Array.isArray(data.points) ? data.points : [];
+    const dests = Array.isArray(data.destinations) ? data.destinations : [];
+
+    // Duplicate / missing ids on points
+    const seenPointIds = new Set();
+    for (const p of points) {
+      if (!p || typeof p !== 'object') { pointsInvalid++; warnings.push('point: not an object'); continue; }
+      if (!p.id || typeof p.id !== 'string') { warnings.push('point at ' + (p.lat) + ',' + (p.lng) + ' missing/non-string id'); pointsInvalid++; continue; }
+      if (seenPointIds.has(p.id)) { duplicatePointIds++; warnings.push('point ' + p.id + ' duplicate id'); }
+      else seenPointIds.add(p.id);
+
+      // Coords
+      const lat = (typeof p.lat === 'number') ? p.lat : null;
+      const lng = (typeof p.lng === 'number') ? p.lng : null;
+      if (lat == null || !isFinite(lat) || lat < -90 || lat > 90) {
+        warnings.push('point ' + p.id + ' invalid lat: ' + p.lat); pointsInvalid++; continue;
+      }
+      if (lng == null || !isFinite(lng) || lng < -180 || lng > 180) {
+        warnings.push('point ' + p.id + ' invalid lng: ' + p.lng); pointsInvalid++; continue;
+      }
+
+      // Timestamps
+      if (p.createdAt && !StorageInventory._isIsoLike(p.createdAt)) warnings.push('point ' + p.id + ' invalid createdAt');
+      if (p.updatedAt && !StorageInventory._isIsoLike(p.updatedAt)) warnings.push('point ' + p.id + ' invalid updatedAt');
+
+      // Type / side / status enums
+      if (p.type != null && typeof p.type === 'string' && !ValidatorConfig.KNOWN_TYPES.includes(p.type)) {
+        warnings.push('point ' + p.id + ' unknown type: ' + p.type);
+      }
+      if (p.side != null && !ValidatorConfig.KNOWN_SIDES.includes(p.side)) {
+        warnings.push('point ' + p.id + ' invalid side: ' + p.side);
+      }
+      if (p.status != null && !ValidatorConfig.KNOWN_STATUSES.includes(p.status)) {
+        warnings.push('point ' + p.id + ' invalid status: ' + p.status);
+      }
+      pointsValid++;
+    }
+
+    // Duplicate / missing ids on destinations
+    const seenDestIds = new Set();
+    for (const d of dests) {
+      if (!d || typeof d !== 'object') { destsInvalid++; warnings.push('destination: not an object'); continue; }
+      if (!d.id || typeof d.id !== 'string') { warnings.push('destination at ' + (d.lat) + ',' + (d.lng) + ' missing/non-string id'); destsInvalid++; continue; }
+      if (seenDestIds.has(d.id)) { duplicateDestIds++; warnings.push('destination ' + d.id + ' duplicate id'); }
+      else seenDestIds.add(d.id);
+      const lat = (typeof d.lat === 'number') ? d.lat : null;
+      const lng = (typeof d.lng === 'number') ? d.lng : null;
+      if (lat == null || lat < -90 || lat > 90) { warnings.push('destination ' + d.id + ' invalid lat'); destsInvalid++; continue; }
+      if (lng == null || lng < -180 || lng > 180) { warnings.push('destination ' + d.id + ' invalid lng'); destsInvalid++; continue; }
+      destsValid++;
+
+      // Dangling routePointRefs
+      if (Array.isArray(d.routePointRefs)) {
+        for (const ref of d.routePointRefs) {
+          if (!seenPointIds.has(ref)) { danglingRefs++; warnings.push('destination ' + d.id + ' references missing point ' + ref); }
+        }
+      }
+    }
+
+    const ok = errors.length === 0;
+    const stats = {
+      pointsTotal: points.length, pointsValid, pointsInvalid,
+      destsTotal: dests.length, destsValid, destsInvalid,
+      duplicatePointIds, duplicateDestIds, danglingRefs,
+      warningCount: warnings.length,
+    };
+
+    const summary = `[STORAGE-VALIDATION] report · ${pointsValid}/${points.length} points ok, ${destsValid}/${dests.length} dests ok, ${duplicatePointIds} dup-point-ids, ${duplicateDestIds} dup-dest-ids, ${danglingRefs} dangling refs, ${warnings.length} warnings`;
+    logEvent('STORAGE-VALIDATION', summary, warnings.length ? 'err' : 'ok');
+    // First 5 warnings only — keep the log usable
+    for (const w of warnings.slice(0, 5)) {
+      logEvent('STORAGE-VALIDATION', '[STORAGE-VALIDATION] ' + w);
+    }
+    return { ok, warnings, errors, stats };
+  },
+
+  _isIsoLike(s) {
+    if (typeof s !== 'string') return false;
+    const d = new Date(s);
+    return !isNaN(d.getTime());
+  },
+
+  /** Section 4 — quota safety. Estimate total bytes used by ALL keys. */
+  estimateUsageBytes() {
+    return StorageInventory._allKeyBytes().reduce((s, e) => s + e.bytes, 0);
+  },
+
+  /** Section 6 helper — write with read-back verification. Used ONLY by
+   *  the snapshot path; routine GPS/capture writes still go through
+   *  Storage.save and are NOT slowed down. Returns {ok, error}. */
+  _writeWithReadback(key, serialized) {
+    try {
+      localStorage.setItem(key, serialized);
+    } catch (e) {
+      const name = e && e.name || '';
+      if (name === 'QuotaExceededError' || name === 'NS_ERROR_DOM_QUOTA_REACHED') {
+        logEvent('STORAGE-QUOTA', '[STORAGE-QUOTA] quota exceeded writing ' + key, 'err');
+        return { ok: false, error: 'quota_exceeded' };
+      }
+      logEvent('STORAGE-SNAPSHOT', '[STORAGE-SNAPSHOT] write threw: ' + (e && e.message || e), 'err');
+      return { ok: false, error: 'write_failed' };
+    }
+    // Read-back — confirm what we wrote round-tripped exactly
+    let readBack;
+    try { readBack = localStorage.getItem(key); }
+    catch (e) {
+      logEvent('STORAGE-SNAPSHOT', '[STORAGE] read-back verification failed (read threw): ' + (e && e.message || e), 'err');
+      return { ok: false, error: 'readback_threw' };
+    }
+    if (readBack !== serialized) {
+      logEvent('STORAGE-SNAPSHOT', '[STORAGE] read-back verification failed (mismatch) for ' + key, 'err');
+      return { ok: false, error: 'readback_mismatch' };
+    }
+    return { ok: true };
+  },
+
+  /** Section 5 — create a Phase 2a local safety snapshot. Quota-aware:
+   *  estimates usage first, prunes oldest snapshots if needed, never
+   *  prunes live road memory. */
+  createSnapshot() {
+    const beforeBytes = StorageInventory.estimateUsageBytes();
+    logEvent('STORAGE-QUOTA', `[STORAGE-QUOTA] pre-snapshot usage ${StorageInventory._fmtBytes(beforeBytes)}`);
+
+    // Capture current road memory + relevant peripherals
+    const payload = {
+      createdAt: new Date().toISOString(),
+      appVersion: (typeof APP_VERSION !== 'undefined') ? APP_VERSION : 'unknown',
+      schemaDetected: StorageInventory.detectSchema(State.data),
+      data: State.data,
+      settings: State.settings,
+      trips: State.trips,
+      learnedRoutes: Storage.load(Storage.KEYS.learnedRoutes, []),
+    };
+    const serialized = JSON.stringify(payload);
+    const snapshotBytes = StorageInventory._bytesOf(serialized);
+
+    // Quota gate — proactively prune oldest snapshots if we're near limit
+    const projectedTotal = beforeBytes + snapshotBytes;
+    if (projectedTotal > StorageInventoryConfig.QUOTA_WARN_BYTES) {
+      logEvent('STORAGE-QUOTA', `[STORAGE-QUOTA] projected ${StorageInventory._fmtBytes(projectedTotal)} > warn ${StorageInventory._fmtBytes(StorageInventoryConfig.QUOTA_WARN_BYTES)} — pruning before write`);
+      StorageInventory.pruneSnapshots(Math.max(1, StorageInventoryConfig.SNAPSHOT_RETAIN - 1));
+    }
+
+    const key = StorageInventoryConfig.SNAPSHOT_PREFIX + payload.createdAt;
+    const res = StorageInventory._writeWithReadback(key, serialized);
+    if (!res.ok) {
+      // On quota: surface a persistent warning via the log (err level)
+      logEvent('STORAGE-SNAPSHOT', `[STORAGE-SNAPSHOT] create FAILED · ${res.error} · ${StorageInventory._fmtBytes(snapshotBytes)} would have pushed total to ${StorageInventory._fmtBytes(projectedTotal)}`, 'err');
+      return { ok: false, error: res.error, bytes: snapshotBytes };
+    }
+    // Successful write — prune any beyond retention
+    const pruned = StorageInventory.pruneSnapshots(StorageInventoryConfig.SNAPSHOT_RETAIN);
+    const afterBytes = StorageInventory.estimateUsageBytes();
+    logEvent('STORAGE-SNAPSHOT', `[STORAGE-SNAPSHOT] created ${key} · ${StorageInventory._fmtBytes(snapshotBytes)} · pruned ${pruned} older · total ${StorageInventory._fmtBytes(beforeBytes)} → ${StorageInventory._fmtBytes(afterBytes)}`, 'ok');
+    return { ok: true, key, bytes: snapshotBytes, prunedCount: pruned };
+  },
+
+  /** Section 5 — list snapshots, newest first. */
+  listSnapshots() {
+    const all = StorageInventory._allKeyBytes();
+    const snaps = all
+      .filter(e => e.key.indexOf(StorageInventoryConfig.SNAPSHOT_PREFIX) === 0)
+      .map(e => ({ key: e.key, ts: e.key.slice(StorageInventoryConfig.SNAPSHOT_PREFIX.length), bytes: e.bytes }))
+      .sort((a, b) => b.ts.localeCompare(a.ts));
+    return snaps;
+  },
+
+  /** Section 5 — prune oldest snapshots to keep `retain` newest.
+   *  NEVER prunes the single most recent snapshot. NEVER touches
+   *  live road memory or any non-snapshot key. */
+  pruneSnapshots(retain) {
+    const snaps = StorageInventory.listSnapshots();
+    if (snaps.length <= retain) return 0;
+    // Snaps already sorted newest first — drop indices >= retain
+    let prunedCount = 0;
+    for (let i = retain; i < snaps.length; i++) {
+      // Defensive: never prune index 0 (most recent)
+      if (i === 0) continue;
+      try {
+        localStorage.removeItem(snaps[i].key);
+        prunedCount++;
+        logEvent('STORAGE-SNAPSHOT', `[STORAGE-SNAPSHOT] pruned ${snaps[i].key}`);
+      } catch (e) {
+        logEvent('STORAGE-SNAPSHOT', '[STORAGE-SNAPSHOT] prune failed for ' + snaps[i].key, 'err');
+      }
+    }
+    return prunedCount;
+  },
+
+  /** Section 7 — validate a snapshot WITHOUT applying it. */
+  validateSnapshot(key) {
+    let raw;
+    try { raw = localStorage.getItem(key); }
+    catch (e) {
+      logEvent('STORAGE', '[STORAGE] restore validation failed · read threw: ' + (e && e.message || e), 'err');
+      return { ok: false, error: 'read_failed' };
+    }
+    if (raw == null) {
+      logEvent('STORAGE', '[STORAGE] restore validation failed · not found: ' + key, 'err');
+      return { ok: false, error: 'not_found' };
+    }
+    let parsed;
+    try { parsed = JSON.parse(raw); }
+    catch (e) {
+      logEvent('STORAGE', '[STORAGE] restore validation failed · JSON parse error: ' + (e && e.message || e), 'err');
+      return { ok: false, error: 'parse_failed' };
+    }
+    if (!parsed || typeof parsed !== 'object' || !parsed.data) {
+      logEvent('STORAGE', '[STORAGE] restore validation failed · missing data key', 'err');
+      return { ok: false, error: 'shape_invalid' };
+    }
+    const val = StorageInventory.validateRoadMemory(parsed.data);
+    if (!val.ok) {
+      logEvent('STORAGE', '[STORAGE] restore validation failed · ' + val.errors.join('; '), 'err');
+      return { ok: false, error: 'data_invalid', detail: val };
+    }
+    logEvent('STORAGE', '[STORAGE] restore validation passed · ' + key, 'ok');
+    return { ok: true, parsed, detail: val };
+  },
+
+  /** Section 7 — STUBBED manual restore. Refuses to run unless
+   *  caller passes { confirm: true }. Validates first. Does NOT
+   *  auto-rollback on failure. */
+  restoreSnapshot(key, opts) {
+    if (!opts || opts.confirm !== true) {
+      logEvent('STORAGE', '[STORAGE] restore refused — pass {confirm:true} explicitly', 'err');
+      return { ok: false, error: 'confirmation_required' };
+    }
+    const val = StorageInventory.validateSnapshot(key);
+    if (!val.ok) {
+      logEvent('STORAGE', '[STORAGE] restore aborted — validation failed', 'err');
+      return { ok: false, error: 'validation_failed', detail: val };
+    }
+    const p = val.parsed;
+    try {
+      State.data = p.data;
+      if (p.settings) State.settings = Object.assign({}, State.settings, p.settings);
+      if (Array.isArray(p.trips)) State.trips = p.trips;
+      State.saveData();
+      State.saveSettings();
+      State.saveTrips();
+      if (Array.isArray(p.learnedRoutes)) {
+        try { localStorage.setItem(Storage.KEYS.learnedRoutes, JSON.stringify(p.learnedRoutes)); } catch (e) {}
+      }
+      logEvent('STORAGE', '[STORAGE] restore applied from ' + key, 'ok');
+      return { ok: true, key };
+    } catch (e) {
+      logEvent('STORAGE', '[STORAGE] restore apply threw: ' + (e && e.message || e), 'err');
+      return { ok: false, error: 'apply_failed' };
+    }
+  },
+
+  /** Section 8 — route geometry size warning. Reports the size of the
+   *  RouteMemory blob without modifying it. */
+  routeGeometryReport() {
+    let raw = null;
+    try { raw = localStorage.getItem(Storage.KEYS.learnedRoutes); }
+    catch (e) {}
+    const bytes = StorageInventory._bytesOf(raw);
+    if (bytes === 0) {
+      logEvent('STORAGE', '[STORAGE] route geometry · none stored');
+      return { bytes: 0 };
+    }
+    const level = (bytes > StorageInventoryConfig.ROUTE_GEOMETRY_WARN_BYTES) ? 'err' : '';
+    logEvent('STORAGE', `[STORAGE] route geometry · ${StorageInventory._fmtBytes(bytes)} in ${Storage.KEYS.learnedRoutes}` +
+      (bytes > StorageInventoryConfig.ROUTE_GEOMETRY_WARN_BYTES ? ' (major storage contributor)' : ''), level);
+    return { bytes };
   },
 };
 

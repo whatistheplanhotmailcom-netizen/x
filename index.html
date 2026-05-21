@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.1.12">
+<link rel="stylesheet" href="styles.css?v=23.2.0">
 </head>
 <body data-theme="light">
 
@@ -575,6 +575,25 @@
     </div>
     <div class="row-hint">Opens the audio diagnostic page — verify the speech engine works, preview the per-type tones, debug iOS silent-switch issues.</div>
 
+    <!-- v23.x Phase 2a: storage safety net. Read-only observability
+         (inventory, schema detection, corruption report) plus local
+         migration snapshots. Snapshots live under the
+         "roadalert:migrationSnapshot:*" namespace — completely
+         separate from the GitHub Backup system. -->
+    <div class="section-title">Storage safety net</div>
+    <div id="storage-status" class="row-hint" style="margin-left:0;border-left-color:var(--amber-2);">Tap "Report" to inspect storage.</div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn" id="btn-storage-inventory" style="flex:1;">📋 Report</button>
+      <button class="btn" id="btn-storage-snapshot" style="flex:1;">📸 Snapshot</button>
+      <button class="btn" id="btn-storage-validate" style="flex:1;">✓ Validate</button>
+    </div>
+    <div class="row-hint">
+      <strong>Report</strong> · logs an inventory of every localStorage key + sizes + schema detection.<br>
+      <strong>Snapshot</strong> · creates a local safety snapshot under <code>roadalert:migrationSnapshot:*</code> (separate from GitHub Backup; never modifies live road memory).<br>
+      <strong>Validate</strong> · validates every snapshot + the live data without writing anything.
+    </div>
+    <div id="storage-snapshots" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;color:var(--ink-3);"></div>
+
     <!-- v22.98: bottom-of-page close button — gives users an escape from
          the long Settings page without scrolling back to the top × -->
     <div class="section-title" style="margin-top:12px;">&nbsp;</div>
@@ -720,8 +739,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.1.12"></script>
-<script defer src="js/app-ui.js?v=23.1.12"></script>
+<script defer src="js/app-core.js?v=23.2.0"></script>
+<script defer src="js/app-ui.js?v=23.2.0"></script>
 
 </body>
 </html>

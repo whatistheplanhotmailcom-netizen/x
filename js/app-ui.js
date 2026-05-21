@@ -1259,6 +1259,51 @@ const UI = {
     if (restoreBtn) restoreBtn.style.display = backup ? 'block' : 'none';
   },
 
+  /** v23.x Phase 2a: paint the Storage safety-net status row + snapshot
+   *  list. Pure read of localStorage — never mutates road memory. The
+   *  optional `prebuiltReport` skips the second inventory pass when the
+   *  caller (e.g. the Report button) just ran one. */
+  refreshStorageStatus(prebuiltReport) {
+    const statusEl = document.getElementById('storage-status');
+    const listEl = document.getElementById('storage-snapshots');
+    if (!statusEl && !listEl) return;
+    const inv = prebuiltReport || (function() {
+      // Quiet inventory — caller didn't ask for the log noise
+      const all = StorageInventory._allKeyBytes();
+      const totalBytes = all.reduce((s, e) => s + e.bytes, 0);
+      const appKeys = all.filter(e => StorageInventory._isAppKey(e.key));
+      const snapshotKeys = appKeys.filter(e => e.key.indexOf(StorageInventoryConfig.SNAPSHOT_PREFIX) === 0);
+      return { totalBytes, appKeys, snapshotKeys };
+    })();
+    const schema = (function() {
+      try {
+        const anyRefs = (State.data && Array.isArray(State.data.destinations) && State.data.destinations.some(d => Array.isArray(d && d.routePointRefs)));
+        if (anyRefs) return 1;
+        if (localStorage.getItem(Storage.KEYS.migrationCompletedAt)) return 1;
+        return 0;
+      } catch (e) { return 0; }
+    })();
+    if (statusEl) {
+      const warn = inv.totalBytes > StorageInventoryConfig.QUOTA_WARN_BYTES;
+      statusEl.style.borderLeftColor = warn ? 'var(--red)' : 'var(--amber-2)';
+      statusEl.innerHTML =
+        `<strong>Schema</strong> ${schema} ${schema === 1 ? '(global store)' : '(legacy)'}` +
+        ` · <strong>Total</strong> ${Utils.escapeHtml(StorageInventory._fmtBytes(inv.totalBytes))}` +
+        ` · <strong>Snapshots</strong> ${inv.snapshotKeys.length}` +
+        (warn ? ` · <span style="color:var(--red)">QUOTA WARN</span>` : '');
+    }
+    if (listEl) {
+      const snaps = StorageInventory.listSnapshots();
+      if (!snaps.length) {
+        listEl.innerHTML = '<em>No snapshots yet — tap 📸 Snapshot to create one.</em>';
+      } else {
+        listEl.innerHTML = snaps.map(s =>
+          `<div>· ${Utils.escapeHtml(s.ts.replace('T', ' ').slice(0, 19))} · ${Utils.escapeHtml(StorageInventory._fmtBytes(s.bytes))}</div>`
+        ).join('');
+      }
+    }
+  },
+
   /** v22.96: Run the dry-run migration in memory, paint the report into
    *  the modal, validate against the old data, and only enable the
    *  Run-migration button if validation passed. */
@@ -2620,12 +2665,46 @@ function wire() {
   document.getElementById('btn-settings').onclick = () => {
     UI.syncSettings();
     UI.renderMigrationStatus(); // v22.96: refresh migration status on open
+    UI.refreshStorageStatus();  // v23.x Phase 2a: storage health summary
     UI.openModal('m-settings');
   };
   // v22.96: data architecture migration wiring
   document.getElementById('btn-migrate-dry').onclick = () => UI.openMigrationDryRun();
   document.getElementById('btn-migrate-restore').onclick = () => UI.doMigrationRestore();
   document.getElementById('btn-do-migrate').onclick = () => UI.doMigration();
+  // v23.x Phase 2a: storage safety net buttons. All three are read-only
+  // for the existing road memory — only the Snapshot button creates new
+  // storage, in its own roadalert:migrationSnapshot:* namespace.
+  const _btnInv = document.getElementById('btn-storage-inventory');
+  if (_btnInv) _btnInv.onclick = () => {
+    const rep = StorageInventory.inventoryReport();
+    StorageInventory.detectSchema(State.data);
+    StorageInventory.routeGeometryReport();
+    UI.refreshStorageStatus(rep);
+  };
+  const _btnSnap = document.getElementById('btn-storage-snapshot');
+  if (_btnSnap) _btnSnap.onclick = () => {
+    const res = StorageInventory.createSnapshot();
+    if (res.ok) {
+      Utils.toast(`Snapshot saved · ${StorageInventory._fmtBytes(res.bytes)}`, 'good');
+    } else if (res.error === 'quota_exceeded') {
+      Utils.toast('Snapshot failed — storage quota exceeded', 'bad');
+    } else {
+      Utils.toast('Snapshot failed — see debug log', 'bad');
+    }
+    UI.refreshStorageStatus();
+  };
+  const _btnVal = document.getElementById('btn-storage-validate');
+  if (_btnVal) _btnVal.onclick = () => {
+    const dataReport = StorageInventory.validateRoadMemory(State.data);
+    const snaps = StorageInventory.listSnapshots();
+    for (const s of snaps) StorageInventory.validateSnapshot(s.key);
+    Utils.toast(
+      `Live: ${dataReport.warnings.length} warnings · ${snaps.length} snapshot(s) validated`,
+      dataReport.warnings.length ? 'bad' : 'good'
+    );
+    UI.refreshStorageStatus();
+  };
   // v22.79: debug log panel — opens the rolling-200 event history.
   document.getElementById('btn-debug').onclick = () => {
     UI.renderDebugLog();

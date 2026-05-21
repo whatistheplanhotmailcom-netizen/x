@@ -3203,8 +3203,11 @@ function wire() {
     UI.updateThemeIcon();
     Utils.toast('Theme: ' + State.settings.theme, 'good');
   };
-  document.getElementById('btn-fit-top').onclick = () => MapView.fitAll();
-  document.getElementById('btn-recenter-top').onclick = () => MapView.recenter();
+  // v23.5.2: removed the top-bar #btn-fit-top (⛶) and #btn-recenter-top (📍)
+  // duplicates. The map-overlay #btn-fit and #btn-recenter still bind to the
+  // same MapView.fitAll / MapView.recenter functions (lines 3233–3234), and
+  // the follow-pill also still calls MapView.recenter — so the underlying
+  // capabilities are untouched.
   // v22.56: long-press capture toggle
   document.getElementById('btn-longpress').onclick = () => {
     State.settings.longPressCapture = !State.settings.longPressCapture;

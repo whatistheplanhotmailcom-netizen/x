@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.6.2';
+const APP_VERSION = 'v23.6.3';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2574,56 +2574,67 @@ function normalizeSoundFrequency(value) {
   return (s === 'high' || s === 'medium' || s === 'low') ? s : 'medium';
 }
 
+/* v23.6.3 — single canonical registry of 18 sounds matching the spec
+ * IDs. Each entry: { id, label, defaultUsedFor, pattern[] }.
+ * Pattern = sequence of {freq, dur} sine pings (existing playPattern). */
 const SoundCatalogue = [
-  // ---- Existing 10 (1-10) ----
-  { id: 'speed_camera_beep', label: 'Speed Camera Beep', defaultUsedFor: 'speed_camera',
+  // 1. Soft Chime — gentle two-tone descending
+  { id: 'soft_chime',         label: 'Soft Chime',         defaultUsedFor: 'app_notification',
+    pattern: [{freq:1600,dur:0.14},{freq:1300,dur:0.18}] },
+  // 2. Double Beep — two equal mid pings
+  { id: 'double_beep',        label: 'Double Beep',        defaultUsedFor: 'app_notification',
+    pattern: [{freq:1800,dur:0.10},{freq:1800,dur:0.10}] },
+  // 3. Radar Ping — rising 2-tone, classic speed-cam timbre
+  { id: 'radar_ping',         label: 'Radar Ping',         defaultUsedFor: 'speed_camera',
     pattern: [{freq:1900,dur:0.12},{freq:2400,dur:0.18}] },
-  { id: 'mobile_camera',     label: 'Mobile Camera', defaultUsedFor: 'speed_camera',
-    pattern: [{freq:1900,dur:0.10},{freq:2200,dur:0.10},{freq:2400,dur:0.14}] },
-  { id: 'pole_camera',       label: 'Pole Camera', defaultUsedFor: 'speed_camera',
-    pattern: [{freq:1700,dur:0.12},{freq:2300,dur:0.20}] },
-  { id: 'spider_camera',     label: 'Spider Camera', defaultUsedFor: 'speed_camera',
-    pattern: [{freq:2000,dur:0.08},{freq:2200,dur:0.08},{freq:2400,dur:0.08},{freq:2600,dur:0.16}] },
-  { id: 'checkpoint',        label: 'Checkpoint', defaultUsedFor: 'checkpoint',
-    pattern: [{freq:1500,dur:0.20},{freq:1500,dur:0.20}] },
-  { id: 'speed_change',      label: 'Speed Change Zone', defaultUsedFor: 'speed_change',
-    pattern: [{freq:1400,dur:0.14},{freq:1900,dur:0.14}] },
-  { id: 'petrol',            label: 'Petrol Chime', defaultUsedFor: 'petrol',
-    pattern: [{freq:1600,dur:0.22}] },
-  { id: 'gate',              label: 'Gate', defaultUsedFor: 'gate',
-    pattern: [{freq:1800,dur:0.10},{freq:1800,dur:0.10},{freq:1800,dur:0.10}] },
-  { id: 'warning_pulse',     label: 'Warning Pulse', defaultUsedFor: 'app_notification',
+  // 4. Warning Pulse — even mid-tone double pulse
+  { id: 'warning_pulse',      label: 'Warning Pulse',      defaultUsedFor: 'app_notification',
     pattern: [{freq:1600,dur:0.18},{freq:1600,dur:0.18}] },
-  { id: 'short_siren',       label: 'Short Siren', defaultUsedFor: 'sos_emergency',
+  // 5. Camera Tick — short low-high tick
+  { id: 'camera_tick',        label: 'Camera Tick',        defaultUsedFor: 'speed_camera',
+    pattern: [{freq:1200,dur:0.06},{freq:1700,dur:0.06}] },
+  // 6. Speed Tone — low rising sweep, suits speed-zone context
+  { id: 'speed_tone',         label: 'Speed Tone',         defaultUsedFor: 'speed_change',
+    pattern: [{freq:1400,dur:0.14},{freq:1900,dur:0.14}] },
+  // 7. Route Alert — rapid 3-tone "attention" cue
+  { id: 'route_alert',        label: 'Route Alert',        defaultUsedFor: 'route_deviation',
+    pattern: [{freq:1900,dur:0.10},{freq:2200,dur:0.10},{freq:2400,dur:0.14}] },
+  // 8. Attention Bell — single sustained mid bell tone
+  { id: 'attention_bell',     label: 'Attention Bell',     defaultUsedFor: 'app_notification',
+    pattern: [{freq:1500,dur:0.22}] },
+  // 9. Short Siren — alternating low/high 4-pulse
+  { id: 'short_siren',        label: 'Short Siren',        defaultUsedFor: 'sos_emergency',
     pattern: [{freq:1400,dur:0.10},{freq:2400,dur:0.10},{freq:1400,dur:0.10},{freq:2400,dur:0.10}] },
-  // ---- New 8 (11-18) ----
-  // SOS Alert: three short, three long, three short (Morse-style)
-  { id: 'sos_alert',         label: 'SOS Alert', defaultUsedFor: 'sos_emergency',
+  // 10. Calm Notification — soft long mid chime
+  { id: 'calm_notification',  label: 'Calm Notification',  defaultUsedFor: 'app_notification',
+    pattern: [{freq:1450,dur:0.24}] },
+  // 11. SOS Alert — Morse-style 3 short / 3 long / 3 short
+  { id: 'sos_alert',          label: 'SOS Alert',          defaultUsedFor: 'sos_emergency',
     pattern: [
       {freq:2000,dur:0.08},{freq:2000,dur:0.08},{freq:2000,dur:0.08},
       {freq:2000,dur:0.22},{freq:2000,dur:0.22},{freq:2000,dur:0.22},
       {freq:2000,dur:0.08},{freq:2000,dur:0.08},{freq:2000,dur:0.08},
     ] },
-  // Feedback Pop: very brief, non-aggressive
-  { id: 'feedback_pop',      label: 'Feedback Pop', defaultUsedFor: 'user_feedback',
+  // 12. Feedback Pop — brief single ping
+  { id: 'feedback_pop',       label: 'Feedback Pop',       defaultUsedFor: 'user_feedback',
     pattern: [{freq:1200,dur:0.06}] },
-  // Success Ding: clean rising two-tone
-  { id: 'success_ding',      label: 'Success Ding', defaultUsedFor: 'success_feedback',
+  // 13. Success Ding — clean rising 2-tone
+  { id: 'success_ding',       label: 'Success Ding',       defaultUsedFor: 'success_feedback',
     pattern: [{freq:1500,dur:0.10},{freq:2100,dur:0.16}] },
-  // Error Buzz: short low buzz pattern
-  { id: 'error_buzz',        label: 'Error Buzz', defaultUsedFor: 'error_feedback',
+  // 14. Error Buzz — low buzzing 3-tone descending
+  { id: 'error_buzz',         label: 'Error Buzz',         defaultUsedFor: 'error_feedback',
     pattern: [{freq:300,dur:0.08},{freq:280,dur:0.08},{freq:260,dur:0.10}] },
-  // Notify Drop: soft descending tone
-  { id: 'notify_drop',       label: 'Notify Drop', defaultUsedFor: 'app_notification',
+  // 15. Notify Drop — soft descending 2-tone
+  { id: 'notify_drop',        label: 'Notify Drop',        defaultUsedFor: 'app_notification',
     pattern: [{freq:1800,dur:0.12},{freq:1400,dur:0.18}] },
-  // Urgent Alarm: more urgent than warning_pulse, less harsh than short_siren
-  { id: 'urgent_alarm',      label: 'Urgent Alarm', defaultUsedFor: 'app_notification',
+  // 16. Urgent Alarm — alternating 3-tone, between Warning Pulse and Short Siren
+  { id: 'urgent_alarm',       label: 'Urgent Alarm',       defaultUsedFor: 'app_notification',
     pattern: [{freq:2200,dur:0.12},{freq:1700,dur:0.12},{freq:2200,dur:0.12}] },
-  // Soft Tap: minimal low-distraction feedback
-  { id: 'soft_tap',          label: 'Soft Tap', defaultUsedFor: 'user_feedback',
+  // 17. Soft Tap — minimal low-frequency single ping
+  { id: 'soft_tap',           label: 'Soft Tap',           defaultUsedFor: 'user_feedback',
     pattern: [{freq:900,dur:0.05}] },
-  // System Notice: neutral system notification, different from petrol
-  { id: 'system_notice',     label: 'System Notice', defaultUsedFor: 'system_notice',
+  // 18. System Notice — neutral 2-tone, distinct from Calm Notification
+  { id: 'system_notice',      label: 'System Notice',      defaultUsedFor: 'system_notice',
     pattern: [{freq:1700,dur:0.10},{freq:2000,dur:0.10}] },
 ];
 

@@ -2216,60 +2216,90 @@ const UI = {
 
   renderSoundAlerts() {
     const host = document.getElementById('sound-alerts-table');
-    if (!host) return;
-    if (typeof SoundCatalogue === 'undefined' || !Array.isArray(SoundCatalogue)) {
-      host.innerHTML = '<div class="empty">Sound catalogue unavailable.</div>';
+    if (!host) {
+      try { logEvent('SOUND', '[SOUND] render skipped — #sound-alerts-table not in DOM', 'err'); } catch (e) {}
       return;
     }
-    const saved = (State.settings.soundAlerts && typeof State.settings.soundAlerts === 'object')
+    // v23.6.3 — bulletproof catalogue lookup. If SoundCatalogue is
+    // not visible to this script, fall back to a one-line registry
+    // shim so the section never blanks completely.
+    const catalogue = (typeof SoundCatalogue !== 'undefined' && Array.isArray(SoundCatalogue) && SoundCatalogue.length)
+      ? SoundCatalogue
+      : (typeof globalThis !== 'undefined' && Array.isArray(globalThis.SoundCatalogue) ? globalThis.SoundCatalogue : null);
+    if (!catalogue || !catalogue.length) {
+      host.innerHTML = `<div class="empty" style="padding:8px;text-align:center;color:var(--red);">Sound catalogue unavailable. Reload may help.</div>`;
+      try { logEvent('SOUND', '[SOUND] render failed — SoundCatalogue missing or empty', 'err'); } catch (e) {}
+      return;
+    }
+    try { logEvent('SOUND', `[SOUND] rendering ${catalogue.length} rows`); } catch (e) {}
+
+    const saved = (State.settings && State.settings.soundAlerts && typeof State.settings.soundAlerts === 'object')
       ? State.settings.soundAlerts : {};
 
-    // v23.6.1: build the Used-For dropdown from SoundUsedForGroups using
-    // native <optgroup>. The first group (id '_none') is rendered as a
-    // bare <option> so "None" sits alone above the labelled groups.
+    // v23.6.1: build Used-For dropdown from SoundUsedForGroups via <optgroup>.
     const usedForGroups = (typeof SoundUsedForGroups !== 'undefined' && Array.isArray(SoundUsedForGroups))
       ? SoundUsedForGroups
       : [{ id: '_none', label: '', items: [{ id: 'none', label: 'None' }] }];
 
+    const safe = (v) => Utils.escapeHtml(String(v == null ? '' : v));
     const buildUsedForSelect = (id, label, selectedKey) => {
-      const safeId = Utils.escapeHtml(id);
-      const safeLabel = Utils.escapeHtml(label);
       const innerOpts = usedForGroups.map(g => {
-        const opts = g.items.map(it => {
+        const opts = (g.items || []).map(it => {
           const sel = (it.id === selectedKey) ? ' selected' : '';
-          return `<option value="${Utils.escapeHtml(it.id)}"${sel}>${Utils.escapeHtml(it.label)}</option>`;
+          return `<option value="${safe(it.id)}"${sel}>${safe(it.label)}</option>`;
         }).join('');
-        if (!g.label) return opts; // ungrouped (the None group)
-        return `<optgroup label="${Utils.escapeHtml(g.label)}">${opts}</optgroup>`;
+        if (!g.label) return opts;
+        return `<optgroup label="${safe(g.label)}">${opts}</optgroup>`;
       }).join('');
-      return `<select class="sa-usedfor" data-sa-usedfor="${safeId}" aria-label="Used-For for ${safeLabel}">${innerOpts}</select>`;
+      return `<select class="sa-usedfor" data-sa-usedfor="${safe(id)}" aria-label="Used-For for ${safe(label)}">${innerOpts}</select>`;
     };
 
-    host.innerHTML = SoundCatalogue.map((s, i) => {
-      const entry = saved[s.id] || {};
-      // v23.6.1: migrate legacy / case-mismatched saved values on read.
-      const freq = (typeof normalizeSoundFrequency === 'function')
-        ? normalizeSoundFrequency(entry.frequency)
-        : (entry.frequency || 'medium');
-      const usedRaw = entry.usedFor || s.defaultUsedFor || 'none';
-      const used = (typeof migrateSoundUsedFor === 'function')
-        ? migrateSoundUsedFor(usedRaw)
-        : usedRaw;
+    // v23.6.3 — bulletproof per-row render. If any single sound fails,
+    // show a small inline failure cell for THAT row and continue with
+    // the rest. A whole-section blank is the failure mode we're
+    // explicitly preventing.
+    const rows = [];
+    let brokenIds = [];
+    for (let i = 0; i < catalogue.length; i++) {
+      const s = catalogue[i] || {};
       const num = i + 1;
-      return `<div class="sa-row" data-sa-id="${Utils.escapeHtml(s.id)}">
-        <div class="sa-name" title="${Utils.escapeHtml(s.label)}">${num}. ${Utils.escapeHtml(s.label)}</div>
-        <select class="sa-freq" data-sa-freq="${Utils.escapeHtml(s.id)}" aria-label="Frequency for ${Utils.escapeHtml(s.label)}">
-          <option value="high"${freq==='high'?' selected':''}>High</option>
-          <option value="medium"${freq==='medium'?' selected':''}>Medium</option>
-          <option value="low"${freq==='low'?' selected':''}>Low</option>
-        </select>
-        <div class="sa-try-wrap">
-          <button class="sa-try" data-sa-try="${Utils.escapeHtml(s.id)}">Try</button>
-          <div class="sa-status" data-sa-status="${Utils.escapeHtml(s.id)}"></div>
-        </div>
-        ${buildUsedForSelect(s.id, s.label, used)}
-      </div>`;
-    }).join('');
+      try {
+        if (!s.id) throw new Error('missing id at index ' + i);
+        const entry = saved[s.id] || {};
+        const freq = (typeof normalizeSoundFrequency === 'function')
+          ? normalizeSoundFrequency(entry.frequency)
+          : (entry.frequency || 'medium');
+        const usedRaw = entry.usedFor || s.defaultUsedFor || 'none';
+        const used = (typeof migrateSoundUsedFor === 'function')
+          ? migrateSoundUsedFor(usedRaw)
+          : usedRaw;
+        rows.push(`<div class="sa-row" data-sa-id="${safe(s.id)}">
+          <div class="sa-name" title="${safe(s.label)}">${num}. ${safe(s.label || s.id)}</div>
+          <select class="sa-freq" data-sa-freq="${safe(s.id)}" aria-label="Frequency for ${safe(s.label || s.id)}">
+            <option value="high"${freq==='high'?' selected':''}>High</option>
+            <option value="medium"${freq==='medium'?' selected':''}>Medium</option>
+            <option value="low"${freq==='low'?' selected':''}>Low</option>
+          </select>
+          <div class="sa-try-wrap">
+            <button class="sa-try" data-sa-try="${safe(s.id)}">Try</button>
+            <div class="sa-status" data-sa-status="${safe(s.id)}"></div>
+          </div>
+          ${buildUsedForSelect(s.id, s.label || s.id, used)}
+        </div>`);
+      } catch (rowErr) {
+        brokenIds.push(s && s.id ? s.id : '(index ' + i + ')');
+        rows.push(`<div class="sa-row sa-row-broken" data-sa-id="${safe(s && s.id || '_broken_' + i)}">
+          <div class="sa-name" style="color:var(--red);">${num}. ${safe(s.label || s.id || 'unknown sound')} — render failed</div>
+          <div class="sa-freq" style="color:var(--ink-3);font-size:10px;">${safe(rowErr.message || rowErr)}</div>
+          <div class="sa-try-wrap"><button class="sa-try" disabled>—</button><div class="sa-status"></div></div>
+          <div class="sa-usedfor" style="color:var(--ink-3);font-size:10px;">—</div>
+        </div>`);
+      }
+    }
+    host.innerHTML = rows.join('');
+    if (brokenIds.length) {
+      try { logEvent('SOUND', `[SOUND] ${brokenIds.length} row(s) failed render: ${brokenIds.join(', ')}`, 'err'); } catch (e) {}
+    }
 
     // Wire per-row controls — single-flight Try via Audio.preview.
     const ensureEntry = (id) => {

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.4';
+const APP_VERSION = 'v23.8.5';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -4443,6 +4443,14 @@ const Alerts = {
    *    gate           — static road feature; not an alert */
   SILENT_ALERT_TYPES: new Set(['speed_change', 'traffic_light', 'gate']),
 
+  /** v23.8.5 — types that DO appear in NEXT AHEAD, get auto-announced
+   *  ("mobile cam in 500 meters"), and fire the standard threshold-
+   *  cross alerts, but should NOT drive the continuous proximity
+   *  heartbeat. Mobile cams in particular are common enough that the
+   *  stepped 5-Hz heartbeat became noisy without adding info beyond
+   *  the existing distance announcements. */
+  PROXIMITY_PING_EXCLUDED_TYPES: new Set(['mobile_camera']),
+
   /** Points relevant for the "Next ahead" display + alert checking.
    *  v23.8.0: pulls from the global observation pool (not just the
    *  active destination's route-pair points) and runs them through
@@ -4737,10 +4745,14 @@ const Alerts = {
 
     this.checkAutoAnnounce(); // v22.16
 
-    // v22.32: continuous proximity ping for the focused (closest) point
+    // v22.32: continuous proximity ping for the focused (closest) point.
+    // v23.8.5: types in PROXIMITY_PING_EXCLUDED_TYPES (mobile_camera)
+    // still get NEXT AHEAD focus + threshold-cross peeps + voice, but
+    // skip the continuous heartbeat — clear the ping state so it
+    // doesn't carry over from a previous focused point either.
     if (focusedId != null) {
       const focusedPoint = aheadList.find(p => p.id === focusedId);
-      if (focusedPoint) {
+      if (focusedPoint && !this.PROXIMITY_PING_EXCLUDED_TYPES.has(focusedPoint.type)) {
         const focusedMeters = focusedPoint.dist * 1000;
         Audio.updateProximityPing(focusedId, focusedMeters);
       } else {

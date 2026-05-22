@@ -715,53 +715,52 @@ body {
    speed-limit math, no alert thresholds, no GPS state is touched
    here — these rules are visual only.
 
+   v23.8.3 — solid background fills + black digit text for readability
+   in direct sunlight. Flashing reserved for the OVER state (the only
+   one that signals a problem); SAFE and NEAR-LIMIT stay calm.
+
    States (mutually exclusive on the same element):
      .speed-status-unknown     · no resolved limit → neutral
-     .speed-status-safe        · current speed ≤ limit - NEAR_BAND → calm green pulse
-     .speed-status-near-limit  · within NEAR_BAND km/h of the limit → amber tinted
-     .speed-status-over        · strictly above the limit → strong red pulse
+     .speed-status-safe        · current speed ≤ limit - NEAR_BAND → solid green, no flash
+     .speed-status-near-limit  · within NEAR_BAND km/h of the limit → solid orange, no flash
+     .speed-status-over        · strictly above the limit → solid red, flashing
 
    .speed-status-over is intentionally distinct from .speedo-val.over
    (which fires at limit + State.settings.overBy and drives the
    existing audio alert path). Both can co-exist on .speedo-val without
    visual conflict — the red palette is consistent. */
 .stat-card.speed-status-safe {
-  border-color: rgba(34, 197, 94, 0.55);
-  animation: speedSafePulse 2.4s ease-in-out infinite;
+  border-color: #22c55e;
 }
 .speedo-val.speed-status-safe {
-  background: rgba(34, 197, 94, 0.18);
-  color: #d2ffd9;
-}
-@keyframes speedSafePulse {
-  0%, 100% { box-shadow: inset 0 0 0 0 rgba(34, 197, 94, 0); }
-  50%      { box-shadow: inset 0 0 0 2px rgba(34, 197, 94, 0.45); }
+  background: #22c55e;
+  color: #000;
 }
 
 .stat-card.speed-status-near-limit {
-  border-color: rgba(245, 158, 11, 0.65);
-  animation: speedNearPulse 1.6s ease-in-out infinite;
+  border-color: #f97316;
 }
 .speedo-val.speed-status-near-limit {
-  background: rgba(245, 158, 11, 0.22);
-  color: #ffe8b8;
-}
-@keyframes speedNearPulse {
-  0%, 100% { box-shadow: inset 0 0 0 0 rgba(245, 158, 11, 0); }
-  50%      { box-shadow: inset 0 0 0 2px rgba(245, 158, 11, 0.55); }
+  background: #f97316;
+  color: #000;
 }
 
 .stat-card.speed-status-over {
-  border-color: rgba(239, 68, 68, 0.85);
+  border-color: #ef4444;
   animation: speedOverPulse 0.8s ease-in-out infinite;
 }
 .speedo-val.speed-status-over {
-  background: rgba(239, 68, 68, 0.28);
-  color: #ffd2d2;
+  background: #ef4444;
+  color: #000;
+  animation: speedOverFlash 0.6s ease-in-out infinite;
 }
 @keyframes speedOverPulse {
   0%, 100% { box-shadow: inset 0 0 0 0 rgba(239, 68, 68, 0); }
-  50%      { box-shadow: inset 0 0 0 3px rgba(239, 68, 68, 0.75); }
+  50%      { box-shadow: inset 0 0 0 3px rgba(239, 68, 68, 0.85); }
+}
+@keyframes speedOverFlash {
+  0%, 100% { background: #ef4444; }
+  50%      { background: #fca5a5; }
 }
 
 /* Neutral / unknown state has no animation — used when no limit is
@@ -771,9 +770,8 @@ body {
 
 /* Respect users who opt out of motion via OS / browser settings. */
 @media (prefers-reduced-motion: reduce) {
-  .stat-card.speed-status-safe,
-  .stat-card.speed-status-near-limit,
   .stat-card.speed-status-over,
+  .speedo-val.speed-status-over,
   .speedo-val.over { animation: none; }
 }
 .speedo-unit {

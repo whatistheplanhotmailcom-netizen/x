@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.7.0">
+<link rel="stylesheet" href="styles.css?v=23.7.1">
 </head>
 <body data-theme="light">
 
@@ -365,6 +365,19 @@
         <button data-status="maybe">Maybe</button>
         <button data-status="no">Off</button>
       </div>
+    </div>
+    <!-- v23.7.1: missed-feedback count chip. Shows how many unresolved
+         missed-feedback entries are attached to this point. Tapping a
+         count > 0 opens the YES/NO popup for the first unresolved
+         entry (same flow as the live prompt). Tapping when count = 0
+         shows a small "No missed feedback" toast — never opens an
+         empty form. The row stays visible at 0 so the driver knows
+         the field is there. -->
+    <div class="row" id="e-missed-row">
+      <span class="label">Missed Feedback</span>
+      <button class="btn" id="e-missed-btn" style="flex:1;text-align:left;">
+        <span id="e-missed-count">0</span>
+      </button>
     </div>
     <!-- v23.6.8: per-point sound-alert mapping. Shows which sound from
          the Sound Alerts catalogue is currently assigned to this
@@ -838,8 +851,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.7.0"></script>
-<script defer src="js/app-ui.js?v=23.7.0"></script>
+<script defer src="js/app-core.js?v=23.7.1"></script>
+<script defer src="js/app-ui.js?v=23.7.1"></script>
 
 </body>
 </html>

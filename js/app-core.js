@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.7.0';
+const APP_VERSION = 'v23.7.1';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2368,6 +2368,7 @@ const State = {
   limitPickerMode: 'manual', // 'manual' | 'speedchange'
   lastTripCaptureId: null, // v22.10: id of most recent point captured this trip (for double-tap recall)
   alertsFiredThisTrip: 0, // v22.12: count alerts fired since trip start, shown in diag strip
+  feedbackPassId: null,   // v23.7.1: per-session uid for missed-feedback dedup
 
   saveData()     { Storage.save(Storage.KEYS.data, this.data); UI.updateMapPoints(); UI.render(); },
   saveSettings() { Storage.save(Storage.KEYS.settings, this.settings); },
@@ -2827,6 +2828,22 @@ const Audio = {
     this.beep(type);
   },
 
+  /** v23.7.1 — feedback popup sound. Plays the catalogue sound mapped
+   *  to 'user_feedback' (default: feedback_pop). Fires once per
+   *  feedback-popup display; the popup renderer guards against
+   *  re-plays from GPS ticks / re-renders. */
+  playFeedbackPopupSound() {
+    this.playAlertSoundForType('user_feedback');
+  },
+
+  /** v23.7.1 — feedback confirmation sound. Plays the catalogue sound
+   *  mapped to 'success_feedback' (default: success_ding). Fires only
+   *  after a feedback response was successfully saved — NEVER on
+   *  timeout, NEVER on simply opening the popup. */
+  playFeedbackConfirmSound() {
+    this.playAlertSoundForType('success_feedback');
+  },
+
   /** v23.6.0 — Web-Audio pattern player extracted as a reusable helper.
    *  Plays ONE pass of a ping pattern. `opts.intensity` is a peakGain
    *  multiplier (0.55 low / 0.75 medium / 1.0 high). Returns the
@@ -3128,6 +3145,9 @@ const GPS = {
     State.uTurnTicks = 0;
     // v22.38: reset confirmation queue for fresh trip
     Confirm.resetTrip();
+    // v23.7.1: fresh feedback pass id so missed_feedback dedup works
+    // per-session. Used by Confirm._attachMissedFeedback.
+    State.feedbackPassId = Utils.uid();
     // v22.58: force the route to be refetched on the first tick of this
     // session — start of the route line is always the current GPS position.
     if (typeof MapView !== 'undefined' && MapView) MapView._routeForDestId = null;
@@ -4092,6 +4112,17 @@ const Alerts = {
       const fired = State.alertedMarkers.get(p.id) || new Set();
       const markers = State.settings.alertMarkersM || [2000, 1000, 500];
 
+      // v23.7.1 — feedback prompt 50 m before the focused ahead point.
+      // Reuses Alerts.tick's existing ahead detection + focused-point
+      // selection + GPS-accuracy gating (Alerts.tick is skipped above
+      // 500 m accuracy in GPS.onTick). The _askedThisTrip Set inside
+      // Confirm prevents duplicate prompts per pass. Does NOT replace
+      // the threshold-cross alerts below — pure validation overlay.
+      if (isFocused && meters <= Confirm.FEEDBACK_DIST_M
+          && Confirm.ASKABLE_TYPES.includes(p.type)) {
+        try { Confirm.requestFeedbackAhead(p, meters); } catch (e) {}
+      }
+
       if (prevMeters == null) {
         // v22.18: First sight — silently mark every marker we're already past
         // as "fired" so they don't spuriously trigger later. We don't fire any
@@ -4286,27 +4317,97 @@ const Alerts = {
    7c. CONFIRM — v22.38 post-pass survey ("is this point still there?")
    ============================================================ */
 const Confirm = {
-  // Point types that warrant a confirmation popup after passing.
+  // Point types that warrant a confirmation popup.
   ASKABLE_TYPES: ['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera', 'checkpoint'],
   // After this many consecutive "NO" answers, the point auto-retires (status='no').
   RETIRE_AFTER: 3,
+  // v23.7.1: feedback prompt fires when point is this close ahead.
+  FEEDBACK_DIST_M: 50,
+  // v23.7.1: feedback countdown duration (30 s per spec).
+  FEEDBACK_COUNTDOWN_S: 30,
   // Don't ask more than once per point per trip.
   _askedThisTrip: new Set(),
   // FIFO queue of point IDs waiting to be asked about.
   _queue: [],
   _activeId: null,
+  _activeDistanceM: null,    // v23.7.1: last known distance for the active prompt
   _timer: null,
   _remainingMs: 0,
+  // v23.7.1: gate so the popup sound plays exactly once per popup display.
+  _popupSoundPlayedForId: null,
+  // v23.7.1: missed-feedback resolution flow — when a user taps the
+  // "Missed Feedback N" chip in Edit Point, we open the popup pointing
+  // at the missed entry. _resolvingMissedId carries that mapping so
+  // _answer knows to flip the missed record to status=resolved.
+  _resolvingMissedId: null,
 
-  /** Called by Alerts.tick when a point transitions to "passed". */
+  /** v23.7.1 — fire feedback prompt 50 m BEFORE the focused next-ahead
+   *  alert (replaces v22's onPassed-only timing). Called from
+   *  Alerts.tick when ahead && distance ≤ FEEDBACK_DIST_M. The
+   *  _askedThisTrip guard prevents duplicate prompts within the same
+   *  GPS session for the same point. */
+  requestFeedbackAhead(point, distM) {
+    if (!point || !point.id) return;
+    if (!this.ASKABLE_TYPES.includes(point.type)) return;
+    if (point.status === 'no') return;
+    if (this._askedThisTrip.has(point.id)) return;
+    this._askedThisTrip.add(point.id);
+    this._queue.push({ id: point.id, kind: 'ahead', distM });
+    try { logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${point.id} @ ${Math.round(distM)}m (ahead)`); } catch (e) {}
+    if (!this._activeId) this._showNext();
+  },
+
+  /** Legacy onPassed fallback — fires if the user crossed the 50 m
+   *  window faster than one GPS tick. Same queue, same guard. */
   onPassed(point) {
     if (!point || !point.id) return;
     if (!this.ASKABLE_TYPES.includes(point.type)) return;
-    if (point.status === 'no') return; // already retired — don't pester
+    if (point.status === 'no') return;
     if (this._askedThisTrip.has(point.id)) return;
     this._askedThisTrip.add(point.id);
-    this._queue.push(point.id);
+    this._queue.push({ id: point.id, kind: 'passed', distM: 0 });
+    try { logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${point.id} (passed-fallback)`); } catch (e) {}
     if (!this._activeId) this._showNext();
+  },
+
+  /** v23.7.1 — open the popup pointing at a specific missed-feedback
+   *  entry from the Edit Point UI. Reuses the same _render +
+   *  _answer flow; _answer detects _resolvingMissedId and resolves
+   *  the missed record after writing the confirmations entry. */
+  openMissedFeedback(pointId, missedId) {
+    const point = State.data.points.find(p => p.id === pointId);
+    if (!point) return false;
+    if (!Confirm._countUnresolvedMissed(point)) {
+      Utils.toast('No missed feedback', 'good');
+      return false;
+    }
+    // Hard reset any in-flight popup first.
+    this._cleanup();
+    this._queue = [];
+    this._activeId = pointId;
+    this._activeDistanceM = null;
+    this._resolvingMissedId = missedId || (Confirm._firstUnresolvedMissed(point) || {}).id || null;
+    this._popupSoundPlayedForId = null;
+    this._render(point);
+    this._startCountdown(this.FEEDBACK_COUNTDOWN_S);
+    this._maybePlayPopupSound();
+    return true;
+  },
+
+  /** Count unresolved missed-feedback entries on a point. */
+  _countUnresolvedMissed(point) {
+    if (!point || !point.feedback || !Array.isArray(point.feedback.missed)) return 0;
+    let n = 0;
+    for (const m of point.feedback.missed) {
+      if (m && m.status === 'missed_feedback') n++;
+    }
+    return n;
+  },
+
+  /** Return the first unresolved missed-feedback entry, or null. */
+  _firstUnresolvedMissed(point) {
+    if (!point || !point.feedback || !Array.isArray(point.feedback.missed)) return null;
+    return point.feedback.missed.find(m => m && m.status === 'missed_feedback') || null;
   },
 
   /** Show the next queued point, if any. */
@@ -4314,14 +4415,35 @@ const Confirm = {
     this._cleanup();
     if (!this._queue.length) {
       this._activeId = null;
+      this._activeDistanceM = null;
+      this._resolvingMissedId = null;
       return;
     }
-    const id = this._queue.shift();
+    const next = this._queue.shift();
+    const id = (typeof next === 'string') ? next : next.id;
+    this._activeDistanceM = (next && typeof next.distM === 'number') ? next.distM : null;
     const point = State.data.points.find(p => p.id === id);
     if (!point) { this._showNext(); return; }
     this._activeId = id;
+    this._resolvingMissedId = null;
+    this._popupSoundPlayedForId = null;
     this._render(point);
-    this._startCountdown(10);
+    this._startCountdown(this.FEEDBACK_COUNTDOWN_S);
+    this._maybePlayPopupSound();
+  },
+
+  /** v23.7.1 — fire popup sound exactly once per popup show. Gated by
+   *  `_popupSoundPlayedForId` so GPS-tick re-renders / countdown
+   *  ticks can't replay the sound. */
+  _maybePlayPopupSound() {
+    if (this._popupSoundPlayedForId === this._activeId) return;
+    this._popupSoundPlayedForId = this._activeId;
+    try {
+      if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackPopupSound === 'function') {
+        Audio.playFeedbackPopupSound();
+        logEvent('FEEDBACK', `[FEEDBACK] feedback_popup_sound_played — ${this._activeId}`);
+      }
+    } catch (e) {}
   },
 
   _render(point) {
@@ -4336,11 +4458,15 @@ const Confirm = {
     const side = point.side ? (point.side === 'left' ? 'L' : 'R') : '';
     const sideText = side ? ` · ${side}` : '';
     const name = Utils.escapeHtml(point.name || typeLbl);
+    // v23.7.1: when resolving an existing missed entry, label clearly.
+    const headline = this._resolvingMissedId
+      ? `Still there? (missed feedback)`
+      : `Still there?`;
     host.innerHTML = `
       <div class="confirm-card">
         <div class="confirm-head">
           <div class="confirm-title">${Utils.emoji(point.type)} ${name}</div>
-          <div class="confirm-meta">${Utils.escapeHtml(typeLbl)}${sideText} · Still there?</div>
+          <div class="confirm-meta">${Utils.escapeHtml(typeLbl)}${sideText} · ${headline}</div>
         </div>
         <div class="confirm-progress"><div class="confirm-progress-bar" id="confirm-bar"></div></div>
         <div class="confirm-actions">
@@ -4365,10 +4491,66 @@ const Confirm = {
       this._remainingMs = left;
       if (bar) bar.style.width = (left / totalMs * 100) + '%';
       if (left <= 0) {
-        // No answer — timeout. Don't log anything, just move on.
+        // v23.7.1 — timeout: attach a missed_feedback record to the
+        // captured point (UNLESS we were resolving an existing missed
+        // entry, in which case it stays unresolved). NO confirmation
+        // sound, NO additional modal, popup just closes.
+        const expiredId = this._activeId;
+        const expiredDist = this._activeDistanceM;
+        const wasResolvingMissed = !!this._resolvingMissedId;
+        try {
+          const point = State.data.points.find(p => p.id === expiredId);
+          if (point && !wasResolvingMissed) {
+            Confirm._attachMissedFeedback(point, expiredDist);
+          }
+          logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_expired — ${expiredId}${wasResolvingMissed ? ' (resolving missed; left as-is)' : ''}`);
+        } catch (e) {}
         this._showNext();
       }
     }, 100);
+  },
+
+  /** v23.7.1 — attach one missed_feedback record to the point. Idempotent
+   *  per (pass, pointId): if a record already exists for this pass we
+   *  do NOT add another. The Edit Point UI reads `point.feedback.missed`
+   *  to render the "Missed Feedback N" count.
+   *
+   *  Schema (additive only; existing point fields untouched):
+   *    point.feedback = { missed: [
+   *      { id, pointId, type, status: 'missed_feedback'|'resolved',
+   *        missedAt, resolvedAt, response, distanceM, passId, route }
+   *    ]}
+   */
+  _attachMissedFeedback(point, distM) {
+    if (!point || !point.id) return;
+    if (!point.feedback || typeof point.feedback !== 'object') point.feedback = {};
+    if (!Array.isArray(point.feedback.missed)) point.feedback.missed = [];
+    const passId = State.feedbackPassId || null;
+    // Idempotence guard: one missed entry per (pass, pointId).
+    if (passId && point.feedback.missed.some(m => m && m.passId === passId && m.status === 'missed_feedback')) {
+      try { logEvent('FEEDBACK', `[FEEDBACK] missed_feedback_attached_to_point — skipped duplicate for pass ${passId}`); } catch (e) {}
+      return;
+    }
+    const entry = {
+      id: Utils.uid(),
+      pointId: point.id,
+      type: point.type,
+      status: 'missed_feedback',
+      missedAt: new Date().toISOString(),
+      resolvedAt: null,
+      response: null,
+      distanceM: (typeof distM === 'number') ? Math.round(distM) : null,
+      passId,
+    };
+    // Route/destination context if available.
+    try {
+      const dest = State.activeDest && State.activeDest();
+      if (dest && dest.id) entry.destId = dest.id;
+    } catch (e) {}
+    point.feedback.missed.push(entry);
+    State.saveData();
+    try { logEvent('FEEDBACK', `[FEEDBACK] missed_feedback_attached_to_point — ${point.id} (pass ${passId || 'none'})`, 'ok'); } catch (e) {}
+    if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
   },
 
   _answer(value) {
@@ -4390,7 +4572,27 @@ const Confirm = {
         point.status = 'no';
       }
     }
+    // v23.7.1 — if this _answer is closing out a missed-feedback
+    // entry (opened from Edit Point), mark that entry resolved.
+    const resolvingId = this._resolvingMissedId;
+    if (resolvingId && point.feedback && Array.isArray(point.feedback.missed)) {
+      const target = point.feedback.missed.find(m => m && m.id === resolvingId);
+      if (target) {
+        target.status = 'resolved';
+        target.resolvedAt = new Date().toISOString();
+        target.response = value;
+        try { logEvent('FEEDBACK', `[FEEDBACK] missed_feedback_resolved — ${point.id} entry ${resolvingId} → ${value}`, 'ok'); } catch (e) {}
+      }
+    }
     State.saveData();
+    // v23.7.1 — confirmation sound AFTER successful save, never on timeout.
+    try {
+      if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackConfirmSound === 'function') {
+        Audio.playFeedbackConfirmSound();
+        logEvent('FEEDBACK', `[FEEDBACK] feedback_confirmation_sound_played — ${point.id}`);
+      }
+    } catch (e) {}
+    try { logEvent('FEEDBACK', `[FEEDBACK] feedback_response_recorded — ${point.id} → ${value}`, 'ok'); } catch (e) {}
     Utils.toast(
       value === 'yes'
         ? `✓ ${point.name || Utils.typeLabel(point.type)} confirmed`
@@ -4400,6 +4602,13 @@ const Confirm = {
       value === 'yes' ? 'good' : 'bad'
     );
     if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
+    // v23.7.1 — refresh Edit Point UI if currently open for this point.
+    try {
+      if (State.editingPointId === point.id && typeof UI !== 'undefined' && typeof UI.refreshMissedFeedbackCount === 'function') {
+        UI.refreshMissedFeedbackCount(point.id);
+      }
+    } catch (e) {}
+    this._resolvingMissedId = null;
     this._showNext();
   },
 
@@ -4414,6 +4623,9 @@ const Confirm = {
     this._askedThisTrip.clear();
     this._queue = [];
     this._activeId = null;
+    this._activeDistanceM = null;
+    this._resolvingMissedId = null;
+    this._popupSoundPlayedForId = null;
     this._cleanup();
   },
 };

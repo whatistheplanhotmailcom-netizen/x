@@ -2679,8 +2679,31 @@ const UI = {
     // v23.6.8: populate the Sound-alert dropdown with the sound
     // currently mapped to this point's type.
     this.renderEditPointSoundAlert(p.type);
+    // v23.7.1: paint the missed-feedback count chip.
+    this.refreshMissedFeedbackCount(p.id);
     this.togglePEFields();
     this.openModal('m-edit');
+  },
+
+  /** v23.7.1 — paint "Missed Feedback N" on the Edit Point chip from
+   *  point.feedback.missed[]. Always visible (0 / 1 / N), per spec. */
+  refreshMissedFeedbackCount(pointId) {
+    const id = pointId || State.editingPointId;
+    if (!id) return;
+    const p = State.data.points.find(x => x.id === id);
+    if (!p) return;
+    const count = (typeof Confirm !== 'undefined' && typeof Confirm._countUnresolvedMissed === 'function')
+      ? Confirm._countUnresolvedMissed(p)
+      : 0;
+    const span = document.getElementById('e-missed-count');
+    const btn = document.getElementById('e-missed-btn');
+    if (span) span.textContent = String(count);
+    if (btn) {
+      btn.classList.toggle('has-missed', count > 0);
+      btn.style.background = (count > 0) ? 'rgba(245,158,11,0.18)' : '';
+      btn.style.borderColor = (count > 0) ? 'var(--amber-2)' : '';
+      btn.style.color = (count > 0) ? 'var(--amber-2)' : 'var(--ink-3)';
+    }
   },
 
   /** v23.6.8 — find which SoundCatalogue sound is currently mapped
@@ -3697,6 +3720,28 @@ function wire() {
     Audio.unlock();
     try { logEvent('SOUND', `[SOUND] try ${soundId} @ medium (from Edit Point)`); } catch (e) {}
     Audio.preview(soundId, { frequency: 'medium' });
+  };
+  // v23.7.1: Missed Feedback chip — count > 0 opens the YES/NO popup
+  // for the first unresolved entry; count === 0 shows a small toast.
+  const _eMissed = document.getElementById('e-missed-btn');
+  if (_eMissed) _eMissed.onclick = () => {
+    const id = State.editingPointId;
+    if (!id) return;
+    const p = State.data.points.find(x => x.id === id);
+    if (!p) return;
+    const count = Confirm._countUnresolvedMissed(p);
+    if (count <= 0) {
+      Utils.toast('No missed feedback', 'good');
+      return;
+    }
+    const first = Confirm._firstUnresolvedMissed(p);
+    if (!first) { Utils.toast('No missed feedback', 'good'); return; }
+    // Close Edit Point first so the popup is unobstructed; the
+    // missed entry's pointId is stable so we can re-open Edit Point
+    // after the user submits.
+    UI.closeAllModals();
+    Audio.unlock();
+    Confirm.openMissedFeedback(p.id, first.id);
   };
   document.querySelectorAll('#e-side-opts button').forEach(b =>
     b.onclick = () => document.querySelectorAll('#e-side-opts button').forEach(x => x.classList.toggle('active', x === b))

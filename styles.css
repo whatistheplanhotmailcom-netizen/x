@@ -810,10 +810,11 @@ body {
   color: var(--ink);
   border: 1px solid var(--line-2);
   border-radius: 8px;
-  width: 36px; height: 36px;
+  /* v23.5.7: +20% — 36→43, 14→17. Container opacity 0.4 unchanged. */
+  width: 43px; height: 43px;
   cursor: pointer;
   display: grid; place-items: center;
-  font-size: 14px;
+  font-size: 17px;
   box-shadow: var(--shadow);
 }
 .map-btn:active { transform: scale(0.92); }
@@ -1673,9 +1674,11 @@ body[data-hide-hints="true"] .row-hint { display: none; }
    the default. transform-origin top-left so the scaled group stays
    inside the MapLibre top-left anchor. Background opacity applied to
    the BUTTON (not the wrapper) so .map-overlay-btns and other map
-   children retain their own opacity rules. */
+   children retain their own opacity rules.
+   v23.5.7: bumped scale 1.25 → 1.50 (+20% of original) per spec.
+   Opacity 0.5 unchanged. */
 .maplibregl-ctrl-top-left .maplibregl-ctrl-group {
-  transform: scale(1.25);
+  transform: scale(1.50);
   transform-origin: top left;
   opacity: 0.5;
   background: transparent !important;
@@ -1759,6 +1762,6 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   /* Status line tiny */
   .status-line { font-size: 9px; padding: 0 2px; gap: 6px; }
   /* Map overlay buttons smaller so they don't eat the small map */
-  .map-btn { width: 30px; height: 30px; font-size: 12px; }
+  .map-btn { width: 36px; height: 36px; font-size: 14px; } /* v23.5.7: +20% (30→36, 12→14) */
   .follow-pill { padding: 2px 7px; font-size: 9px; }
 }

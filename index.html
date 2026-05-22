@@ -553,6 +553,27 @@
     <div class="row"><span class="label">Trigger when over by (km/h)</span><input type="number" id="i-over" min="0" max="50"></div>
     <div class="row-hint">How many km/h over the limit before the alert fires. <code>5</code> means a 100 km/h zone won't alert until you hit 105.</div>
 
+    <!-- v23.6.0: Sound Alerts table. UI-only — selecting a Frequency or
+         Used For value stores the preference under
+         State.settings.soundAlerts[<sound-id>] but does NOT change
+         when/which alerts fire, alert thresholds, scoring, route logic,
+         GPS, or map markers. The Try button previews the synthesized
+         tone via the existing Audio module (no duplicate audio system,
+         no remote audio assets). Only one preview plays at a time. -->
+    <div class="section-title">Sound Alerts</div>
+    <div class="row-hint" style="margin-left:0;border-left-color:var(--amber);">
+      Preview the 10 generated alert sounds and pick a Frequency + Used For per sound. <strong>Display-only:</strong> saving a row stores your preference but does not change when alerts fire, alert thresholds, route logic, or the main driving screen.
+    </div>
+    <div class="sound-alerts-table" id="sound-alerts-table" role="table" aria-label="Sound alerts">
+      <div class="sound-alerts-head" role="row">
+        <div role="columnheader">Sound Alert</div>
+        <div role="columnheader">Frequency</div>
+        <div role="columnheader">Test</div>
+        <div role="columnheader">Used For</div>
+      </div>
+      <div id="sound-alerts-rows"><!-- rows rendered by UI.renderSoundAlertsTable --></div>
+    </div>
+
     <!-- v22.98: "Name is here" voice announcement when reaching a point -->
     <div class="section-title">Here-now announcement</div>
     <div class="row-hint" style="margin-left:0;border-left-color:var(--amber);">
@@ -799,8 +820,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.5.8"></script>
-<script defer src="js/app-ui.js?v=23.5.8"></script>
+<script defer src="js/app-core.js?v=23.6.0"></script>
+<script defer src="js/app-ui.js?v=23.6.0"></script>
 
 </body>
 </html>

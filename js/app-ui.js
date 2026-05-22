@@ -1929,6 +1929,24 @@ const UI = {
     if (el.textContent !== v) el.textContent = v;
   },
 
+  /** v23.8.2 — UI-ONLY speed-status derivation. Pure function. Takes
+   *  the already-resolved limit (km/h or null) and current speed
+   *  (km/h, rounded) and returns one of the speed-status-* CSS class
+   *  names. Never reads GPS state, never re-computes speed or limit,
+   *  never triggers alerts. Called once per renderStats tick. */
+  SPEED_NEAR_LIMIT_BAND_KMH: 5,
+  _computeSpeedStatus(limit, kmh) {
+    if (limit == null || typeof limit !== 'number' || isNaN(limit)) {
+      return 'speed-status-unknown';
+    }
+    if (typeof kmh !== 'number' || isNaN(kmh)) {
+      return 'speed-status-unknown';
+    }
+    if (kmh > limit)                                       return 'speed-status-over';
+    if (kmh >= limit - this.SPEED_NEAR_LIMIT_BAND_KMH)     return 'speed-status-near-limit';
+    return 'speed-status-safe';
+  },
+
   renderStats() {
     const limit = Alerts.currentLimit();
     // v23.5.1 fix 1: explicit unknown state instead of "—". Visually
@@ -1958,6 +1976,25 @@ const UI = {
     speedo.classList.toggle('over', isOver);
     // v22.27: auto-shrink font when speed reaches 3 digits so it never overflows the card
     speedo.classList.toggle('three-digit', kmh >= 100);
+
+    // v23.8.2 — Dynamic Current Speed card status. UI-ONLY: this reads
+    // the already-resolved `limit` (from Alerts.currentLimit() above)
+    // and the already-computed `kmh`. It never re-derives the limit,
+    // never queries observations, never touches GPS state. The four
+    // mutually-exclusive .speed-status-* classes are applied to both
+    // the stat-card (for the pulse + border) and the digit (for the
+    // background tint). Existing .over class for the alert tolerance
+    // remains untouched so the audio alert path is unaffected.
+    const speedStatus = UI._computeSpeedStatus(limit, kmh);
+    const speedCard = document.getElementById('speed-card');
+    const STATUS_CLASSES = ['speed-status-unknown', 'speed-status-safe',
+                            'speed-status-near-limit', 'speed-status-over'];
+    if (speedCard) {
+      STATUS_CLASSES.forEach(c => speedCard.classList.remove(c));
+      speedCard.classList.add(speedStatus);
+    }
+    STATUS_CLASSES.forEach(c => speedo.classList.remove(c));
+    speedo.classList.add(speedStatus);
 
     const aheadList = Alerts.ahead();
     const body = document.getElementById('next-body');

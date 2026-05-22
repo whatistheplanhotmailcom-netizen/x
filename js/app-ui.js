@@ -2147,6 +2147,103 @@ const UI = {
     this.openModal('m-sound-check');
   },
 
+  /** v23.6.0 — Sound Alerts settings table. Builds 18 rows from
+   *  SoundCatalogue, each with Frequency selector + Try button +
+   *  preview status + Used-For selector. Reads / writes
+   *  State.settings.soundAlerts (additive, compatible with older
+   *  saved settings that don't have this key).
+   *  PREVIEW-ONLY: changes here do NOT affect live alert triggers. */
+  openSoundAlerts() {
+    Audio.unlock();
+    this.renderSoundAlerts();
+    this.openModal('m-sound-alerts');
+  },
+
+  renderSoundAlerts() {
+    const host = document.getElementById('sound-alerts-table');
+    if (!host) return;
+    if (typeof SoundCatalogue === 'undefined' || !Array.isArray(SoundCatalogue)) {
+      host.innerHTML = '<div class="empty">Sound catalogue unavailable.</div>';
+      return;
+    }
+    const saved = (State.settings.soundAlerts && typeof State.settings.soundAlerts === 'object')
+      ? State.settings.soundAlerts : {};
+    // Used-For options shared HTML
+    const usedForOptions = (typeof SoundUsedFor !== 'undefined' ? SoundUsedFor : [{ id: 'none', label: 'None' }])
+      .map(u => `<option value="${Utils.escapeHtml(u.id)}">${Utils.escapeHtml(u.label)}</option>`)
+      .join('');
+
+    host.innerHTML = SoundCatalogue.map((s, i) => {
+      const entry = saved[s.id] || {};
+      const freq = entry.frequency || 'medium';
+      const used = entry.usedFor || s.defaultUsedFor || 'none';
+      const num = i + 1;
+      return `<div class="sa-row" data-sa-id="${Utils.escapeHtml(s.id)}">
+        <div class="sa-name" title="${Utils.escapeHtml(s.label)}">${num}. ${Utils.escapeHtml(s.label)}</div>
+        <select class="sa-freq" data-sa-freq="${Utils.escapeHtml(s.id)}" aria-label="Frequency for ${Utils.escapeHtml(s.label)}">
+          <option value="high"${freq==='high'?' selected':''}>High</option>
+          <option value="medium"${freq==='medium'?' selected':''}>Medium</option>
+          <option value="low"${freq==='low'?' selected':''}>Low</option>
+        </select>
+        <div class="sa-try-wrap">
+          <button class="sa-try" data-sa-try="${Utils.escapeHtml(s.id)}">Try</button>
+          <div class="sa-status" data-sa-status="${Utils.escapeHtml(s.id)}"></div>
+        </div>
+        <select class="sa-usedfor" data-sa-usedfor="${Utils.escapeHtml(s.id)}" aria-label="Used-For for ${Utils.escapeHtml(s.label)}">
+          ${usedForOptions.split('</option>').map(opt => {
+            // mark the saved option as selected
+            if (!opt.trim()) return '';
+            const m = opt.match(/value="([^"]+)"/);
+            const v = m ? m[1] : '';
+            return opt.replace(/(value="[^"]+")/, '$1' + (v === used ? ' selected' : '')) + '</option>';
+          }).join('')}
+        </select>
+      </div>`;
+    }).join('');
+
+    // Wire per-row controls — single-flight Try via Audio.preview.
+    const ensureEntry = (id) => {
+      if (!State.settings.soundAlerts || typeof State.settings.soundAlerts !== 'object') {
+        State.settings.soundAlerts = {};
+      }
+      if (!State.settings.soundAlerts[id]) State.settings.soundAlerts[id] = {};
+      return State.settings.soundAlerts[id];
+    };
+
+    host.querySelectorAll('[data-sa-freq]').forEach(sel => {
+      sel.onchange = () => {
+        const id = sel.dataset.saFreq;
+        ensureEntry(id).frequency = sel.value;
+        State.saveSettings();
+      };
+    });
+    host.querySelectorAll('[data-sa-usedfor]').forEach(sel => {
+      sel.onchange = () => {
+        const id = sel.dataset.saUsedfor;
+        ensureEntry(id).usedFor = sel.value;
+        State.saveSettings();
+      };
+    });
+    host.querySelectorAll('[data-sa-try]').forEach(btn => {
+      btn.onclick = async () => {
+        const id = btn.dataset.saTry;
+        const freqSel = host.querySelector(`[data-sa-freq="${CSS.escape(id)}"]`);
+        const statusEl = host.querySelector(`[data-sa-status="${CSS.escape(id)}"]`);
+        const frequency = (freqSel && freqSel.value) || 'medium';
+        const setStatus = (label) => {
+          if (!statusEl) return;
+          statusEl.textContent = label || '';
+          statusEl.classList.remove('playing', 'played', 'failed');
+          if (label === 'Playing…' || label === 'Buffering…') statusEl.classList.add('playing');
+          else if (label === 'Played') statusEl.classList.add('played');
+          else if (label === 'Failed') statusEl.classList.add('failed');
+        };
+        try { logEvent('SOUND', `[SOUND] try ${id} @ ${frequency}`); } catch (e) {}
+        Audio.preview(id, { frequency, onStatus: setStatus });
+      };
+    });
+  },
+
   /** v22.7: confirm destination before starting GPS.
    *  - If no destination is set → block, toast, open dest picker.
    *  - If a destination is set → show confirm dialog with Cancel / Change / Start.
@@ -3726,6 +3823,12 @@ function wire() {
   document.getElementById('btn-test-sound').onclick = () => {
     Audio.unlock();
     UI.openSoundCheck();
+  };
+  // v23.6.0: Sound Alerts settings modal
+  const _btnSA = document.getElementById('btn-sound-alerts');
+  if (_btnSA) _btnSA.onclick = () => {
+    Audio.unlock();
+    UI.openSoundAlerts();
   };
   // v22.99: clear cache & hard reload
   document.getElementById('btn-clear-cache').onclick = async () => {

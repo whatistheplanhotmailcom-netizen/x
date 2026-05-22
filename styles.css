@@ -1397,6 +1397,95 @@ body {
 }
 .row-hint code { font-family: ui-monospace, monospace; color: var(--ink-2); }
 .row-hint strong { color: var(--ink-2); }
+
+/* v23.6.0: Sound Alerts table. Each row is a flex line containing
+   sound name, Frequency selector, Try button + status, Used-For
+   selector. Mobile-first: rows wrap to two lines only when the
+   viewport is narrower than the natural width. */
+.sound-alerts-table {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.sa-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.sa-row:last-child { border-bottom: none; }
+.sa-row .sa-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 600;
+  color: var(--ink);
+}
+.sa-row .sa-freq {
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+.sa-row .sa-try-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 70px;
+}
+.sa-row .sa-try {
+  appearance: none;
+  background: var(--amber);
+  color: #0c0a09;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sa-row .sa-try:active { transform: scale(0.96); }
+.sa-row .sa-status {
+  font-size: 9px;
+  text-align: center;
+  color: var(--ink-3);
+  min-height: 11px;
+  line-height: 1.1;
+}
+.sa-row .sa-status.playing { color: var(--amber-2); }
+.sa-row .sa-status.played  { color: var(--green); }
+.sa-row .sa-status.failed  { color: var(--red); }
+.sa-row .sa-usedfor {
+  font-size: 11px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: var(--surface-2, var(--surface));
+  border: 1px solid var(--line);
+  color: var(--ink);
+  max-width: 130px;
+}
+@media (max-width: 460px) {
+  .sa-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-rows: auto auto;
+    row-gap: 4px;
+  }
+  .sa-row .sa-name { grid-column: 1 / 4; }
+  .sa-row .sa-usedfor { max-width: 100%; }
+}
 /* v23.0.1: user toggle to hide every explanatory paragraph at once.
    Driven by the Settings → "Show help text" toggle via a body attribute. */
 body[data-hide-hints="true"] .row-hint { display: none; }

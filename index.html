@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.5.8">
+<link rel="stylesheet" href="styles.css?v=23.6.0">
 </head>
 <body data-theme="light">
 
@@ -208,6 +208,27 @@
       <strong>If tested in an in-app browser (TikTok/Facebook):</strong><br>
       • Open the page in real Safari or Chrome instead.
     </div>
+  </div>
+</div>
+
+<!-- v23.6.0: Sound Alerts settings — 18-row catalogue with per-sound
+     Frequency selector, Try preview, status indicator, and Used-For
+     category. PREVIEW-ONLY frequency: affects Audio.preview repeat /
+     intensity but not the live alert path. -->
+<div class="modal" id="m-sound-alerts">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title">🔔 Sound Alerts</div>
+      <button class="modal-close" data-close>×</button>
+    </div>
+    <div class="row-hint" style="margin-bottom:6px;">
+      <strong>Frequency</strong> controls how the <strong>Try</strong> preview
+      plays: High = 3× firm, Medium = 2× normal, Low = 1× soft. Live
+      alerts continue using their existing rules — this is a preview /
+      tuning surface only.
+    </div>
+    <div id="sound-alerts-table" class="sound-alerts-table"></div>
+    <button class="btn btn-go" data-close style="font-size:15px;padding:14px;margin-top:8px;">← Done</button>
   </div>
 </div>
 
@@ -605,6 +626,9 @@
     </div>
     <input type="file" id="import-file" accept="application/json" style="display:none">
     <button class="btn" id="btn-test-sound">🔊 Sound check</button>
+    <!-- v23.6.0: per-sound Frequency + Used-For + Try preview. PREVIEW-ONLY:
+         no live alert wiring changes. -->
+    <button class="btn" id="btn-sound-alerts">🔔 Sound Alerts</button>
 
     <!-- v22.104: clear cache + hard reload. Useful when the app updates but
          the phone keeps serving old cached JS/CSS. -->
@@ -789,8 +813,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.5.8"></script>
-<script defer src="js/app-ui.js?v=23.5.8"></script>
+<script defer src="js/app-core.js?v=23.6.0"></script>
+<script defer src="js/app-ui.js?v=23.6.0"></script>
 
 </body>
 </html>

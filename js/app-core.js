@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.5.8';
+const APP_VERSION = 'v23.6.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1962,6 +1962,13 @@ const Storage = {
       //   'active' = IntelligenceEngine can suppress legacy alerts
       // Must be explicitly switched. Never silently elevated.
       intelMode: 'legacy',
+      // v23.6.0 — Sound Alerts settings.
+      //   soundAlerts[<soundId>] = { frequency: 'high'|'medium'|'low', usedFor: '<categoryId>' }
+      // Missing entries fall back to per-sound defaults from
+      // SoundCatalogue at render time. PREVIEW-ONLY today: the
+      // frequency value affects Audio.preview repeats/intensity but
+      // not live alert triggering.
+      soundAlerts: {},
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest
@@ -2437,6 +2444,84 @@ const State = {
 };
 
 /* ============================================================
+   2b. SOUND CATALOGUE — v23.6.0 (Phase: Sound Alerts settings)
+   18 sound IDs. Each entry has a label, a Web-Audio ping pattern,
+   and a default category (used-for). Patterns are independent of
+   the legacy Audio.beep patterns so live alert behavior is
+   untouched. SoundCatalogue is read by Audio.preview() only.
+   ============================================================ */
+const SoundUsedFor = [
+  { id: 'speed_limit',       label: 'Speed Limit' },
+  { id: 'speed_camera',      label: 'Speed Camera' },
+  { id: 'hazard',            label: 'Hazard' },
+  { id: 'police',            label: 'Police' },
+  { id: 'road_work',         label: 'Road Work' },
+  { id: 'accident',          label: 'Accident' },
+  { id: 'route_deviation',   label: 'Route Deviation' },
+  { id: 'gps_warning',       label: 'GPS Warning' },
+  { id: 'general_warning',   label: 'General Warning' },
+  { id: 'sos_emergency',     label: 'SOS / Emergency' },
+  { id: 'app_notification',  label: 'App Notification' },
+  { id: 'user_feedback',     label: 'User Feedback' },
+  { id: 'success_feedback',  label: 'Success Feedback' },
+  { id: 'error_feedback',    label: 'Error Feedback' },
+  { id: 'none',              label: 'None' },
+];
+
+const SoundCatalogue = [
+  // ---- Existing 10 (1-10) ----
+  { id: 'speed_camera_beep', label: 'Speed Camera Beep', defaultUsedFor: 'speed_camera',
+    pattern: [{freq:1900,dur:0.12},{freq:2400,dur:0.18}] },
+  { id: 'mobile_camera',     label: 'Mobile Camera', defaultUsedFor: 'speed_camera',
+    pattern: [{freq:1900,dur:0.10},{freq:2200,dur:0.10},{freq:2400,dur:0.14}] },
+  { id: 'pole_camera',       label: 'Pole Camera', defaultUsedFor: 'speed_camera',
+    pattern: [{freq:1700,dur:0.12},{freq:2300,dur:0.20}] },
+  { id: 'spider_camera',     label: 'Spider Camera', defaultUsedFor: 'speed_camera',
+    pattern: [{freq:2000,dur:0.08},{freq:2200,dur:0.08},{freq:2400,dur:0.08},{freq:2600,dur:0.16}] },
+  { id: 'checkpoint',        label: 'Checkpoint', defaultUsedFor: 'police',
+    pattern: [{freq:1500,dur:0.20},{freq:1500,dur:0.20}] },
+  { id: 'speed_change',      label: 'Speed Change Zone', defaultUsedFor: 'speed_limit',
+    pattern: [{freq:1400,dur:0.14},{freq:1900,dur:0.14}] },
+  { id: 'petrol',            label: 'Petrol Chime', defaultUsedFor: 'app_notification',
+    pattern: [{freq:1600,dur:0.22}] },
+  { id: 'gate',              label: 'Gate', defaultUsedFor: 'road_work',
+    pattern: [{freq:1800,dur:0.10},{freq:1800,dur:0.10},{freq:1800,dur:0.10}] },
+  { id: 'warning_pulse',     label: 'Warning Pulse', defaultUsedFor: 'general_warning',
+    pattern: [{freq:1600,dur:0.18},{freq:1600,dur:0.18}] },
+  { id: 'short_siren',       label: 'Short Siren', defaultUsedFor: 'sos_emergency',
+    pattern: [{freq:1400,dur:0.10},{freq:2400,dur:0.10},{freq:1400,dur:0.10},{freq:2400,dur:0.10}] },
+  // ---- New 8 (11-18) ----
+  // SOS Alert: three short, three long, three short (Morse-style)
+  { id: 'sos_alert',         label: 'SOS Alert', defaultUsedFor: 'sos_emergency',
+    pattern: [
+      {freq:2000,dur:0.08},{freq:2000,dur:0.08},{freq:2000,dur:0.08},
+      {freq:2000,dur:0.22},{freq:2000,dur:0.22},{freq:2000,dur:0.22},
+      {freq:2000,dur:0.08},{freq:2000,dur:0.08},{freq:2000,dur:0.08},
+    ] },
+  // Feedback Pop: very brief, non-aggressive
+  { id: 'feedback_pop',      label: 'Feedback Pop', defaultUsedFor: 'user_feedback',
+    pattern: [{freq:1200,dur:0.06}] },
+  // Success Ding: clean rising two-tone
+  { id: 'success_ding',      label: 'Success Ding', defaultUsedFor: 'success_feedback',
+    pattern: [{freq:1500,dur:0.10},{freq:2100,dur:0.16}] },
+  // Error Buzz: short low buzz pattern
+  { id: 'error_buzz',        label: 'Error Buzz', defaultUsedFor: 'error_feedback',
+    pattern: [{freq:300,dur:0.08},{freq:280,dur:0.08},{freq:260,dur:0.10}] },
+  // Notify Drop: soft descending tone
+  { id: 'notify_drop',       label: 'Notify Drop', defaultUsedFor: 'app_notification',
+    pattern: [{freq:1800,dur:0.12},{freq:1400,dur:0.18}] },
+  // Urgent Alarm: more urgent than warning_pulse, less harsh than short_siren
+  { id: 'urgent_alarm',      label: 'Urgent Alarm', defaultUsedFor: 'hazard',
+    pattern: [{freq:2200,dur:0.12},{freq:1700,dur:0.12},{freq:2200,dur:0.12}] },
+  // Soft Tap: minimal low-distraction feedback
+  { id: 'soft_tap',          label: 'Soft Tap', defaultUsedFor: 'user_feedback',
+    pattern: [{freq:900,dur:0.05}] },
+  // System Notice: neutral system notification, different from petrol
+  { id: 'system_notice',     label: 'System Notice', defaultUsedFor: 'app_notification',
+    pattern: [{freq:1700,dur:0.10},{freq:2000,dur:0.10}] },
+];
+
+/* ============================================================
    3. AUDIO
    ============================================================ */
 const Audio = {
@@ -2569,6 +2654,109 @@ const Audio = {
         vibPattern.push(Math.round(p.dur * 1000));
       });
       navigator.vibrate(vibPattern);
+    }
+  },
+
+  /** v23.6.0 — Web-Audio pattern player extracted as a reusable helper.
+   *  Plays ONE pass of a ping pattern. `opts.intensity` is a peakGain
+   *  multiplier (0.55 low / 0.75 medium / 1.0 high). Returns the
+   *  AudioContext "ends-at" time (seconds, relative to AudioContext
+   *  start) so callers can chain repeats without overlap. Pure helper;
+   *  no live-alert wiring changes — Audio.beep still controls every
+   *  alert path. */
+  playPattern(pattern, opts) {
+    const ctx = this.ensure();
+    if (!ctx || !Array.isArray(pattern) || !pattern.length) return null;
+    const intensity = Math.max(0.05, Math.min(1.0,
+      (opts && typeof opts.intensity === 'number') ? opts.intensity : 0.6));
+    const peakGain = 0.6 * (intensity / 0.6); // keep 0.6 as the 'medium' anchor
+    const gap = 0.05;
+    let t = ctx.currentTime;
+    for (const ping of pattern) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = ping.freq;
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.exponentialRampToValueAtTime(peakGain, t + 0.003);
+      gain.gain.setValueAtTime(peakGain, t + ping.dur * 0.7);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + ping.dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + ping.dur + 0.01);
+      t += ping.dur + gap;
+    }
+    return t;
+  },
+
+  /** v23.6.0 — Preview a sound from SoundCatalogue. PREVIEW-ONLY: does
+   *  NOT affect live alert triggers. Frequency option controls repeat
+   *  count + intensity + inter-repeat gap per spec:
+   *    high   → 3 plays · 200 ms gap · intensity 1.0
+   *    medium → 2 plays · 320 ms gap · intensity 0.75 (default)
+   *    low    → 1 play  · n/a       · intensity 0.55
+   *  opts.onStatus(label) is called with 'Buffering…', 'Playing…',
+   *  'Played', or 'Failed' so the caller's row can paint state.
+   *  Single-flight enforced by Audio._previewToken — calling preview
+   *  again cancels the previous run and the previous row's status is
+   *  reset via opts.onCancelPrev() before the new run begins. */
+  _previewToken: 0,
+  _previewCancelPrev: null,
+  cancelPreview() {
+    this._previewToken++;
+    if (typeof this._previewCancelPrev === 'function') {
+      try { this._previewCancelPrev(); } catch (e) {}
+    }
+    this._previewCancelPrev = null;
+  },
+  async preview(soundId, opts) {
+    opts = opts || {};
+    const def = (typeof SoundCatalogue !== 'undefined') ? SoundCatalogue.find(s => s.id === soundId) : null;
+    const onStatus = (typeof opts.onStatus === 'function') ? opts.onStatus : function() {};
+    if (!def) { onStatus('Failed'); return { ok: false, error: 'unknown_sound' }; }
+
+    // Single-flight: bump token + reset prior row first.
+    this._previewToken++;
+    const myToken = this._previewToken;
+    if (typeof this._previewCancelPrev === 'function') {
+      try { this._previewCancelPrev(); } catch (e) {}
+    }
+    this._previewCancelPrev = function() { try { onStatus(''); } catch (e) {} };
+
+    const freq = (opts.frequency || 'medium').toLowerCase();
+    const repeats   = freq === 'high' ? 3 : freq === 'low' ? 1 : 2;
+    const gapMs     = freq === 'high' ? 200 : 320;
+    const intensity = freq === 'high' ? 1.0 : freq === 'low' ? 0.55 : 0.75;
+
+    onStatus('Buffering…');
+    Audio.unlock();
+    const ctx = Audio.ensure();
+    if (!ctx) {
+      onStatus('Failed');
+      if (this._previewToken === myToken) this._previewCancelPrev = null;
+      return { ok: false, error: 'no_audio_context' };
+    }
+
+    onStatus('Playing…');
+    try {
+      const patternDur = def.pattern.reduce((s, p) => s + p.dur + 0.05, 0); // seconds incl. inter-ping gaps
+      for (let r = 0; r < repeats; r++) {
+        if (this._previewToken !== myToken) return { ok: false, cancelled: true };
+        Audio.playPattern(def.pattern, { intensity });
+        const waitMs = Math.round(patternDur * 1000) + (r < repeats - 1 ? gapMs : 0);
+        await new Promise(res => setTimeout(res, waitMs));
+      }
+      if (this._previewToken === myToken) {
+        onStatus('Played');
+        this._previewCancelPrev = null;
+      }
+      return { ok: true };
+    } catch (e) {
+      onStatus('Failed');
+      if (this._previewToken === myToken) this._previewCancelPrev = null;
+      try { logEvent('SOUND', '[SOUND] preview failed: ' + (e && e.message || e), 'err'); } catch (err) {}
+      return { ok: false, error: 'play_failed' };
     }
   },
 

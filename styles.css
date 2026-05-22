@@ -1398,53 +1398,45 @@ body {
 .row-hint code { font-family: ui-monospace, monospace; color: var(--ink-2); }
 .row-hint strong { color: var(--ink-2); }
 
-/* v23.6.0: Sound Alerts table. Each row is a flex line containing
-   sound name, Frequency selector, Try button + status, Used-For
-   selector. Mobile-first: rows wrap to two lines only when the
-   viewport is narrower than the natural width. */
+/* v23.6.5 — Sound Alerts table rewritten with simple stacked flexbox.
+   Replaces the v23.6.3 grid + media-query layout that collapsed to a
+   thin invisible strip in production despite "rendering 18 rows"
+   succeeding. Every row is a self-contained card with all 4 controls
+   stacked vertically: name → Try + status → Frequency → Used For.
+   Works identically on every viewport — no media queries, no grid,
+   no chance of layout collapse. */
 .sound-alerts-table {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 62vh;
+  display: block;            /* avoid flex/grid collapse on the host */
+  max-height: 70vh;
   overflow-y: auto;
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  padding: 4px 0;
+  min-height: 60px;          /* defensive: never zero even if empty */
 }
 .sa-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) auto auto auto;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--line);
-  font-size: 12px;
-}
-.sa-row:last-child { border-bottom: none; }
-.sa-row .sa-name {
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-weight: 600;
-  color: var(--ink);
-}
-.sa-row .sa-freq {
-  font-size: 11px;
-  padding: 3px 6px;
-  border-radius: 6px;
-  background: var(--surface-2, var(--surface));
+  display: block;
+  padding: 10px 10px;
+  margin-bottom: 6px;
   border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  font-size: 13px;
+  min-height: 40px;
+}
+.sa-row:last-child { margin-bottom: 0; }
+.sa-row .sa-name {
+  display: block;
+  font-weight: 700;
   color: var(--ink);
+  margin-bottom: 8px;
+  font-size: 14px;
+  word-break: break-word;
 }
 .sa-row .sa-try-wrap {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 2px;
-  min-width: 70px;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 .sa-row .sa-try {
   appearance: none;
@@ -1452,56 +1444,40 @@ body {
   color: #0c0a09;
   border: 1px solid var(--line-2);
   border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 12px;
+  padding: 6px 14px;
+  font-size: 13px;
   font-weight: 700;
   cursor: pointer;
+  min-width: 70px;
+  flex: 0 0 auto;
 }
 .sa-row .sa-try:active { transform: scale(0.96); }
+.sa-row .sa-try:disabled { opacity: 0.5; cursor: not-allowed; }
 .sa-row .sa-status {
-  font-size: 9px;
-  text-align: center;
+  font-size: 11px;
   color: var(--ink-3);
-  min-height: 11px;
-  line-height: 1.1;
+  line-height: 1.2;
+  min-height: 14px;
+  flex: 1 1 auto;
 }
 .sa-row .sa-status.playing { color: var(--amber-2); }
 .sa-row .sa-status.played  { color: var(--green); }
 .sa-row .sa-status.failed  { color: var(--red); }
+.sa-row .sa-freq,
 .sa-row .sa-usedfor {
-  font-size: 11px;
-  padding: 3px 6px;
+  display: block;
+  width: 100%;
+  font-size: 12px;
+  padding: 6px 8px;
   border-radius: 6px;
   background: var(--surface-2, var(--surface));
   border: 1px solid var(--line);
   color: var(--ink);
-  max-width: 130px;
+  margin-bottom: 6px;
+  appearance: auto;          /* keep native select styling so the
+                                user can tell it's tappable */
 }
-/* v23.6.3 — stacked-card mobile layout for narrow screens. Each row
-   becomes a vertical stack so dropdowns + Try sit comfortably under
-   the sound label. Eliminates horizontal overflow on phones. */
-@media (max-width: 600px) {
-  .sa-row {
-    grid-template-columns: 1fr 1fr;
-    grid-template-areas:
-      "name name"
-      "try  freq"
-      "used used";
-    row-gap: 6px;
-    column-gap: 8px;
-    padding: 8px 8px;
-    border: 1px solid var(--line);
-    border-radius: 8px;
-    background: var(--surface);
-    margin-bottom: 4px;
-  }
-  .sa-row .sa-name      { grid-area: name; white-space: normal; overflow: visible; text-overflow: clip; }
-  .sa-row .sa-try-wrap  { grid-area: try; min-width: 0; flex-direction: row; align-items: center; gap: 8px; }
-  .sa-row .sa-try       { padding: 6px 12px; }
-  .sa-row .sa-freq      { grid-area: freq; }
-  .sa-row .sa-usedfor   { grid-area: used; max-width: 100%; }
-  .sound-alerts-table { padding: 4px; background: transparent; border: none; }
-}
+.sa-row .sa-usedfor { margin-bottom: 0; }
 /* v23.0.1: user toggle to hide every explanatory paragraph at once.
    Driven by the Settings → "Show help text" toggle via a body attribute. */
 body[data-hide-hints="true"] .row-hint { display: none; }

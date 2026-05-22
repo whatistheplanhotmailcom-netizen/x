@@ -444,11 +444,16 @@ const MapView = {
       p && typeof p.lat === 'number' && typeof p.lng === 'number'
     );
     visible.forEach(p => {
-      const passedByGeometry = (myDist != null && dest)
-        ? Utils.distKm(p, dest) > myDist
-        : false;
-      const passedByTracker = State.passedPoints.has(p.id);
-      const passed = passedByGeometry || passedByTracker;
+      // v23.8.7: passed = ACTUALLY driven past (tracker-based), not
+      // "further from destination than the user is" (geometry-based).
+      // The old destination-geometry flag wrongly greyed out every
+      // point that happened to be further from the active destination
+      // than the driver — including all points ahead during a u-turn,
+      // a detour, or any approach from a different direction. With
+      // the v23.8.0 global pool, alert eligibility is no longer
+      // destination-bound, so the geometry flag has no business
+      // muting markers either.
+      const passed = State.passedPoints.has(p.id);
       const cls = ['ra-marker', 't-' + p.type];
       if (passed) cls.push('passed');
       if (p.status === 'no') cls.push('disabled');
@@ -3114,6 +3119,7 @@ const UI = {
         State.lastDistByPoint.clear();
         State.minDistByPoint.clear(); // v22.15
         State.passedPoints.clear();
+        State.passedDistByPoint.clear(); // v23.8.7: re-approach tracker
         State.autoAnnouncedAhead.clear(); // v22.16: re-announce nearest for new route
         State.saveData();
         this.renderRoutesList();

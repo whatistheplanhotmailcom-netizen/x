@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.6';
+const APP_VERSION = 'v23.8.7';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2800,6 +2800,11 @@ const State = {
   // — used to detect "passed" even when geometric dest-check still says ahead.
   minDistByPoint: new Map(),
   passedPoints: new Set(),
+  // v23.8.7: distance (m) at which each passed point was last seen,
+  // used by Alerts.tick to detect re-approach (u-turn / round-trip)
+  // and re-arm the point so it can alert again. Map<pointId, distM>.
+  // Cleared alongside passedPoints on trip start / destination change.
+  passedDistByPoint: new Map(),
   // v22.16: point IDs that have been auto-announced as "next-ahead" this trip,
   // so we don't repeat the same announcement on every tick.
   autoAnnouncedAhead: new Set(),
@@ -3592,6 +3597,7 @@ const GPS = {
     State.lastDistByPoint.clear();
     State.minDistByPoint.clear(); // v22.15: reset passed-detection tracker
     State.passedPoints.clear();
+    State.passedDistByPoint.clear(); // v23.8.7: re-approach tracker
     State.autoAnnouncedAhead.clear(); // v22.16: clear auto-announce history
     State.hereAnnouncedPoints.clear(); // v22.76: clear here-now history
     State.speedAlertWasOver = false;
@@ -4523,9 +4529,49 @@ const Alerts = {
     State.data.points.forEach(p => {
       if (!p || p.status === 'no') return;
       if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return;
-      if (State.passedPoints.has(p.id)) return;
 
       const distKm = Utils.distKm(State.pos, p);
+      // v23.8.7: re-approach detection for u-turns / round trips.
+      // If a point was marked passed earlier in the session but the
+      // driver is now meaningfully closer than they were when it was
+      // marked, treat it as a fresh approach: clear the passed flag,
+      // re-arm threshold markers, clear here-now / auto-announce
+      // history, and let the rest of the loop drive new alerts.
+      if (State.passedPoints.has(p.id)) {
+        const distM = distKm * 1000;
+        const recordedM = State.passedDistByPoint.get(p.id);
+        if (recordedM == null) {
+          // First tick since this point was marked passed — seed the
+          // baseline distance and continue muting it for now.
+          State.passedDistByPoint.set(p.id, distM);
+          return;
+        }
+        // User keeps moving away — track the new maximum so we
+        // re-arm only on a genuine drop.
+        if (distM > recordedM) {
+          State.passedDistByPoint.set(p.id, distM);
+          return;
+        }
+        // Approaching: meaningfully closer than the last "moving away"
+        // sample AND inside a reasonable re-engage envelope.
+        if (distM < recordedM - 50 && distM < 800) {
+          State.passedPoints.delete(p.id);
+          State.passedDistByPoint.delete(p.id);
+          State.alertedMarkers.delete(p.id);
+          State.lastDistByPoint.delete(p.id);
+          State.minDistByPoint.delete(p.id);
+          State.hereAnnouncedPoints.delete(p.id);
+          State.autoAnnouncedAhead.delete(p.id);
+          logEvent('ALERT',
+            `re-approach: ${p.name || Utils.typeLabel(p.type)} @ ${Math.round(distM)}m (was ${Math.round(recordedM)}m) — re-armed`,
+            'ok');
+          // Fall through to the normal loop so the point is treated
+          // as a fresh focused candidate from this tick onward.
+        } else {
+          return; // still passed
+        }
+      }
+
       if (distKm > 5) {
         // Too far — clear stale state
         State.lastDistByPoint.delete(p.id);

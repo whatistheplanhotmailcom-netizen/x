@@ -788,6 +788,21 @@ body {
   flex-direction: column;
   gap: 6px;
   z-index: 500;
+  /* v23.5.6: 60% transparent (40% opaque) container. opacity applies to
+     the visual layer only — taps still pass through normally because
+     pointer-events default to 'auto'. On hover / touch the column
+     restores to full opacity so the user sees what they're aiming at. */
+  opacity: 0.4;
+  transition: opacity 0.18s ease-out;
+}
+.map-overlay-btns:hover,
+.map-overlay-btns:focus-within,
+.map-overlay-btns:active {
+  opacity: 1;
+}
+/* v23.5.6: visibility toggle for the 👁️ master eye button (#3). */
+.map-overlay-btns.hidden-by-eye {
+  display: none;
 }
 .map-btn {
   appearance: none;
@@ -857,6 +872,33 @@ body {
   box-shadow: var(--shadow);
 }
 .compass-btn:active { transform: scale(0.92); }
+/* v23.5.6: master visibility toggle (👁️). Sits directly under the
+   compass, same size and surface. Stays visible regardless of whether
+   .map-overlay-btns is hidden. The active class is painted by JS when
+   the right-side controls are currently hidden. */
+.eye-btn {
+  position: absolute;
+  top: 54px;   /* compass top (8) + compass height (38) + 8px gap */
+  right: 8px;
+  width: 38px;
+  height: 38px;
+  z-index: 500;
+  border-radius: 50%;
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+  box-shadow: var(--shadow);
+}
+.eye-btn:active { transform: scale(0.92); }
+.eye-btn.controls-hidden {
+  background: rgba(245, 158, 11, 0.16);  /* amber tint when hiding */
+  border-color: var(--amber-2);
+}
 .compass-rose {
   width: 30px;
   height: 30px;
@@ -1625,6 +1667,24 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   background: var(--surface) !important;
   color: var(--ink) !important;
   border-color: var(--line) !important;
+}
+/* v23.5.6: zoom controls — softened (50% transparent) and 25% larger so
+   they're still easy to tap while driving but visually less heavy than
+   the default. transform-origin top-left so the scaled group stays
+   inside the MapLibre top-left anchor. Background opacity applied to
+   the BUTTON (not the wrapper) so .map-overlay-btns and other map
+   children retain their own opacity rules. */
+.maplibregl-ctrl-top-left .maplibregl-ctrl-group {
+  transform: scale(1.25);
+  transform-origin: top left;
+  opacity: 0.5;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+.maplibregl-ctrl-top-left .maplibregl-ctrl-group:hover,
+.maplibregl-ctrl-top-left .maplibregl-ctrl-group:focus-within,
+.maplibregl-ctrl-top-left .maplibregl-ctrl-group:active {
+  opacity: 1; /* restore on interaction so the tap target is fully visible */
 }
 /* MapLibre wraps custom marker DOM in .maplibregl-marker — ensure our
    .ra-marker / .ra-current styling isn't broken by the wrapper */

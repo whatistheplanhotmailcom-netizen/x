@@ -180,7 +180,13 @@ const MapView = {
         // Disable pitch (3D tilt) — we want flat top-down for driving
         pitchWithRotate: false,
         dragRotate: false,    // no 2-finger drag rotation (we control bearing)
-        touchPitch: false,    // no 2-finger pitch
+        // v23.5.6: enable native MapLibre two-finger pitch gesture
+        // (Google-Maps-style). Setting this to true wires the existing
+        // built-in TouchPitchHandler; no fake CSS rotation, no marker
+        // misalignment, no GPS coord change. The existing 2D/3D toggle
+        // (#btn-pitch) and setPitchMode() are unchanged — the user can
+        // still snap to 0° / 60° via that button.
+        touchPitch: true,
         // Snap bearing to north when within this many degrees on user-stop.
         // 0 means never snap — we want auto-rotate to "stick" at any bearing.
         bearingSnap: 0,
@@ -3259,6 +3265,20 @@ function wire() {
     const wasBearing = MapView.m.getBearing();
     MapView.m.easeTo({ bearing: 0, duration: 500 });
     logEvent('MAP', `Compass reset (was ${wasBearing.toFixed(1)}° → 0°)`);
+  };
+  // v23.5.6: 👁️ master toggle for the right-side .map-overlay-btns
+  // column. In-memory state only — no localStorage write, no settings
+  // schema change. Zoom (MapLibre top-left), compass, follow-pill, GPS
+  // marker, route line, and all alert UI remain visible at all times.
+  const _btnEye = document.getElementById('btn-eye-toggle');
+  if (_btnEye) _btnEye.onclick = () => {
+    const col = document.querySelector('.map-overlay-btns');
+    if (!col) return;
+    const willHide = !col.classList.contains('hidden-by-eye');
+    col.classList.toggle('hidden-by-eye', willHide);
+    _btnEye.classList.toggle('controls-hidden', willHide);
+    _btnEye.setAttribute('aria-pressed', willHide ? 'true' : 'false');
+    logEvent('MAP', `[MAP] right-side controls ${willHide ? 'hidden' : 'shown'}`);
   };
 
   // v22.54: nav-mode toggle — turns auto-rotation on/off

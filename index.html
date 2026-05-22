@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.6.7">
+<link rel="stylesheet" href="styles.css?v=23.6.8">
 </head>
 <body data-theme="light">
 
@@ -365,6 +365,19 @@
         <button data-status="maybe">Maybe</button>
         <button data-status="no">Off</button>
       </div>
+    </div>
+    <!-- v23.6.8: per-point sound-alert mapping. Shows which sound from
+         the Sound Alerts catalogue is currently assigned to this
+         point's type (alert group). Changing it reassigns — any other
+         sound previously mapped to this type is cleared so only one
+         sound is mapped per type at a time. -->
+    <div class="row" id="e-soundalert-row">
+      <span class="label">Sound alert</span>
+      <select id="e-soundalert" aria-label="Sound for this point type"></select>
+      <button class="btn" id="e-soundalert-try" style="padding:4px 12px;font-size:11px;flex:0 0 auto;">▶</button>
+    </div>
+    <div class="row-hint" id="e-soundalert-hint" style="font-size:10px;color:var(--ink-3);margin-bottom:4px;">
+      Mapped to this point's <strong>type</strong> (alert group). Manage the full Sound Alerts catalogue in Settings → Sound Alerts.
     </div>
     <div class="row"><span class="label">Lat</span><input type="number" id="e-lat" step="0.00001"></div>
     <div class="row"><span class="label">Lng</span><input type="number" id="e-lng" step="0.00001"></div>
@@ -825,8 +838,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.6.7"></script>
-<script defer src="js/app-ui.js?v=23.6.7"></script>
+<script defer src="js/app-core.js?v=23.6.8"></script>
+<script defer src="js/app-ui.js?v=23.6.8"></script>
 
 </body>
 </html>

@@ -2671,8 +2671,84 @@ const UI = {
       b.classList.toggle('active', b.dataset.roadtype === (p.roadType || 'unknown')));
     const cbEl = document.getElementById('e-capbearing-val');
     if (cbEl) cbEl.textContent = (typeof p.captureBearing === 'number') ? p.captureBearing.toFixed(0) + '°' : '—';
+    // v23.6.8: populate the Sound-alert dropdown with the sound
+    // currently mapped to this point's type.
+    this.renderEditPointSoundAlert(p.type);
     this.togglePEFields();
     this.openModal('m-edit');
+  },
+
+  /** v23.6.8 — find which SoundCatalogue sound is currently mapped
+   *  to a given point type. Reads State.settings.soundAlerts; falls
+   *  back to each sound's defaultUsedFor when no saved entry exists.
+   *  Returns the soundId (string) or '' when no sound is mapped. */
+  findSoundForType(type) {
+    if (!type || typeof SoundCatalogue === 'undefined') return '';
+    const saved = (State.settings && State.settings.soundAlerts) || {};
+    for (const s of SoundCatalogue) {
+      const entry = saved[s.id] || {};
+      const usedRaw = entry.usedFor || s.defaultUsedFor || 'none';
+      const used = (typeof migrateSoundUsedFor === 'function')
+        ? migrateSoundUsedFor(usedRaw)
+        : usedRaw;
+      if (used === type) return s.id;
+    }
+    return '';
+  },
+
+  /** v23.6.8 — paint the Edit-Point sound-alert dropdown. Lists "(none)"
+   *  + all 18 catalogue sounds. The current mapping for `type` is
+   *  preselected so the user sees which sound this point's group plays. */
+  renderEditPointSoundAlert(type) {
+    const sel = document.getElementById('e-soundalert');
+    const hint = document.getElementById('e-soundalert-hint');
+    if (!sel) return;
+    const catalogue = (typeof SoundCatalogue !== 'undefined' && Array.isArray(SoundCatalogue))
+      ? SoundCatalogue : [];
+    const current = this.findSoundForType(type);
+    const opts = ['<option value="">— (no sound)</option>'];
+    for (const s of catalogue) {
+      const safeId = Utils.escapeHtml(s.id);
+      const safeLabel = Utils.escapeHtml(s.label || s.id);
+      opts.push(`<option value="${safeId}"${s.id === current ? ' selected' : ''}>${safeLabel}</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    if (hint) {
+      const typeLabel = (Utils.typeLabel && type) ? Utils.typeLabel(type) : type;
+      const note = current
+        ? `Type <strong>${Utils.escapeHtml(typeLabel)}</strong> → currently plays <strong>${Utils.escapeHtml((catalogue.find(s => s.id === current) || {}).label || current)}</strong>. Change above to remap.`
+        : `Type <strong>${Utils.escapeHtml(typeLabel)}</strong> has no sound assigned. Pick one above to map.`;
+      hint.innerHTML = note + ' Manage the full catalogue in Settings → Sound Alerts.';
+    }
+  },
+
+  /** v23.6.8 — assign `soundId` (or '' for "none") to alert-group
+   *  `type` by setting that sound's usedFor = type. Any OTHER sounds
+   *  previously mapped to this type are cleared (set to usedFor:
+   *  'none') so only one sound is mapped per type at a time. */
+  assignSoundToType(soundId, type) {
+    if (!type) return;
+    if (!State.settings.soundAlerts || typeof State.settings.soundAlerts !== 'object') {
+      State.settings.soundAlerts = {};
+    }
+    const saved = State.settings.soundAlerts;
+    const catalogue = (typeof SoundCatalogue !== 'undefined' && Array.isArray(SoundCatalogue))
+      ? SoundCatalogue : [];
+    // 1. Clear any existing mapping of this type (only one sound per type)
+    for (const s of catalogue) {
+      const entry = saved[s.id] || {};
+      const usedRaw = entry.usedFor || s.defaultUsedFor || 'none';
+      const used = (typeof migrateSoundUsedFor === 'function') ? migrateSoundUsedFor(usedRaw) : usedRaw;
+      if (used === type && s.id !== soundId) {
+        saved[s.id] = Object.assign({}, entry, { usedFor: 'none' });
+      }
+    }
+    // 2. Set the new mapping (if any)
+    if (soundId) {
+      saved[soundId] = Object.assign({}, saved[soundId] || {}, { usedFor: type });
+    }
+    State.saveSettings();
+    try { logEvent('SOUND', `[SOUND] mapped ${soundId || '(none)'} → ${type} via Edit Point`, 'ok'); } catch (e) {}
   },
 
   togglePEFields() {
@@ -3590,7 +3666,33 @@ function wire() {
     UI.finalizeCapture();
   };
 
-  document.getElementById('e-type').onchange = () => UI.togglePEFields();
+  document.getElementById('e-type').onchange = () => {
+    UI.togglePEFields();
+    // v23.6.8: when type changes in Edit Point, repaint the
+    // Sound-alert dropdown so it shows the mapping for the NEW type.
+    const newType = document.getElementById('e-type').value;
+    UI.renderEditPointSoundAlert(newType);
+  };
+  // v23.6.8: Sound-alert dropdown — reassigns the chosen sound to
+  // this point's type. Empty value = clear any sound mapping for the
+  // type. Changes commit immediately to State.settings.soundAlerts.
+  const _eSA = document.getElementById('e-soundalert');
+  if (_eSA) _eSA.onchange = () => {
+    const type = document.getElementById('e-type').value;
+    const soundId = _eSA.value || '';
+    UI.assignSoundToType(soundId, type);
+    UI.renderEditPointSoundAlert(type); // refresh hint text
+  };
+  // v23.6.8: Try button previews the currently-selected sound at
+  // Medium frequency. Uses the same Audio.preview path as Settings.
+  const _eSATry = document.getElementById('e-soundalert-try');
+  if (_eSATry) _eSATry.onclick = () => {
+    const soundId = (document.getElementById('e-soundalert') || {}).value || '';
+    if (!soundId) return;
+    Audio.unlock();
+    try { logEvent('SOUND', `[SOUND] try ${soundId} @ medium (from Edit Point)`); } catch (e) {}
+    Audio.preview(soundId, { frequency: 'medium' });
+  };
   document.querySelectorAll('#e-side-opts button').forEach(b =>
     b.onclick = () => document.querySelectorAll('#e-side-opts button').forEach(x => x.classList.toggle('active', x === b))
   );

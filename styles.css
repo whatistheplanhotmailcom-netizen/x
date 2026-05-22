@@ -1398,19 +1398,21 @@ body {
 .row-hint code { font-family: ui-monospace, monospace; color: var(--ink-2); }
 .row-hint strong { color: var(--ink-2); }
 
-/* v23.6.5 — Sound Alerts table rewritten with simple stacked flexbox.
-   Replaces the v23.6.3 grid + media-query layout that collapsed to a
-   thin invisible strip in production despite "rendering 18 rows"
-   succeeding. Every row is a self-contained card with all 4 controls
-   stacked vertically: name → Try + status → Frequency → Used For.
-   Works identically on every viewport — no media queries, no grid,
-   no chance of layout collapse. */
+/* v23.6.6 — Sound Alerts table.
+   Stacked flexbox per row. NO inner scroll — the modal-card already
+   scrolls the whole Settings page, and nesting a second scroll
+   inside it squeezed the table to ~one-row-tall in real iOS Safari
+   (the user's "very tiny service area" report). Letting the table
+   grow naturally lets the user scroll through all 18 rows via the
+   modal's own overflow-y. */
 .sound-alerts-table {
-  display: block;            /* avoid flex/grid collapse on the host */
-  max-height: 70vh;
-  overflow-y: auto;
+  display: block;
   padding: 4px 0;
-  min-height: 60px;          /* defensive: never zero even if empty */
+  /* explicitly NOT max-height + NOT overflow-y so the table
+     expands to its content height; the parent .modal-card owns
+     scrolling. flex-shrink: 0 keeps the table from being
+     squeezed when the modal is also a flex column. */
+  flex-shrink: 0;
 }
 .sa-row {
   display: block;
@@ -1421,6 +1423,7 @@ body {
   background: var(--surface);
   font-size: 13px;
   min-height: 40px;
+  flex-shrink: 0;
 }
 .sa-row:last-child { margin-bottom: 0; }
 .sa-row .sa-name {

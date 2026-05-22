@@ -3069,6 +3069,14 @@ const UI = {
   },
 
   syncSettings() {
+    // v23.6.4: render the Sound Alerts table from the syncSettings path
+    // too. Wire() also calls it on the settings click, but having it
+    // here means even a cached-JS / cache-mismatch scenario (where
+    // wire's click handler is stale) still populates the inline table
+    // through this path. Defensive against future timing bugs.
+    try { this.renderSoundAlerts(); } catch (e) {
+      try { logEvent('SOUND', '[SOUND] render via syncSettings threw: ' + (e && e.message || e), 'err'); } catch (err) {}
+    }
     // v22.26: scope to settings buttons only — bare [data-theme] also matches <body>
     document.querySelectorAll('#theme-opts [data-theme]').forEach(b =>
       b.classList.toggle('active', b.dataset.theme === State.settings.theme));
@@ -4172,6 +4180,12 @@ function boot() {
       UI.applyOfflineIndicator();
     });
     wire();
+    // v23.6.4: pre-populate the Sound Alerts inline table at boot so it's
+    // ready before the user even opens Settings. Robust against future
+    // wire/sync timing bugs.
+    try { UI.renderSoundAlerts(); } catch (e) {
+      try { logEvent('SOUND', '[SOUND] boot render threw: ' + (e && e.message || e), 'err'); } catch (err) {}
+    }
     // v22.82: try to subscribe to the device compass. iOS will defer the
     // actual permission request to the first user tap.
     GPS.setupDeviceOrientation();

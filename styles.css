@@ -64,18 +64,17 @@ body {
   /* v22.58: single-column outer grid. .map-row now contains map + actions
      + tools rail; the rail extends from the top of the map down to the
      bottom of the action buttons.
-     v23.5.5: added a 5th auto row for the new .road-bar inserted in
-     v23.5.4 — without it, .stats and .map-row mis-aligned with their
-     intended track and the SPEED + NEXT AHEAD cards collapsed.
+     v23.5.8: collapsed the separate .route-bar and .road-bar tracks
+     into a single .topinfo-row that hosts both cards side-by-side
+     (75% road / 25% destination). Back to 6 rows total.
      Rows:
        1. .topbar             auto
-       2. .route-bar          auto
-       3. .road-bar           auto   ← NEW (v23.5.4 element)
-       4. .diag-strip         auto
-       5. .stats              auto
-       6. .map-row            1fr   ← map + actions + rail live here
-       7. status line         auto */
-  grid-template-rows: auto auto auto auto auto 1fr auto;
+       2. .topinfo-row        auto   ← road (75%) + destination (25%)
+       3. .diag-strip         auto
+       4. .stats              auto
+       5. .map-row            1fr   ← map + actions + rail live here
+       6. status line         auto */
+  grid-template-rows: auto auto auto auto 1fr auto;
   gap: 8px;
   position: relative;
 }
@@ -216,10 +215,45 @@ body {
 .icon-btn:active { transform: scale(0.92); }
 
 /* ROUTE BAR */
+/* v23.5.8: one-row wrapper for the road name + destination cards.
+   Grid 3fr / 1fr produces a clean 75% / 25% split after the gap is
+   subtracted; minmax(0, …) lets each child shrink and ellipsis-truncate
+   instead of forcing the row to grow. flex-wrap is irrelevant because
+   this is a grid, not flex — but each child still owns nowrap on text. */
+.topinfo-row {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 1fr);
+  gap: 6px;
+  min-width: 0;
+}
+.topinfo-row > .road-bar,
+.topinfo-row > .route-bar {
+  margin-top: 0;
+  min-width: 0;
+}
 .route-bar {
   display: grid;
   grid-template-columns: 1fr;
   gap: 6px;
+  min-width: 0;
+}
+/* v23.5.8: destination card now lives in a narrow 25%-width cell, so
+   the button must let its inner #route-name span ellipsis-truncate
+   instead of stretching the cell. */
+.topinfo-row .route-current {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.topinfo-row .route-current > #route-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topinfo-row .route-current > .arrow {
+  flex: 0 0 auto;
 }
 /* v23.5.4: compact ROAD row under the destination bar. One line only;
    ellipsis on overflow; mobile-friendly height (≈ same as a single
@@ -229,7 +263,8 @@ body {
   align-items: center;
   gap: 8px;
   padding: 3px 10px;
-  margin-top: 4px;
+  /* v23.5.8: margin-top removed — vertical spacing now comes from the
+     outer .app grid gap. .topinfo-row supplies horizontal gap. */
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -1722,7 +1757,7 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   .route-current { padding: 3px 10px; font-size: 12px; }
   .diag-strip { font-size: 9px; padding: 2px 5px; line-height: 1.2; }
   /* v23.5.4: ROAD row compaction matches the same ultra-narrow profile. */
-  .road-bar { padding: 2px 8px; font-size: 10px; margin-top: 3px; }
+  .road-bar { padding: 2px 8px; font-size: 10px; }  /* v23.5.8: drop margin-top — wrapper supplies spacing */
   .road-bar .road-label { font-size: 8px; }
   /* Speed + Next-ahead cards much smaller */
   .stat-card { padding: 4px 6px; }

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.6.0';
+const APP_VERSION = 'v23.6.1';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2457,23 +2457,122 @@ const State = {
    the legacy Audio.beep patterns so live alert behavior is
    untouched. SoundCatalogue is read by Audio.preview() only.
    ============================================================ */
-const SoundUsedFor = [
-  { id: 'speed_limit',       label: 'Speed Limit' },
-  { id: 'speed_camera',      label: 'Speed Camera' },
-  { id: 'hazard',            label: 'Hazard' },
-  { id: 'police',            label: 'Police' },
-  { id: 'road_work',         label: 'Road Work' },
-  { id: 'accident',          label: 'Accident' },
-  { id: 'route_deviation',   label: 'Route Deviation' },
-  { id: 'gps_warning',       label: 'GPS Warning' },
-  { id: 'general_warning',   label: 'General Warning' },
-  { id: 'sos_emergency',     label: 'SOS / Emergency' },
-  { id: 'app_notification',  label: 'App Notification' },
-  { id: 'user_feedback',     label: 'User Feedback' },
-  { id: 'success_feedback',  label: 'Success Feedback' },
-  { id: 'error_feedback',    label: 'Error Feedback' },
-  { id: 'none',              label: 'None' },
+/* v23.6.1 — Sound Alerts "Used For" mapping rebuilt against the real
+ * X capture/alert type keys.
+ *
+ *   - Real captured point.type keys come from Utils.typeLabel(t)
+ *     (app-core.js:85) — the single source of truth. The 10 valid
+ *     point.type values are listed in CAPTURED_ALERT_TYPES below.
+ *   - App / system targets are stable reserved keys for future
+ *     non-captured sound events (route, GPS, storage, feedback). They
+ *     are NOT wired to any live behavior in this task.
+ *
+ * Display labels for captured alerts come straight from Utils.typeLabel
+ * so they stay in sync with the rest of the app — except for "other",
+ * which uses a Sound-Alerts-local label "Custom / Other Captured
+ * Alert" for clarity (without touching Utils.typeLabel).
+ *
+ * Saved values are always the internal key (e.g. "speed_change"), never
+ * a display label.
+ */
+const CAPTURED_ALERT_TYPES = [
+  'petrol', 'checkpoint',
+  'speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera',
+  'speed_change', 'gate', 'traffic_light', 'other',
 ];
+
+const SoundUsedForGroups = [
+  // "None" sits alone at the top, outside any optgroup.
+  { id: '_none', label: '', items: [
+    { id: 'none', label: 'None' },
+  ]},
+  { id: '_captured', label: 'Captured Alerts', items: CAPTURED_ALERT_TYPES.map(t => ({
+    id: t,
+    label: t === 'other' ? 'Custom / Other Captured Alert' : (Utils.typeLabel(t) || t),
+  })) },
+  { id: '_nav', label: 'Navigation / Route', items: [
+    { id: 'route_deviation',    label: 'Route Deviation' },
+    { id: 'reroute_completed',  label: 'Reroute Completed' },
+    { id: 'destination_near',   label: 'Destination Near' },
+  ]},
+  { id: '_gps', label: 'GPS / Sensor', items: [
+    { id: 'gps_weak_signal',    label: 'GPS Weak Signal' },
+    { id: 'gps_lost_offline',   label: 'GPS Lost / Offline' },
+    { id: 'gps_recovered',      label: 'GPS Recovered' },
+    { id: 'heading_weak',       label: 'Heading Weak' },
+  ]},
+  { id: '_system', label: 'Storage / System', items: [
+    { id: 'storage_warning',         label: 'Storage Warning' },
+    { id: 'backup_restore_warning',  label: 'Backup / Restore Warning' },
+    { id: 'app_notification',        label: 'App Notification' },
+    { id: 'system_notice',           label: 'System Notice' },
+    { id: 'sos_emergency',           label: 'SOS / Emergency' },
+  ]},
+  { id: '_feedback', label: 'Feedback', items: [
+    { id: 'user_feedback',     label: 'User Feedback' },
+    { id: 'success_feedback',  label: 'Success Feedback' },
+    { id: 'error_feedback',    label: 'Error Feedback' },
+    { id: 'capture_feedback',  label: 'Capture Feedback' },
+  ]},
+];
+
+// Flat set of every valid Used-For key — used by the migration helper
+// to recognize an already-migrated value.
+const SOUND_USEDFOR_VALID_KEYS = (function() {
+  const out = new Set();
+  for (const g of SoundUsedForGroups) for (const it of g.items) out.add(it.id);
+  return out;
+})();
+
+// Legacy generic labels and pre-v23.6.1 lowercase keys → new keys.
+// Migrate-on-read only — saved entries are NOT proactively rewritten.
+const SOUND_USEDFOR_LEGACY_MAP = {
+  // user-facing label strings (parallel agent's capitalized values)
+  'Speed Limit':      'speed_change',
+  'Speed Camera':     'speed_camera',
+  'Hazard':           'none',
+  'Police':           'none',
+  'Road Work':        'none',
+  'Accident':         'none',
+  'Route Deviation':  'route_deviation',
+  'GPS Warning':      'gps_weak_signal',
+  'General Warning':  'app_notification',
+  'SOS / Emergency':  'sos_emergency',
+  'App Notification': 'app_notification',
+  'User Feedback':    'user_feedback',
+  'Success Feedback': 'success_feedback',
+  'Error Feedback':   'error_feedback',
+  'Non':              'none',
+  'None':             'none',
+  // pre-v23.6.1 lowercase generic keys (my own previous impl)
+  'speed_limit':     'speed_change',
+  'hazard':          'none',
+  'police':          'none',
+  'road_work':       'none',
+  'accident':        'none',
+  'general_warning': 'app_notification',
+  'gps_warning':     'gps_weak_signal',
+};
+
+/** Migrate a saved usedFor value to the new key space. Idempotent on
+ *  already-valid keys. Returns "none" + logs for unrecognized values. */
+function migrateSoundUsedFor(value) {
+  if (value == null || value === '') return 'none';
+  if (SOUND_USEDFOR_VALID_KEYS.has(value)) return value;
+  const mapped = SOUND_USEDFOR_LEGACY_MAP[value];
+  if (mapped) return mapped;
+  try { logEvent('SOUND', '[SOUND] unmapped legacy usedFor: ' + value, 'err'); } catch (e) {}
+  return 'none';
+}
+
+/** Normalize the saved frequency value. Accepts case-insensitive
+ *  'high'|'medium'|'low' (and parallel-agent's 'High'/'Medium'/'Low').
+ *  Falls back to 'medium' on anything else. */
+function normalizeSoundFrequency(value) {
+  if (!value) return 'medium';
+  const s = String(value).toLowerCase();
+  return (s === 'high' || s === 'medium' || s === 'low') ? s : 'medium';
+}
 
 const SoundCatalogue = [
   // ---- Existing 10 (1-10) ----
@@ -2485,15 +2584,15 @@ const SoundCatalogue = [
     pattern: [{freq:1700,dur:0.12},{freq:2300,dur:0.20}] },
   { id: 'spider_camera',     label: 'Spider Camera', defaultUsedFor: 'speed_camera',
     pattern: [{freq:2000,dur:0.08},{freq:2200,dur:0.08},{freq:2400,dur:0.08},{freq:2600,dur:0.16}] },
-  { id: 'checkpoint',        label: 'Checkpoint', defaultUsedFor: 'police',
+  { id: 'checkpoint',        label: 'Checkpoint', defaultUsedFor: 'checkpoint',
     pattern: [{freq:1500,dur:0.20},{freq:1500,dur:0.20}] },
-  { id: 'speed_change',      label: 'Speed Change Zone', defaultUsedFor: 'speed_limit',
+  { id: 'speed_change',      label: 'Speed Change Zone', defaultUsedFor: 'speed_change',
     pattern: [{freq:1400,dur:0.14},{freq:1900,dur:0.14}] },
-  { id: 'petrol',            label: 'Petrol Chime', defaultUsedFor: 'app_notification',
+  { id: 'petrol',            label: 'Petrol Chime', defaultUsedFor: 'petrol',
     pattern: [{freq:1600,dur:0.22}] },
-  { id: 'gate',              label: 'Gate', defaultUsedFor: 'road_work',
+  { id: 'gate',              label: 'Gate', defaultUsedFor: 'gate',
     pattern: [{freq:1800,dur:0.10},{freq:1800,dur:0.10},{freq:1800,dur:0.10}] },
-  { id: 'warning_pulse',     label: 'Warning Pulse', defaultUsedFor: 'general_warning',
+  { id: 'warning_pulse',     label: 'Warning Pulse', defaultUsedFor: 'app_notification',
     pattern: [{freq:1600,dur:0.18},{freq:1600,dur:0.18}] },
   { id: 'short_siren',       label: 'Short Siren', defaultUsedFor: 'sos_emergency',
     pattern: [{freq:1400,dur:0.10},{freq:2400,dur:0.10},{freq:1400,dur:0.10},{freq:2400,dur:0.10}] },
@@ -2518,13 +2617,13 @@ const SoundCatalogue = [
   { id: 'notify_drop',       label: 'Notify Drop', defaultUsedFor: 'app_notification',
     pattern: [{freq:1800,dur:0.12},{freq:1400,dur:0.18}] },
   // Urgent Alarm: more urgent than warning_pulse, less harsh than short_siren
-  { id: 'urgent_alarm',      label: 'Urgent Alarm', defaultUsedFor: 'hazard',
+  { id: 'urgent_alarm',      label: 'Urgent Alarm', defaultUsedFor: 'app_notification',
     pattern: [{freq:2200,dur:0.12},{freq:1700,dur:0.12},{freq:2200,dur:0.12}] },
   // Soft Tap: minimal low-distraction feedback
   { id: 'soft_tap',          label: 'Soft Tap', defaultUsedFor: 'user_feedback',
     pattern: [{freq:900,dur:0.05}] },
   // System Notice: neutral system notification, different from petrol
-  { id: 'system_notice',     label: 'System Notice', defaultUsedFor: 'app_notification',
+  { id: 'system_notice',     label: 'System Notice', defaultUsedFor: 'system_notice',
     pattern: [{freq:1700,dur:0.10},{freq:2000,dur:0.10}] },
 ];
 

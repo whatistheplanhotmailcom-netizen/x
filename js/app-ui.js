@@ -2219,15 +2219,38 @@ const UI = {
     }
     const saved = (State.settings.soundAlerts && typeof State.settings.soundAlerts === 'object')
       ? State.settings.soundAlerts : {};
-    // Used-For options shared HTML
-    const usedForOptions = (typeof SoundUsedFor !== 'undefined' ? SoundUsedFor : [{ id: 'none', label: 'None' }])
-      .map(u => `<option value="${Utils.escapeHtml(u.id)}">${Utils.escapeHtml(u.label)}</option>`)
-      .join('');
+
+    // v23.6.1: build the Used-For dropdown from SoundUsedForGroups using
+    // native <optgroup>. The first group (id '_none') is rendered as a
+    // bare <option> so "None" sits alone above the labelled groups.
+    const usedForGroups = (typeof SoundUsedForGroups !== 'undefined' && Array.isArray(SoundUsedForGroups))
+      ? SoundUsedForGroups
+      : [{ id: '_none', label: '', items: [{ id: 'none', label: 'None' }] }];
+
+    const buildUsedForSelect = (id, label, selectedKey) => {
+      const safeId = Utils.escapeHtml(id);
+      const safeLabel = Utils.escapeHtml(label);
+      const innerOpts = usedForGroups.map(g => {
+        const opts = g.items.map(it => {
+          const sel = (it.id === selectedKey) ? ' selected' : '';
+          return `<option value="${Utils.escapeHtml(it.id)}"${sel}>${Utils.escapeHtml(it.label)}</option>`;
+        }).join('');
+        if (!g.label) return opts; // ungrouped (the None group)
+        return `<optgroup label="${Utils.escapeHtml(g.label)}">${opts}</optgroup>`;
+      }).join('');
+      return `<select class="sa-usedfor" data-sa-usedfor="${safeId}" aria-label="Used-For for ${safeLabel}">${innerOpts}</select>`;
+    };
 
     host.innerHTML = SoundCatalogue.map((s, i) => {
       const entry = saved[s.id] || {};
-      const freq = entry.frequency || 'medium';
-      const used = entry.usedFor || s.defaultUsedFor || 'none';
+      // v23.6.1: migrate legacy / case-mismatched saved values on read.
+      const freq = (typeof normalizeSoundFrequency === 'function')
+        ? normalizeSoundFrequency(entry.frequency)
+        : (entry.frequency || 'medium');
+      const usedRaw = entry.usedFor || s.defaultUsedFor || 'none';
+      const used = (typeof migrateSoundUsedFor === 'function')
+        ? migrateSoundUsedFor(usedRaw)
+        : usedRaw;
       const num = i + 1;
       return `<div class="sa-row" data-sa-id="${Utils.escapeHtml(s.id)}">
         <div class="sa-name" title="${Utils.escapeHtml(s.label)}">${num}. ${Utils.escapeHtml(s.label)}</div>
@@ -2240,15 +2263,7 @@ const UI = {
           <button class="sa-try" data-sa-try="${Utils.escapeHtml(s.id)}">Try</button>
           <div class="sa-status" data-sa-status="${Utils.escapeHtml(s.id)}"></div>
         </div>
-        <select class="sa-usedfor" data-sa-usedfor="${Utils.escapeHtml(s.id)}" aria-label="Used-For for ${Utils.escapeHtml(s.label)}">
-          ${usedForOptions.split('</option>').map(opt => {
-            // mark the saved option as selected
-            if (!opt.trim()) return '';
-            const m = opt.match(/value="([^"]+)"/);
-            const v = m ? m[1] : '';
-            return opt.replace(/(value="[^"]+")/, '$1' + (v === used ? ' selected' : '')) + '</option>';
-          }).join('')}
-        </select>
+        ${buildUsedForSelect(s.id, s.label, used)}
       </div>`;
     }).join('');
 

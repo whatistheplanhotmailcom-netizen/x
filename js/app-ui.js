@@ -2128,7 +2128,10 @@ const UI = {
     const nearest = list[0];
     const text = this._describePoint(nearest, nearest.dist);
     Utils.toast('📢 ' + text, 'good');
-    if (State.settings.sound !== 'off') Audio.beep(nearest.type);
+    // v23.7.0: route through playAlertSoundForType — same mapping
+    // pipeline as the live alert. Matches whatever the driver will
+    // hear when the point fires for real.
+    if (State.settings.sound !== 'off') Audio.playAlertSoundForType(nearest.type);
     if (State.settings.voiceGender !== 'none') {
       setTimeout(() => Audio.say(text), 300);
     }
@@ -2148,7 +2151,9 @@ const UI = {
     const dist = State.pos ? Utils.distKm(State.pos, point) : null;
     const text = 'Last capture: ' + this._describePoint(point, dist);
     Utils.toast('📢 ' + text, 'good');
-    if (State.settings.sound !== 'off') Audio.beep(point.type);
+    // v23.7.0: route through mapping-aware peep so the preview matches
+    // what would fire live for this point's type.
+    if (State.settings.sound !== 'off') Audio.playAlertSoundForType(point.type);
     if (State.settings.voiceGender !== 'none') {
       setTimeout(() => Audio.say(text), 300);
     }

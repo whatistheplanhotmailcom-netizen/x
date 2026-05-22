@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.6.8';
+const APP_VERSION = 'v23.7.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2780,6 +2780,53 @@ const Audio = {
     }
   },
 
+  /** v23.7.0 — find the SoundCatalogue entry currently mapped to a
+   *  point.type via State.settings.soundAlerts. Returns the soundId
+   *  or null when no mapping resolves. Used by playAlertSoundForType
+   *  to drive the live "next ahead" peep from user preference. */
+  findMappedSoundId(type) {
+    if (!type) return null;
+    const saved = (typeof State !== 'undefined' && State.settings && State.settings.soundAlerts) || {};
+    const cat = (typeof SoundCatalogue !== 'undefined' && Array.isArray(SoundCatalogue)) ? SoundCatalogue : [];
+    for (const s of cat) {
+      const entry = saved[s.id] || {};
+      const usedRaw = entry.usedFor || s.defaultUsedFor || 'none';
+      const used = (typeof migrateSoundUsedFor === 'function') ? migrateSoundUsedFor(usedRaw) : usedRaw;
+      if (used === type) return s.id;
+    }
+    return null;
+  },
+
+  /** v23.7.0 — preference-driven live alert sound. The peep that
+   *  fires when approaching a point ahead now respects the Sound
+   *  Alerts mapping: whichever sound has its usedFor set to this
+   *  point.type plays. When no mapping resolves, falls back to the
+   *  legacy Audio.beep(type) radar tones — so users who never
+   *  edited their mapping see no behavior change.
+   *  Plays the catalogue pattern ONCE (the surrounding Audio.alert
+   *  loop handles repeat counts via alertRepeatCount). */
+  playAlertSoundForType(type) {
+    const mappedId = this.findMappedSoundId(type);
+    if (mappedId) {
+      const def = (typeof SoundCatalogue !== 'undefined')
+        ? SoundCatalogue.find(s => s.id === mappedId) : null;
+      if (def && Array.isArray(def.pattern) && def.pattern.length) {
+        const ctx = this.ensure();
+        if (ctx) {
+          this.playPattern(def.pattern, { intensity: 0.7 });
+          // Vibration mirror — silent-mode safety net (matches Audio.beep)
+          if (navigator.vibrate) {
+            const totalMs = Math.round(def.pattern.reduce((s, p) => s + p.dur + 0.05, 0) * 1000);
+            try { navigator.vibrate(Math.max(60, totalMs)); } catch (e) {}
+          }
+          return;
+        }
+      }
+    }
+    // No mapping (or catalogue lookup failed) → legacy radar tones
+    this.beep(type);
+  },
+
   /** v23.6.0 — Web-Audio pattern player extracted as a reusable helper.
    *  Plays ONE pass of a ping pattern. `opts.intensity` is a peakGain
    *  multiplier (0.55 low / 0.75 medium / 1.0 high). Returns the
@@ -2938,7 +2985,10 @@ const Audio = {
     const voiceOn = State.settings.voiceGender && State.settings.voiceGender !== 'none';
     const fireOnce = () => {
       // v22.32: tone ALWAYS plays (unless master sound is off, which is checked above)
-      this.beep(point.type);
+      // v23.7.0: route through playAlertSoundForType so the Sound
+      // Alerts mapping (Settings → Sound Alerts / Edit Point's
+      // "Sound alert" row) controls the actual peep.
+      this.playAlertSoundForType(point.type);
       // Voice plays only if a voice gender is selected
       if (voiceOn) this.say(text);
     };

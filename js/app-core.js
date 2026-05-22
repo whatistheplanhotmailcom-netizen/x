@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.6.6';
+const APP_VERSION = 'v23.6.7';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -3020,185 +3020,15 @@ const Audio = {
     }
   },
 
-  /** v23.6.0: preview engine for the Settings → Sound Alerts table.
-   *
-   *  This is an ISOLATED preview path. It does NOT run on a GPS tick,
-   *  does NOT fire on threshold crossings, does NOT consult alert
-   *  scoring, does NOT use State.settings.sound (master mute) — it
-   *  is invoked solely from the Try button in the settings table.
-   *
-   *  Reuses the shared AudioContext (`Audio.ensure()`), so no duplicate
-   *  audio system is created.
-   *
-   *  Returns a Promise that resolves with a handle:
-   *    { stop(), durationMs }
-   *  - `durationMs` is the total scheduled length; the caller uses it
-   *    to flip the status from "Playing…" to "Played".
-   *  - `stop()` cancels every scheduled oscillator immediately so a
-   *    new Try click can preempt an in-flight preview.
-   *  Rejects with an Error on AudioContext failure or unknown sound.
-   *
-   *  Patterns are intentionally distinct in timbre + envelope so the
-   *  10 options are clearly different to the ear:
-   *    soft_chime         single warm sine + harmonic, long decay
-   *    double_beep        two square pulses, equal-pitch
-   *    radar_ping         sine sweep 1200 → 2400 Hz
-   *    warning_pulse      4× alternating square 600/900 Hz
-   *    camera_tick        low click + high tick
-   *    speed_tone         sustained sawtooth, mild wobble
-   *    route_alert        three rising sine notes (600/800/1000)
-   *    attention_bell     bell triangle 1400 + 3700 harmonic
-   *    short_siren        sine wail 700↔1100↔700
-   *    calm_notification  two triangle notes (660 → 880)
-   */
-  preview(soundId) {
-    return new Promise((resolve, reject) => {
-      let ctx;
-      try { ctx = this.ensure(); } catch (e) { reject(e); return; }
-      if (!ctx) { reject(new Error('AudioContext unavailable')); return; }
-
-      // If the context is suspended (e.g. browser autoplay policy
-      // hasn't been satisfied) resume() returns a Promise we must
-      // await before scheduling, otherwise the sound never plays.
-      const ready = (ctx.state === 'suspended' && ctx.resume)
-        ? ctx.resume()
-        : Promise.resolve();
-
-      ready.then(() => {
-        try {
-          const handle = this._scheduleAndReturn(ctx, soundId);
-          if (!handle) { reject(new Error('Unknown sound: ' + soundId)); return; }
-          resolve(handle);
-        } catch (e) { reject(e); }
-      }, err => reject(err || new Error('AudioContext resume failed')));
-    });
-  },
-
-  /** v23.6.0: internal — schedule one preview pattern on the shared
-   *  context, return { stop, durationMs, oscs }. Pure synthesis,
-   *  zero dependencies. */
-  _scheduleAndReturn(ctx, soundId) {
-    const startT = ctx.currentTime + 0.02; // tiny lead-in so the
-    // very first oscillator's attack ramp isn't clipped by `currentTime`.
-    const out = ctx.createGain();
-    out.gain.value = 0.85;
-    out.connect(ctx.destination);
-
-    const oscs = [];
-    /** Helper — schedule a single tone segment. */
-    const tone = (opts) => {
-      const osc = ctx.createOscillator();
-      const g = ctx.createGain();
-      osc.type = opts.type || 'sine';
-      osc.frequency.setValueAtTime(opts.freq, opts.at);
-      if (opts.freqEnd != null) {
-        // Linear sweep (used for siren / radar ping).
-        osc.frequency.linearRampToValueAtTime(opts.freqEnd, opts.at + opts.dur);
-      }
-      // Quick attack, sustain, decay envelope.
-      g.gain.setValueAtTime(0.0001, opts.at);
-      g.gain.exponentialRampToValueAtTime(opts.peak || 0.6, opts.at + 0.008);
-      g.gain.setValueAtTime(opts.peak || 0.6, opts.at + opts.dur * 0.7);
-      g.gain.exponentialRampToValueAtTime(0.0001, opts.at + opts.dur + (opts.tail || 0));
-      osc.connect(g);
-      g.connect(out);
-      osc.start(opts.at);
-      osc.stop(opts.at + opts.dur + (opts.tail || 0) + 0.02);
-      oscs.push(osc);
-    };
-
-    let endT = startT;
-    switch (soundId) {
-      case 'soft_chime': {
-        tone({ at: startT, dur: 0.80, type: 'sine', freq: 880, peak: 0.45, tail: 0.10 });
-        tone({ at: startT, dur: 0.80, type: 'sine', freq: 1320, peak: 0.18, tail: 0.10 });
-        endT = startT + 0.95;
-        break;
-      }
-      case 'double_beep': {
-        tone({ at: startT,            dur: 0.10, type: 'square', freq: 1000, peak: 0.40 });
-        tone({ at: startT + 0.20,     dur: 0.10, type: 'square', freq: 1000, peak: 0.40 });
-        endT = startT + 0.32;
-        break;
-      }
-      case 'radar_ping': {
-        tone({ at: startT, dur: 0.22, type: 'sine', freq: 1200, freqEnd: 2400, peak: 0.55, tail: 0.05 });
-        endT = startT + 0.30;
-        break;
-      }
-      case 'warning_pulse': {
-        const gap = 0.10;
-        const dur = 0.10;
-        const freqs = [600, 900, 600, 900];
-        freqs.forEach((f, i) => {
-          tone({ at: startT + i * (dur + gap), dur, type: 'square', freq: f, peak: 0.45 });
-        });
-        endT = startT + freqs.length * (dur + gap);
-        break;
-      }
-      case 'camera_tick': {
-        tone({ at: startT,         dur: 0.02, type: 'square',   freq: 150,  peak: 0.50 });
-        tone({ at: startT + 0.05,  dur: 0.02, type: 'triangle', freq: 1800, peak: 0.45 });
-        endT = startT + 0.10;
-        break;
-      }
-      case 'speed_tone': {
-        tone({ at: startT, dur: 0.40, type: 'sawtooth', freq: 1200, peak: 0.35, tail: 0.05 });
-        // Mild wobble — second osc detuned slightly.
-        tone({ at: startT, dur: 0.40, type: 'sawtooth', freq: 1212, peak: 0.18, tail: 0.05 });
-        endT = startT + 0.50;
-        break;
-      }
-      case 'route_alert': {
-        const dur = 0.12;
-        [600, 800, 1000].forEach((f, i) => {
-          tone({ at: startT + i * (dur + 0.04), dur, type: 'sine', freq: f, peak: 0.50 });
-        });
-        endT = startT + 3 * (dur + 0.04);
-        break;
-      }
-      case 'attention_bell': {
-        tone({ at: startT, dur: 1.10, type: 'triangle', freq: 1400, peak: 0.40, tail: 0.15 });
-        tone({ at: startT, dur: 1.10, type: 'triangle', freq: 3700, peak: 0.10, tail: 0.15 });
-        endT = startT + 1.30;
-        break;
-      }
-      case 'short_siren': {
-        // wail up
-        tone({ at: startT,         dur: 0.22, type: 'sine', freq: 700,  freqEnd: 1100, peak: 0.50 });
-        // wail down
-        tone({ at: startT + 0.22,  dur: 0.22, type: 'sine', freq: 1100, freqEnd: 700,  peak: 0.50 });
-        endT = startT + 0.50;
-        break;
-      }
-      case 'calm_notification': {
-        tone({ at: startT,        dur: 0.20, type: 'triangle', freq: 660, peak: 0.40, tail: 0.05 });
-        tone({ at: startT + 0.22, dur: 0.20, type: 'triangle', freq: 880, peak: 0.40, tail: 0.05 });
-        endT = startT + 0.50;
-        break;
-      }
-      default:
-        return null;
-    }
-
-    const durationMs = Math.max(60, Math.round((endT - startT) * 1000));
-    let stopped = false;
-    const stop = () => {
-      if (stopped) return;
-      stopped = true;
-      const t = ctx.currentTime;
-      oscs.forEach(o => {
-        try { o.stop(t); } catch (e) { /* already stopped */ }
-      });
-      // Fade master out so the cut is not clicky.
-      try {
-        out.gain.cancelScheduledValues(t);
-        out.gain.setValueAtTime(out.gain.value, t);
-        out.gain.linearRampToValueAtTime(0, t + 0.02);
-      } catch (e) {}
-    };
-    return { stop, durationMs, oscs };
-  },
+  // v23.6.7 merge-cleanup: removed the parallel agent's duplicate
+  //   preview(soundId)          + _scheduleAndReturn(ctx, soundId)
+  // which lived here and silently overwrote the catalogue-driven
+  // Audio.preview(soundId, opts) defined earlier in this same object
+  // literal at line ~2836. Object-literal duplicate keys keep only the
+  // last definition in JS, so the hardcoded switch with 10 cases was
+  // the one that ran — sounds 11–18 hit `default: return null` and
+  // failed silently. The single catalogue-driven preview above is now
+  // the only one.
 };
 
 if ('speechSynthesis' in window) {

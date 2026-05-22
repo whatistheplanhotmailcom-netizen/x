@@ -300,6 +300,21 @@ const MapView = {
     let cls = 'conf-zero';
     if (total > 0) cls = yes > no ? 'conf-pos' : (no > yes ? 'conf-neg' : 'conf-neutral');
     const confHtml = `<span class="conf-badge ${cls}" title="${yes} yes / ${no} no">${total}</span>`;
+    // v23.7.2 — speed_change observations render as proper white-circle
+    // road-sign markers with a red border + black number, not as a
+    // generic emoji marker. Falls back to a generic sign emoji if the
+    // value is missing (does NOT hide the marker, per spec).
+    if (p.type === 'speed_change') {
+      const lim = (typeof p.speedLimit === 'number') ? p.speedLimit
+        : (typeof p.limit === 'number' ? p.limit : null);
+      const valHtml = (lim != null && isFinite(lim))
+        ? Utils.escapeHtml(String(Math.round(lim)))
+        : '?';
+      const conf = p.confidenceStatus || '';
+      el.innerHTML = `<div class="${classes.join(' ')} sign-style conf-${Utils.escapeHtml(conf)}">` +
+        `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}</div>`;
+      return el;
+    }
     el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}</div>`;
     return el;
   },
@@ -420,7 +435,16 @@ const MapView = {
     aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
 
     const myDist = (State.pos && dest) ? Utils.distKm(State.pos, dest) : null;
-    State.activePoints().forEach(p => {
+    // v23.7.2 — speed_change observations are PERMANENT road-memory
+    // signs and must render even when no destination is active.
+    // Other types (cameras, gates, etc.) still follow the route filter
+    // so the existing UX (only-show-ones-on-the-route) is unchanged.
+    const routeIds = new Set(State.activePoints().map(p => p.id));
+    const visible = State.data.points.filter(p =>
+      p && p.lat != null && p.lng != null &&
+      (routeIds.has(p.id) || p.type === 'speed_change')
+    );
+    visible.forEach(p => {
       const passedByGeometry = (myDist != null && dest)
         ? Utils.distKm(p, dest) > myDist
         : false;
@@ -2493,6 +2517,22 @@ const UI = {
       if (c.type === 'speed_change' && typeof c.limit === 'number') {
         c.speedLimit = c.limit;
       }
+      // v23.7.2: observation/confidence fields for fresh speed_change points.
+      // Additive — set only when missing so re-captures keep their history.
+      if (c.type === 'speed_change') {
+        if (c.observationCount  === undefined) c.observationCount  = 1;
+        if (c.confirmationCount === undefined) c.confirmationCount = 0;
+        if (c.rejectionCount    === undefined) c.rejectionCount    = 0;
+        c.lastObservedAt = c.createdAt || new Date().toISOString();
+        // Best-effort GPS quality snapshot (purely informational).
+        if (c.gpsAccuracy === undefined && State.pos && typeof State.pos.accuracy === 'number') {
+          c.gpsAccuracy = State.pos.accuracy;
+        }
+        if (c.heading === undefined && c.captureBearing != null) {
+          c.heading = c.captureBearing;
+        }
+        c.confidenceStatus = Speed.deriveConfidenceStatus(c);
+      }
     }
     // v23.5.1 fix 3: speed_change uses bearing-aware dedup matching the
     // MigrationConfig rules (25m / 25°). Opposite-direction signs and
@@ -2559,7 +2599,15 @@ const UI = {
           nearby.confidence = (nearby.confidence || 1) + 1;
           nearby.updatedAt = new Date().toISOString();
           nearby.status = 'active';
+          // v23.7.2: speed value changed => old reading was a rejection,
+          // new reading starts a fresh confirmation streak.
+          nearby.observationCount  = (nearby.observationCount  || 1) + 1;
+          nearby.rejectionCount    = (nearby.rejectionCount    || 0) + 1;
+          nearby.confirmationCount = 1;
+          nearby.lastObservedAt    = nearby.updatedAt;
+          nearby.lastRejectedAt    = nearby.updatedAt;
           delete nearby.pendingSpeedLimitChange;
+          nearby.confidenceStatus  = Speed.deriveConfidenceStatus(nearby);
           Utils.toast(`Speed limit updated ${existingLimit}→${incomingLimit}`, 'good');
           announce = `Speed limit updated to ${incomingLimit}`;
           trackedId = nearby.id;
@@ -2576,6 +2624,11 @@ const UI = {
             captureBearing: c.captureBearing,
             confidence: 1,
           };
+          // v23.7.2: a conflicting reading still counts as an observation
+          // and tips the status to 'disputed' while pending.
+          nearby.observationCount = (nearby.observationCount || 1) + 1;
+          nearby.lastObservedAt   = new Date().toISOString();
+          nearby.confidenceStatus = Speed.deriveConfidenceStatus(nearby);
           Utils.toast(`Speed change pending: ${existingLimit}→${incomingLimit} · capture again to confirm`, 'good');
           announce = `Pending speed change to ${incomingLimit}`;
           trackedId = nearby.id;
@@ -2593,6 +2646,14 @@ const UI = {
         nearby.updatedAt = new Date().toISOString();
         if (c.side) nearby.side = c.side;
         if (c.limit) { nearby.limit = c.limit; nearby.name = c.name; }
+        // v23.7.2: same-speed re-capture is a confirmation observation.
+        if (isSpeedChange) {
+          nearby.observationCount  = (nearby.observationCount  || 1) + 1;
+          nearby.confirmationCount = (nearby.confirmationCount || 0) + 1;
+          nearby.lastObservedAt    = nearby.updatedAt;
+          nearby.lastConfirmedAt   = nearby.updatedAt;
+          nearby.confidenceStatus  = Speed.deriveConfidenceStatus(nearby);
+        }
         // Same-speed re-confirmation discards any stale pendingSpeedLimitChange
         // that targeted a different value — the driver just re-confirmed the
         // existing reading.
@@ -2804,8 +2865,27 @@ const UI = {
     p.lat = +document.getElementById('e-lat').value || p.lat;
     p.lng = +document.getElementById('e-lng').value || p.lng;
     const lim = document.getElementById('e-limit').value;
+    const prevLimit = (typeof p.limit === 'number') ? p.limit
+      : (typeof p.speedLimit === 'number' ? p.speedLimit : null);
     if (lim && p.type === 'speed_change') { p.limit = +lim; p.speedLimit = +lim; }
     else { delete p.limit; delete p.speedLimit; }
+    // v23.7.2: manual edit updates the observation record. Same value =>
+    // explicit confirmation; different value => rejection of the old reading.
+    if (p.type === 'speed_change') {
+      const newLimit = (typeof p.limit === 'number') ? p.limit : null;
+      const now = new Date().toISOString();
+      p.observationCount = (p.observationCount || 1) + 1;
+      if (newLimit != null && prevLimit != null && newLimit !== prevLimit) {
+        p.rejectionCount  = (p.rejectionCount  || 0) + 1;
+        p.lastRejectedAt  = now;
+        p.confirmationCount = 1; // reset streak around the new value
+      } else if (newLimit != null) {
+        p.confirmationCount = (p.confirmationCount || 0) + 1;
+        p.lastConfirmedAt   = now;
+      }
+      p.lastObservedAt    = now;
+      p.confidenceStatus  = Speed.deriveConfidenceStatus(p);
+    }
     const sideBtn = document.querySelector('#e-side-opts button.active');
     if (sideBtn) { if (sideBtn.dataset.side) p.side = sideBtn.dataset.side; else delete p.side; }
     const statBtn = document.querySelector('#e-status-opts button.active');
@@ -3213,6 +3293,9 @@ const UI = {
     // v22.33: proximity ping start distance
     document.getElementById('i-proximity-start').value = State.settings.proximityStartM || 1000;
     document.getElementById('t-proximity').classList.toggle('on', State.settings.proximityPing !== false);
+    // v23.7.2: speed-limit revalidation toggle
+    const tSpeedReval = document.getElementById('t-speed-reval');
+    if (tSpeedReval) tSpeedReval.classList.toggle('on', !!State.settings.speedLimitRevalidation);
     // v22.76: here-now announcement settings
     document.getElementById('i-here-speed').value = State.settings.hereSpeedThreshold || 100;
     document.getElementById('i-here-repeat').value = State.settings.hereRepeatCount || 2;
@@ -3970,6 +4053,16 @@ function wire() {
     document.getElementById('t-proximity').classList.toggle('on', State.settings.proximityPing);
     Utils.toast('Proximity ping ' + (State.settings.proximityPing ? 'on' : 'off'), 'good');
   };
+  // v23.7.2: speed-limit revalidation toggle
+  const tSpeedRevalBtn = document.getElementById('t-speed-reval');
+  if (tSpeedRevalBtn) {
+    tSpeedRevalBtn.onclick = () => {
+      State.settings.speedLimitRevalidation = !State.settings.speedLimitRevalidation;
+      State.saveSettings();
+      tSpeedRevalBtn.classList.toggle('on', !!State.settings.speedLimitRevalidation);
+      Utils.toast('Speed-limit revalidation ' + (State.settings.speedLimitRevalidation ? 'on' : 'off'), 'good');
+    };
+  }
   // v22.33: proximity ping start distance
   document.getElementById('i-proximity-start').onchange = e => {
     const v = Math.round(+e.target.value);

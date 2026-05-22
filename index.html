@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.7.1">
+<link rel="stylesheet" href="styles.css?v=23.7.2">
 </head>
 <body data-theme="light">
 
@@ -598,6 +598,11 @@
     <div class="row-hint">What plays when you're driving faster than the current speed limit + the threshold below. <strong>Off</strong> = silent (red LIMIT sign still flashes). <strong>Beep</strong>/<strong>Voice</strong>/<strong>Both</strong> = audio cue when you cross the limit.</div>
     <div class="row"><span class="label">Trigger when over by (km/h)</span><input type="number" id="i-over" min="0" max="50"></div>
     <div class="row-hint">How many km/h over the limit before the alert fires. <code>5</code> means a 100 km/h zone won't alert until you hit 105.</div>
+    <div class="row">
+      <span class="label">Revalidate stored speed limits</span>
+      <span class="toggle" id="t-speed-reval"></span>
+    </div>
+    <div class="row-hint">When ON, as you approach a saved speed-limit sign the app may ask <em>"The speed limit here is N. Confirm?"</em> Tap YES to strengthen the observation, NO to record a rejection. Default OFF — never prompts unless explicitly enabled. One prompt per point per trip; 30-minute cooldown across trips.</div>
 
     <!-- v23.6.0 merge: removed inline 10-sound table; replaced by the
          spec-compliant 18-sound modal opened via the "🔔 Sound Alerts"
@@ -851,8 +856,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.7.1"></script>
-<script defer src="js/app-ui.js?v=23.7.1"></script>
+<script defer src="js/app-core.js?v=23.7.2"></script>
+<script defer src="js/app-ui.js?v=23.7.2"></script>
 
 </body>
 </html>

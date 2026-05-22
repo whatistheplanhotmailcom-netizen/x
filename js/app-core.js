@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.8';
+const APP_VERSION = 'v23.8.9';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2959,6 +2959,15 @@ const SoundUsedForGroups = [
     id: t,
     label: t === 'other' ? 'Custom / Other Captured Alert' : (Utils.typeLabel(t) || t),
   })) },
+  // v23.8.9 — driving-safety events that aren't tied to a captured
+  // point.type. speed_limit_exceeded is fired by Alerts.checkSpeed
+  // when the driver crosses the limit + overBy threshold; mapping a
+  // catalogue sound to it routes the over-speed beep through the
+  // user's preferred sound instead of the legacy speed_change radar
+  // tone. Leaving it unmapped preserves legacy behavior.
+  { id: '_driving', label: 'Driving Alerts', items: [
+    { id: 'speed_limit_exceeded', label: 'Speed Limit Exceeded' },
+  ]},
   { id: '_nav', label: 'Navigation / Route', items: [
     { id: 'route_deviation',    label: 'Route Deviation' },
     { id: 'reroute_completed',  label: 'Reroute Completed' },
@@ -4936,7 +4945,24 @@ const Alerts = {
       sign.classList.remove('flash');
       void sign.offsetWidth;
       sign.classList.add('flash');
-      if (mode === 'beep' || mode === 'both') Audio.beep('speed_change');
+      if (mode === 'beep' || mode === 'both') {
+        // v23.8.9 — route over-speed beep through the Sound Alerts
+        // catalogue. If the user mapped a sound to
+        // 'speed_limit_exceeded', play that pattern; otherwise fall
+        // back to the legacy speed_change radar tone so users who
+        // never edited the mapping see no behavior change.
+        const mappedId = Audio.findMappedSoundId('speed_limit_exceeded');
+        if (mappedId && typeof SoundCatalogue !== 'undefined') {
+          const def = SoundCatalogue.find(s => s.id === mappedId);
+          if (def && Array.isArray(def.pattern) && def.pattern.length && Audio.ensure()) {
+            Audio.playPattern(def.pattern, { intensity: 0.7 });
+          } else {
+            Audio.beep('speed_change');
+          }
+        } else {
+          Audio.beep('speed_change');
+        }
+      }
       if (mode === 'voice' || mode === 'both') Audio.say(`Speed limit ${limit}`);
       if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
     }

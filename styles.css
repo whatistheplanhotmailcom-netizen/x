@@ -1395,6 +1395,59 @@ body {
   margin-top: 6px;
   padding: 0 4px;
 }
+/* v23.8.1 — Collapsible Settings sections. The Settings modal wraps
+   every `.section-title` in a tappable header + a hideable body so
+   advanced/technical groups stay compact by default. Visual rules
+   only — wiring lives in UI.installCollapsibleSettings(). */
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin: 10px 0 4px;
+  padding: 11px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  cursor: pointer;
+  text-align: left;
+  min-height: 40px;
+}
+.settings-section-head:active { background: var(--surface-2); transform: scale(0.997); }
+.settings-section-head:focus-visible {
+  outline: 2px solid var(--amber, #f5a623);
+  outline-offset: 1px;
+}
+.settings-section-head .settings-section-chev {
+  display: inline-block;
+  width: 12px;
+  text-align: center;
+  color: var(--ink-3);
+  font-weight: 700;
+  transition: transform 0.15s ease-out;
+}
+.settings-section-head[aria-expanded="true"] .settings-section-chev {
+  transform: rotate(90deg);
+  color: var(--amber-2, var(--amber, #f5a623));
+}
+.settings-section-head .settings-section-title-text {
+  flex: 1;
+  color: var(--ink-2, var(--ink));
+}
+.settings-section-head[aria-expanded="true"] .settings-section-title-text {
+  color: var(--ink);
+}
+.settings-section-body {
+  padding: 0;
+  margin: 0 0 6px;
+}
+.settings-section-body[hidden] { display: none; }
 .row {
   display: flex;
   align-items: center;

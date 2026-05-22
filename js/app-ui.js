@@ -3338,6 +3338,116 @@ const UI = {
     else { btn.textContent = '▶ Start trip'; btn.style.background = ''; btn.style.color = ''; btn.style.borderColor = ''; }
   },
 
+  /** v23.8.1 — Collapsible Settings sections.
+   *  Wraps every `.section-title` inside `#m-settings .modal-card` in a
+   *  tappable header + a hideable body. UI-only: no settings values
+   *  change, no event listeners on existing controls are touched. The
+   *  bodies use `hidden` (display:none) when collapsed — lightweight,
+   *  no animation, predictable. Idempotent: re-running the installer
+   *  is a no-op once `_settingsCollapsibleInstalled` is set.
+   *
+   *  Persistence: `roadAlert.settingsCollapsedSections` →
+   *  { [slug]: collapsed_bool }. Default state is hard-coded so the
+   *  first practical section (Display) is expanded and every other
+   *  large/technical section is collapsed; the stored value overrides
+   *  the default only when the user has explicitly toggled. */
+  COLLAPSIBLE_STATE_KEY: 'roadAlert.settingsCollapsedSections',
+
+  // Sections that should start expanded out of the box. Every other
+  // labelled section collapses by default. The user's choice (kept in
+  // localStorage) overrides this on subsequent opens.
+  _SETTINGS_DEFAULT_EXPANDED: new Set(['display']),
+
+  _settingsSectionSlug(label) {
+    return String(label || '').trim().toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+  },
+
+  installCollapsibleSettings() {
+    const card = document.querySelector('#m-settings .modal-card');
+    if (!card || card._settingsCollapsibleInstalled) return;
+    card._settingsCollapsibleInstalled = true;
+
+    // Restore persisted collapsed-state map. Safe to fail — fall back
+    // to defaults if the value is missing / unparseable.
+    let stored = {};
+    try {
+      const raw = localStorage.getItem(this.COLLAPSIBLE_STATE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') stored = parsed;
+      }
+    } catch (e) { stored = {}; }
+
+    const persist = () => {
+      try { localStorage.setItem(this.COLLAPSIBLE_STATE_KEY, JSON.stringify(stored)); }
+      catch (e) { /* quota / private-mode — fail silently */ }
+    };
+
+    // Gather titles in document order from the direct modal-card children.
+    const titles = Array.from(card.children).filter(el => el.classList && el.classList.contains('section-title'));
+    titles.forEach(title => {
+      const labelText = (title.textContent || '').trim();
+      if (!labelText) return; // skip the empty spacer before the bottom "Done" button
+      const slug = UI._settingsSectionSlug(labelText);
+
+      // Build the new header. A real <button> keeps it keyboard-accessible
+      // and large-tap-target on mobile without extra ARIA work.
+      const head = document.createElement('button');
+      head.type = 'button';
+      head.className = 'settings-section-head';
+      head.dataset.section = slug;
+      head.setAttribute('aria-expanded', 'false');
+      head.innerHTML =
+        '<span class="settings-section-chev" aria-hidden="true">▸</span>' +
+        '<span class="settings-section-title-text"></span>';
+      head.querySelector('.settings-section-title-text').textContent = labelText;
+
+      // Wrap subsequent siblings until the next section-title into a body.
+      const body = document.createElement('div');
+      body.className = 'settings-section-body';
+      body.dataset.section = slug;
+      const toMove = [];
+      let cur = title.nextElementSibling;
+      while (cur && !(cur.classList && cur.classList.contains('section-title'))) {
+        toMove.push(cur);
+        cur = cur.nextElementSibling;
+      }
+      title.replaceWith(head);
+      head.insertAdjacentElement('afterend', body);
+      toMove.forEach(el => body.appendChild(el));
+
+      // Initial collapsed state: stored value wins; otherwise default
+      // is "collapsed unless in _SETTINGS_DEFAULT_EXPANDED".
+      let collapsed;
+      if (Object.prototype.hasOwnProperty.call(stored, slug)) {
+        collapsed = !!stored[slug];
+      } else {
+        collapsed = !this._SETTINGS_DEFAULT_EXPANDED.has(slug);
+      }
+      this._setSettingsSectionCollapsed(head, body, collapsed);
+
+      head.addEventListener('click', () => {
+        const wasCollapsed = head.getAttribute('aria-expanded') === 'false';
+        this._setSettingsSectionCollapsed(head, body, !wasCollapsed);
+        stored[slug] = !wasCollapsed;
+        persist();
+      });
+    });
+  },
+
+  _setSettingsSectionCollapsed(head, body, collapsed) {
+    head.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    head.classList.toggle('collapsed', collapsed);
+    body.classList.toggle('collapsed', collapsed);
+    // Use the `hidden` attribute so the section is removed from
+    // accessibility tree + layout entirely. Existing event listeners
+    // and element references are preserved — the controls just aren't
+    // visible until expanded.
+    body.hidden = !!collapsed;
+  },
+
   syncSettings() {
     // v23.6.4: render the Sound Alerts table from the syncSettings path
     // too. Wire() also calls it on the settings click, but having it
@@ -3513,6 +3623,11 @@ const UI = {
 function wire() {
   document.getElementById('btn-settings').onclick = () => {
     Audio.unlock(); // v23.6.2: arm audio so the inline Try previews work
+    // v23.8.1: install the collapsible-section wrappers on first open.
+    // Idempotent — subsequent opens are no-ops. Done before
+    // syncSettings/renderSoundAlerts so the inline sound-alerts
+    // table still renders into its target container after wrapping.
+    UI.installCollapsibleSettings();
     UI.syncSettings();
     UI.renderMigrationStatus(); // v22.96: refresh migration status on open
     UI.refreshStorageStatus();  // v23.x Phase 2a: storage health summary

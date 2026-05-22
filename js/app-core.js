@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.7.2';
+const APP_VERSION = 'v23.8.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -828,6 +828,397 @@ const Corridor = {
   getAlertCandidates(userState, activeRoute, globalPoints) {
     if (activeRoute) return Corridor.getRouteCandidatePoints(activeRoute, globalPoints);
     return Corridor.getGlobalCandidatePoints(userState, globalPoints);
+  },
+};
+
+/* ============================================================
+   0e2. OBSERVATIONS — v23.8.0
+   Global observation pool + destination-intent matcher.
+
+   The primitive is an OBSERVATION (a captured road item at a fixed
+   GPS location), not a route. Observations live in State.data.points
+   and are matched globally on every trip that drives past them.
+
+   Primary gate (always runs):
+     - proximity (distance from current GPS position)
+     - ahead-of-driver (current heading or recent movement bearing)
+     - heading compatibility (only directional points may be rejected,
+       and only when reliable heading shows them clearly opposite)
+     - confidence (trusted points alert even with weak side signals)
+
+   Active route corridor (when MapView._routeCoords is populated):
+     - ADDITIVE only — may extend lookahead, raise priority, mark
+       observations as "on route" for ordering and known-road counts.
+     - Must NOT remove a nearby/ahead observation that already passed
+       the primary gate. Calculated routes can disagree with the road
+       actually driven; gating on the polyline would silently miss
+       alerts.
+
+   Lateral corridor width vs. forward lookahead are TWO SEPARATE
+   parameters. corridorWidthM answers "how far sideways from the
+   route line may a point still count as route-related?". lookaheadM
+   answers "how far in front of the driver should we look?". Re-using
+   one as the other was the prior source of mistuned trigger timing.
+
+   Backward compatibility: every existing State.data.points entry is
+   alertable. migrateAdditive() adds {confirmedCount, firstSeenAt,
+   lastSeenAt, heading, bidirectional, source, routeTags, roadName,
+   lastConfirmedAt} as NEW fields when missing — no rename, no
+   delete, no silent suppression. Legacy points (no captureBearing /
+   no observationCount) inherit a baseline confidence that keeps
+   them alertable; the spec mandates "every currently-rendering and
+   currently-alerting point still alerts after migration".
+   ============================================================ */
+const ObservationsConfig = {
+  // Forward lookahead (longitudinal). Distance ahead of the driver
+  // where alerts are evaluated. Tuned for ≈8-15s of lead time at the
+  // matching speed band.
+  LOOKAHEAD_CITY_M:    120,   // ≤ 30 km/h
+  LOOKAHEAD_MEDIUM_M:  250,   // 30 - 80 km/h
+  LOOKAHEAD_HIGHWAY_M: 400,   // > 80 km/h
+  // Lateral corridor width (sideways from the active route polyline).
+  CORRIDOR_CITY_M:     75,
+  CORRIDOR_HIGHWAY_M:  150,
+  CORRIDOR_WEAK_GPS_M: 200,
+  WEAK_GPS_ACCURACY_M: 50,
+  // Hard outer envelope for the linear scan.
+  MAX_SCAN_RADIUS_KM:  5,
+  // Behind-the-driver tolerance — never reject an observation that's
+  // still within this distance even if heading suggests it's behind
+  // (the user may have just driven over it; passed-detection handles
+  // the rest).
+  BEHIND_TOLERANCE_M:  60,
+  // Heading-mismatch threshold for directional points. Only a strong
+  // mismatch (≥ this) suppresses; oblique angles still alert.
+  STRONG_MISMATCH_DEG: 135,
+  // Known-road thresholds for the small ahead-of-driver indicator.
+  KNOWN_ROAD_MIN_COUNT: 3,
+};
+
+const Observations = {
+  /** All usable observations from the global pool. Filters out
+   *  retired (status === 'no') and any record missing coordinates.
+   *  Never filters by active destination. */
+  globalPool() {
+    if (!State || !State.data || !Array.isArray(State.data.points)) return [];
+    return State.data.points.filter(p =>
+      p && p.status !== 'no' && typeof p.lat === 'number' && typeof p.lng === 'number'
+    );
+  },
+
+  /** Forward lookahead distance (m) for the given speed (km/h). */
+  forwardLookaheadM(speedKmh) {
+    if (speedKmh == null || isNaN(speedKmh)) return ObservationsConfig.LOOKAHEAD_MEDIUM_M;
+    if (speedKmh >= 80) return ObservationsConfig.LOOKAHEAD_HIGHWAY_M;
+    if (speedKmh >= 30) return ObservationsConfig.LOOKAHEAD_MEDIUM_M;
+    return ObservationsConfig.LOOKAHEAD_CITY_M;
+  },
+
+  /** Lateral corridor width (m) from the active route polyline. */
+  corridorWidthM(speedKmh, gpsAccuracy) {
+    let w = (speedKmh != null && speedKmh >= 80)
+      ? ObservationsConfig.CORRIDOR_HIGHWAY_M
+      : ObservationsConfig.CORRIDOR_CITY_M;
+    if (gpsAccuracy != null && gpsAccuracy > ObservationsConfig.WEAK_GPS_ACCURACY_M) {
+      w = Math.max(w, ObservationsConfig.CORRIDOR_WEAK_GPS_M);
+    }
+    return w;
+  },
+
+  /** Best-available driver heading. Prefers reliable GPS heading,
+   *  falls back to movement bearing from the last two samples, then
+   *  to null. */
+  effectiveHeading() {
+    const speedKmh = (State.speedMps || 0) * 3.6;
+    if (State.heading != null && Speed.isHeadingReliable(speedKmh)) return State.heading;
+    if (State.prevPos && State.pos && State.speedMps > 1) {
+      return Utils.bearing(State.prevPos, State.pos);
+    }
+    if (State.heading != null) return State.heading; // low-speed fallback (noisy)
+    return null;
+  },
+
+  /** Is this observation ahead of the driver?  Returns true when:
+   *    - no usable heading (low speed / stationary)        — neutral
+   *    - heading is reliable and point is within ±90° of it
+   *    - point is within BEHIND_TOLERANCE_M (just-passed safety)
+   *  Returns false only when the driver has a clearly forward-facing
+   *  heading and the point sits well behind them. */
+  isAhead(p, userLat, userLng, heading, speedKmh, distM) {
+    if (distM != null && distM <= ObservationsConfig.BEHIND_TOLERANCE_M) return true;
+    if (heading == null) return true;
+    // Low-speed: heading is noisy, never reject for it (spec 7).
+    if (speedKmh != null && speedKmh < 10) return true;
+    const b = Speed.bearingBetween(userLat, userLng, p.lat, p.lng);
+    return Speed.angleDiff(heading, b) <= 90;
+  },
+
+  /** Heading compatibility for directional observations. Legacy /
+   *  null heading is bidirectional by default (spec 8 + 12c). Only
+   *  a clearly opposite heading suppresses a directional point. */
+  headingCompatible(p, heading, speedKmh) {
+    if (!p) return true;
+    if (p.bidirectional === true) return true;
+    if (!p.directional) return true;
+    const pointBearing = (p.captureBearing != null) ? p.captureBearing
+                       : (typeof p.heading === 'number')   ? p.heading
+                       : null;
+    if (pointBearing == null) return true; // legacy directional with no recorded bearing
+    if (heading == null) return true;
+    if (speedKmh != null && speedKmh < 10) return true;
+    const diff = Speed.angleDiff(heading, pointBearing);
+    return diff < ObservationsConfig.STRONG_MISMATCH_DEG;
+  },
+
+  /** Confidence tier for the alert prioritizer. Legacy points
+   *  (lacking the v23.7.2 observation counters) inherit 'trusted' so
+   *  they remain alertable per spec 10 + 12c. */
+  confidenceLevel(p) {
+    if (!p) return 'possible';
+    if (p.confidenceStatus === 'trusted' || p.confidenceStatus === 'probable'
+        || p.confidenceStatus === 'possible' || p.confidenceStatus === 'stale'
+        || p.confidenceStatus === 'disputed') {
+      return p.confidenceStatus;
+    }
+    const obs  = (typeof p.observationCount === 'number') ? p.observationCount
+              : (typeof p.confidence === 'number') ? p.confidence : null;
+    const conf = (typeof p.confirmationCount === 'number') ? p.confirmationCount
+              : (typeof p.confirmedCount === 'number') ? p.confirmedCount : null;
+    if ((conf != null && conf >= 3) || (obs != null && obs >= 4)) return 'trusted';
+    if ((conf != null && conf >= 1) || (obs != null && obs >= 2)) return 'probable';
+    // Legacy point: no counters, but it exists in the road memory —
+    // treat as trusted-by-default so it stays alertable.
+    if (obs == null && conf == null) return 'trusted';
+    return 'possible';
+  },
+
+  /** Is the observation laterally inside the active route's corridor?
+   *  Returns false when no routeCoords are available (free-drive). */
+  isOnRouteCorridor(p, routeCoords, corridorM) {
+    if (!Array.isArray(routeCoords) || routeCoords.length < 2) return false;
+    return Corridor.isPointInsideRouteCorridor(p,
+      { type: 'LineString', coordinates: routeCoords }, corridorM);
+  },
+
+  /** Primary alert-candidate engine.
+   *
+   *  Evaluates the global pool with proximity → ahead-of-driver →
+   *  heading-compatibility → confidence. Route corridor (when
+   *  available) is added as additive context: matched points are
+   *  flagged onRoute=true and get a slightly extended lookahead, but
+   *  off-route candidates that pass the primary gate are NEVER
+   *  dropped here. Caller decides whether to alert; this returns the
+   *  ordered candidate list.
+   *
+   *  Returns: [{ point, distM, ahead, onRoute, confidence }]
+   *           sorted by ahead/onRoute/distance. */
+  liveCandidates(userState, routeCoords) {
+    const out = [];
+    if (!userState || userState.lat == null || userState.lng == null) return out;
+    const pool = Observations.globalPool();
+    const speedKmh = userState.speedKmh || 0;
+    const lookaheadM = Observations.forwardLookaheadM(speedKmh);
+    const corridorM  = Observations.corridorWidthM(speedKmh, userState.accuracy);
+    const heading    = (userState.heading != null) ? userState.heading
+                     : Observations.effectiveHeading();
+    const headingReliable = Speed.isHeadingReliable(speedKmh);
+    for (const p of pool) {
+      const distKm = Utils.distKm(userState, p);
+      if (distKm > ObservationsConfig.MAX_SCAN_RADIUS_KM) continue;
+      const distM = distKm * 1000;
+      const ahead = Observations.isAhead(p, userState.lat, userState.lng,
+                                          heading, speedKmh, distM);
+      // Strong rear rejection: only when heading is reliable AND the
+      // point sits well behind AND we've already passed the tolerance.
+      if (!ahead && headingReliable && distM > ObservationsConfig.BEHIND_TOLERANCE_M) {
+        continue;
+      }
+      // Directional suppression: only on clear opposite. Bidirectional
+      // and legacy null-heading points always survive this gate.
+      if (!Observations.headingCompatible(p, heading, speedKmh)) {
+        continue;
+      }
+      const onRoute = Observations.isOnRouteCorridor(p, routeCoords, corridorM);
+      // Forward lookahead. Route candidates get a generous extension
+      // (route corridor is additive: it must NEVER shorten anyone's
+      // reach). Free-drive candidates use the speed-tuned lookahead
+      // for live alerts but the caller still receives anything inside
+      // the 5 km scan envelope for ordering / next-ahead UI.
+      const effectiveLookahead = onRoute
+        ? Math.max(lookaheadM * 2, 800)
+        : lookaheadM;
+      const confidence = Observations.confidenceLevel(p);
+      out.push({
+        point: p,
+        distM,
+        ahead,
+        onRoute,
+        confidence,
+        withinLookahead: distM <= effectiveLookahead,
+      });
+    }
+    out.sort((a, b) => {
+      if (a.ahead !== b.ahead)       return a.ahead   ? -1 : 1;
+      if (a.onRoute !== b.onRoute)   return a.onRoute ? -1 : 1;
+      return a.distM - b.distM;
+    });
+    return out;
+  },
+
+  /** Build a fresh user-state snapshot from State. Used by the
+   *  Alerts module so it doesn't duplicate the wiring. */
+  buildUserState() {
+    if (!State.pos) return null;
+    return {
+      lat: State.pos.lat,
+      lng: State.pos.lng,
+      heading: Observations.effectiveHeading(),
+      speedKmh: (State.speedMps || 0) * 3.6,
+      avgSpeedKmh: State.avgSpeedKmh(),
+      accuracy: State.accuracy,
+    };
+  },
+
+  /** Estimate the count of known + trusted observations ahead of the
+   *  driver, used by the small "known road detected" indicator. */
+  knownAheadSummary(userState, routeCoords) {
+    const cands = Observations.liveCandidates(userState, routeCoords);
+    let ahead = 0, trusted = 0;
+    for (const c of cands) {
+      if (!c.ahead) continue;
+      ahead++;
+      if (c.confidence === 'trusted') trusted++;
+    }
+    return { ahead, trusted, isKnownRoad: ahead >= ObservationsConfig.KNOWN_ROAD_MIN_COUNT };
+  },
+
+  /** Conservative, type-aware merge guard for new captures. Returns
+   *  the existing point that should absorb this new observation, or
+   *  null when no safe match exists. NEVER merges across types,
+   *  NEVER merges opposite-direction directional points, and NEVER
+   *  deletes the old record. Caller is responsible for updating
+   *  confirmedCount / lastConfirmedAt; this function only locates
+   *  the merge target.
+   *
+   *  Defaults:
+   *    radius — 18 m
+   *    bearing — 25° if both points are directional with known bearings
+   *
+   *  When uncertain, returns null so both observations are kept
+   *  (spec 11 + 12d). */
+  findMergeTarget(newPoint, existingPoints, opts) {
+    if (!newPoint || !Array.isArray(existingPoints)) return null;
+    const radiusM    = (opts && opts.radiusM)    || 18;
+    const bearingDeg = (opts && opts.bearingDeg) || 25;
+    const type = newPoint.type;
+    for (const ex of existingPoints) {
+      if (!ex || ex.type !== type) continue;
+      const distM = Utils.distKm(ex, newPoint) * 1000;
+      if (distM > radiusM) continue;
+      // Directional / opposite-heading guard.
+      if (ex.directional && newPoint.directional) {
+        const eb = (ex.captureBearing != null) ? ex.captureBearing : ex.heading;
+        const nb = (newPoint.captureBearing != null) ? newPoint.captureBearing : newPoint.heading;
+        if (eb != null && nb != null) {
+          const diff = Speed.angleDiff(eb, nb);
+          if (diff > bearingDeg) continue;
+          // Hard-opposite => never merge.
+          if (diff >= 135) continue;
+        }
+      }
+      // speed_change with different speedLimit => never merge (caller
+      // handles pending-speed-change promotion separately).
+      if (type === 'speed_change') {
+        const exLim = (typeof ex.speedLimit === 'number') ? ex.speedLimit : ex.limit;
+        const npLim = (typeof newPoint.speedLimit === 'number') ? newPoint.speedLimit : newPoint.limit;
+        if (exLim != null && npLim != null && exLim !== npLim) continue;
+      }
+      return ex;
+    }
+    return null;
+  },
+
+  /** Additive backward-compatible migration. Touches each point in
+   *  the global pool and fills the new spec fields when missing. Never
+   *  overwrites an existing value, never deletes. Returns count of
+   *  records that gained at least one new field. */
+  migrateAdditive(points) {
+    if (!Array.isArray(points)) return 0;
+    let touched = 0;
+    for (const p of points) {
+      if (!p || typeof p !== 'object') continue;
+      let changed = false;
+      // Detect a true legacy record (one captured before any of the
+      // v23.7.2 observation counters or status existed). The spec
+      // mandates that these stay alertable after migration.
+      const isLegacy = (p.observationCount === undefined)
+                    && (p.confirmationCount === undefined)
+                    && (p.confidenceStatus === undefined);
+      // confirmedCount — alias of v23.7.2 confirmationCount, or
+      // derived from legacy confidence (each merge bumped confidence
+      // so confidence-1 represents prior re-confirmations). Legacy
+      // points get a minimum of 1 per spec 12c.
+      if (p.confirmedCount === undefined) {
+        if (typeof p.confirmationCount === 'number') p.confirmedCount = p.confirmationCount;
+        else if (typeof p.confidence === 'number')   p.confirmedCount = Math.max(1, p.confidence - 1);
+        else                                         p.confirmedCount = isLegacy ? 1 : 0;
+        changed = true;
+      }
+      // confidenceStatus baseline — legacy points get 'trusted' so
+      // they remain alertable. Speed_change records already had this
+      // set by the v23.7.2 migration so we never overwrite.
+      if (p.confidenceStatus === undefined && isLegacy) {
+        p.confidenceStatus = 'trusted';
+        changed = true;
+      }
+      if (p.firstSeenAt === undefined) {
+        p.firstSeenAt = p.createdAt || null;
+        changed = true;
+      }
+      if (p.lastSeenAt === undefined) {
+        p.lastSeenAt = p.lastObservedAt || p.updatedAt || p.createdAt || null;
+        changed = true;
+      }
+      if (p.lastConfirmedAt === undefined) {
+        p.lastConfirmedAt = p.lastConfirmedAt || null;
+        changed = true;
+      }
+      // heading — alias of captureBearing. Legacy may have neither;
+      // leave null and let bidirectional take over below.
+      if (p.heading === undefined) {
+        p.heading = (typeof p.captureBearing === 'number') ? p.captureBearing : null;
+        changed = true;
+      }
+      // directional — keep existing if set, default to false (legacy
+      // null-bearing points should NOT be assumed directional).
+      if (p.directional === undefined) {
+        p.directional = false;
+        changed = true;
+      }
+      // bidirectional — true when no usable bearing OR explicitly
+      // flagged. Null/missing heading => bidirectional (spec 12c).
+      if (p.bidirectional === undefined) {
+        const hasBearing = (typeof p.captureBearing === 'number') || (typeof p.heading === 'number');
+        p.bidirectional = !hasBearing;
+        changed = true;
+      }
+      if (p.source === undefined) {
+        p.source = 'capture';
+        changed = true;
+      }
+      if (p.routeTags === undefined) {
+        p.routeTags = Array.isArray(p.sourceDestinationIds)
+          ? p.sourceDestinationIds.slice()
+          : (p.destId ? [p.destId] : []);
+        changed = true;
+      }
+      if (p.roadName === undefined) {
+        p.roadName = null;
+        changed = true;
+      }
+      if (changed) touched++;
+    }
+    return touched;
   },
 };
 
@@ -2098,6 +2489,24 @@ const Storage = {
           }
           localStorage.setItem('roadAlert.v22.91.speedPointsMigrated', '1');
         } catch (e) { console.warn('speed-point migration', e); }
+      }
+      // v23.8.0: additive observation schema for the global pool —
+      // confirmedCount, firstSeenAt, lastSeenAt, heading,
+      // bidirectional, source, routeTags, roadName, lastConfirmedAt.
+      // ADDITIVE ONLY — never overwrites existing fields, never
+      // deletes, never suppresses. Legacy points stay alertable.
+      if (!localStorage.getItem('roadAlert.v23.8.0.observationFields')) {
+        try {
+          const d = this.load(this.KEYS.data);
+          if (d && Array.isArray(d.points)) {
+            const n = Observations.migrateAdditive(d.points);
+            if (n > 0) {
+              this.save(this.KEYS.data, d);
+              console.log('v23.8.0: added observation fields on', n, 'points');
+            }
+          }
+          localStorage.setItem('roadAlert.v23.8.0.observationFields', '1');
+        } catch (e) { console.warn('observation-field migration', e); }
       }
       return;
     }
@@ -4024,22 +4433,45 @@ const Alerts = {
     return Speed.findBestSpeedPoint(userState, State.data.points);
   },
 
-  /** Points relevant for the "Next ahead" display + alert checking */
+  /** Points relevant for the "Next ahead" display + alert checking.
+   *  v23.8.0: pulls from the global observation pool (not just the
+   *  active destination's route-pair points) and runs them through
+   *  the proximity-first / ahead-of-driver / heading-compatibility
+   *  primary gate. Active destination, when set, is used purely to
+   *  ORDER + prioritize candidates that lie between the driver and
+   *  the destination — it never filters anything out (spec 1-3, 12a). */
   ahead() {
     if (!State.pos) return [];
+    const userState = Observations.buildUserState();
+    if (!userState) return [];
+    const routeCoords = (typeof MapView !== 'undefined' && MapView && MapView._routeCoords)
+      ? MapView._routeCoords : null;
+    const cands = Observations.liveCandidates(userState, routeCoords);
+    const out = cands
+      .filter(c => !State.passedPoints.has(c.point.id))
+      .map(c => Object.assign({}, c.point, {
+        dist: c.distM / 1000,
+        _onRoute: c.onRoute,
+        _confidence: c.confidence,
+      }));
+    // Destination is context only: prefer candidates that sit between
+    // the driver and the destination (smaller distToDest), but DO NOT
+    // drop anyone — spec 12a forbids using the route polyline as a
+    // gate. A point further from the dest can still alert if it's
+    // genuinely ahead of the driver.
     const dest = State.activeDest();
-    if (!dest) {
-      return State.activePoints()
-        .filter(p => p.status !== 'no' && !State.passedPoints.has(p.id))
-        .map(p => ({ ...p, dist: Utils.distKm(State.pos, p) }))
-        .sort((a, b) => a.dist - b.dist);
+    if (dest) {
+      const myDist = Utils.distKm(State.pos, dest);
+      out.forEach(p => { p.distToDest = Utils.distKm(p, dest); });
+      out.sort((a, b) => {
+        const aPref = (a.distToDest != null && a.distToDest < myDist + 0.5) ? 0 : 1;
+        const bPref = (b.distToDest != null && b.distToDest < myDist + 0.5) ? 0 : 1;
+        if (aPref !== bPref) return aPref - bPref;
+        if ((!!a._onRoute) !== (!!b._onRoute)) return a._onRoute ? -1 : 1;
+        return a.dist - b.dist;
+      });
     }
-    const myDist = Utils.distKm(State.pos, dest);
-    return State.activePoints()
-      .filter(p => p.status !== 'no' && !State.passedPoints.has(p.id))
-      .map(p => ({ ...p, dist: Utils.distKm(State.pos, p), distToDest: Utils.distKm(p, dest) }))
-      .filter(p => p.distToDest < myDist + 0.1)
-      .sort((a, b) => a.dist - b.dist);
+    return out;
   },
 
   /** v22: Threshold-crossing alert logic.
@@ -4059,8 +4491,13 @@ const Alerts = {
     const aheadList = this.ahead();
     const focusedId = aheadList.length ? aheadList[0].id : null;
 
-    State.activePoints().forEach(p => {
-      if (p.status === 'no') return;
+    // v23.8.0: iterate the GLOBAL observation pool, not just the
+    // active destination's route-pair points. Selecting Home no
+    // longer hides Camera-on-Osrati-road from alert evaluation.
+    // The 5 km gate keeps the linear scan cheap at the current scale.
+    State.data.points.forEach(p => {
+      if (!p || p.status === 'no') return;
+      if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return;
       if (State.passedPoints.has(p.id)) return;
 
       const distKm = Utils.distKm(State.pos, p);
@@ -4129,18 +4566,36 @@ const Alerts = {
         return;
       }
 
-      // v22.12 FIX: prefer the geometric route-based check.
+      // v23.8.0: ahead-of-driver from the BEST available signal —
+      // GPS heading (when reliable) → movement bearing → neutral.
+      // Per spec 7 + 12a, never make destination geometry the primary
+      // gate: the calculated route may not be the road actually driven.
+      // Destination only refines ordering (in Alerts.ahead()), never
+      // suppresses an otherwise-ahead point.
       let ahead;
-      if (dest && myDistToDest != null) {
-        const pDistToDest = Utils.distKm(p, dest);
-        ahead = pDistToDest < myDistToDest + 0.15;
+      const speedKmh = (State.speedMps || 0) * 3.6;
+      const headingReliable = Speed.isHeadingReliable(speedKmh);
+      if (headingReliable && State.heading != null) {
+        const toPt = Speed.bearingBetween(State.pos.lat, State.pos.lng, p.lat, p.lng);
+        ahead = Speed.angleDiff(State.heading, toPt) <= 90;
       } else if (State.prevPos && State.speedMps > 1) {
-        const heading = Utils.bearing(State.prevPos, State.pos);
+        const moveHeading = Utils.bearing(State.prevPos, State.pos);
         const toPt = Utils.bearing(State.pos, p);
-        const diff = Math.abs(((toPt - heading + 540) % 360) - 180);
+        const diff = Math.abs(((toPt - moveHeading + 540) % 360) - 180);
         ahead = diff <= 90;
       } else {
+        // Heading unknown / very slow → neutral. Do not suppress.
         ahead = true;
+      }
+      // Directional opposite-heading guard: only when heading is
+      // reliable, never silently suppress otherwise.
+      if (ahead && headingReliable
+          && p.directional && p.bidirectional !== true) {
+        const pb = (p.captureBearing != null) ? p.captureBearing
+                 : (typeof p.heading === 'number') ? p.heading : null;
+        if (pb != null && Speed.angleDiff(State.heading, pb) >= ObservationsConfig.STRONG_MISMATCH_DEG) {
+          ahead = false;
+        }
       }
 
       if (!ahead) {
@@ -4194,9 +4649,16 @@ const Alerts = {
         const intelMode = State.settings.intelMode || 'legacy';
         if (intelMode !== 'legacy') {
           try {
-            const onRoute = (typeof MapView !== 'undefined' && MapView && MapView._routeCoords)
-              ? null   // we don't have a fast corridor check inline; null = unknown
-              : null;
+            // v23.8.0: feed the real route-corridor verdict so the
+            // intelligence engine can add the on-route bonus. Route
+            // is additive context only — a true value adds confidence
+            // but a false/null value does NOT suppress.
+            let onRoute = null;
+            if (typeof MapView !== 'undefined' && MapView && MapView._routeCoords) {
+              const corridorM = Observations.corridorWidthM(
+                (State.speedMps || 0) * 3.6, State.accuracy);
+              onRoute = Observations.isOnRouteCorridor(p, MapView._routeCoords, corridorM);
+            }
             const userState = IntelligenceEngine.buildUserState(meters, onRoute);
             intelEval = IntelligenceEngine.evaluate(p, userState);
             IntelligenceEngine.logScoreLine(p, intelEval);

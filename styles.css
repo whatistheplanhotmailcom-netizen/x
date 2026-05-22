@@ -337,6 +337,12 @@ body {
 .diag-strip .good { color: var(--green); font-weight: 700; }
 .diag-strip .bad  { color: var(--red); font-weight: 700; }
 .diag-strip .warn { color: var(--amber-2); font-weight: 700; }
+/* v23.8.0: known-road indicator — non-modal, sits inside the
+   diag-right cell next to ETA. Shown only when ≥ 3 observations
+   are matched ahead of the driver from the global pool. */
+.diag-strip .diag-known { color: var(--ink-2, var(--ink-3)); margin-left: 6px; font-size: 11px; }
+.diag-strip .diag-known.good { color: var(--green); font-weight: 700; }
+.diag-strip .diag-known[hidden] { display: none; }
 
 /* v23.1.7: keep the real 🟢 emoji and add a neon-green glow ring that
    pulses outward from behind it every second, peaking at 10% larger

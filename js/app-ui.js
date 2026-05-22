@@ -435,14 +435,13 @@ const MapView = {
     aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
 
     const myDist = (State.pos && dest) ? Utils.distKm(State.pos, dest) : null;
-    // v23.7.2 — speed_change observations are PERMANENT road-memory
-    // signs and must render even when no destination is active.
-    // Other types (cameras, gates, etc.) still follow the route filter
-    // so the existing UX (only-show-ones-on-the-route) is unchanged.
-    const routeIds = new Set(State.activePoints().map(p => p.id));
+    // v23.8.0 — render the GLOBAL observation pool. Every captured
+    // point is reusable across trips regardless of which destination
+    // is active, so the map shows them all. The destination is
+    // context only; selecting Home no longer hides points captured
+    // on past Work trips that lie on the same road.
     const visible = State.data.points.filter(p =>
-      p && p.lat != null && p.lng != null &&
-      (routeIds.has(p.id) || p.type === 'speed_change')
+      p && typeof p.lat === 'number' && typeof p.lng === 'number'
     );
     visible.forEach(p => {
       const passedByGeometry = (myDist != null && dest)
@@ -552,7 +551,11 @@ const MapView = {
     if (State.pos) extend(State.pos.lat, State.pos.lng);
     const dest = State.activeDest();
     if (dest) extend(dest.lat, dest.lng);
-    State.activePoints().forEach(p => extend(p.lat, p.lng));
+    // v23.8.0: fit-all spans the global observation pool so
+    // points from past trips remain visible after migration.
+    State.data.points.forEach(p => {
+      if (p && typeof p.lat === 'number' && typeof p.lng === 'number') extend(p.lat, p.lng);
+    });
     if (isFinite(west)) {
       this.m.fitBounds([[west, south], [east, north]], {
         padding: 40,
@@ -1658,16 +1661,19 @@ const UI = {
     // filtering, no destination-based "ahead" check — just raw distance.
     // Falls back to chronological order when GPS is off.
     const myPos = State.pos;
+    // v23.8.0: timeline rail surfaces the global observation pool —
+    // every captured point is alertable on every trip, so the
+    // sidebar reflects the same source-of-truth as the alert engine.
     let pts;
     if (myPos) {
-      pts = State.activePoints()
-        .filter(p => p.status !== 'no')
+      pts = State.data.points
+        .filter(p => p && p.status !== 'no' && typeof p.lat === 'number' && typeof p.lng === 'number')
         .map(p => ({ ...p, dist: Utils.distKm(myPos, p) }))
         .sort((a, b) => a.dist - b.dist)
         .slice(0, 50);
     } else {
-      pts = State.activePoints()
-        .filter(p => p.status !== 'no')
+      pts = State.data.points
+        .filter(p => p && p.status !== 'no' && typeof p.lat === 'number' && typeof p.lng === 'number')
         .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
         .slice(0, 50);
     }
@@ -1849,6 +1855,32 @@ const UI = {
       }
     }
 
+    // v23.8.0: known-road indicator. Non-modal hint that shows the
+    // count of observations ahead of the driver — proof that the
+    // global pool is matching the current road regardless of which
+    // destination is active. Hidden when there are no known points
+    // nearby or when GPS isn't running.
+    const knownEl = document.getElementById('diag-known');
+    if (knownEl) {
+      let show = false;
+      if (State.pos && typeof Observations !== 'undefined') {
+        try {
+          const userState = Observations.buildUserState();
+          if (userState) {
+            const routeCoords = (MapView && MapView._routeCoords) ? MapView._routeCoords : null;
+            const s = Observations.knownAheadSummary(userState, routeCoords);
+            if (s && s.isKnownRoad) {
+              const noun = s.ahead === 1 ? 'alert' : 'alerts';
+              knownEl.textContent = `Known road · ${s.ahead} ${noun} ahead`;
+              knownEl.className = 'diag-known' + (s.trusted >= 3 ? ' good' : '');
+              show = true;
+            }
+          }
+        } catch (e) {}
+      }
+      knownEl.hidden = !show;
+    }
+
     // Network cell — center of the strip. navigator.onLine plus the
     // online/offline event listeners (wired in boot) keep it live.
     // v23.1.7:  emoji is back. .net-emoji child holds the glyph so
@@ -1981,8 +2013,11 @@ const UI = {
       gpsEl.textContent = '—';
       gpsEl.style.color = '';
     }
+    // v23.8.0: status count reflects the global observation pool —
+    // every captured point is reusable across trips, so the badge
+    // shows the total instead of the active-destination-only subset.
     document.getElementById('status-pts').textContent =
-      `${State.activePoints().filter(p => p.status !== 'no').length} pts`;
+      `${State.data.points.filter(p => p && p.status !== 'no').length} pts`;
   },
 
   renderDisabledCount() {
@@ -2445,13 +2480,11 @@ const UI = {
       });
       return;
     }
-    if (!State.data.activeDestId) {
-      Utils.toast('Pick a destination before capturing', 'bad');
-      this.closeAllModals();
-      this.renderRoutesList();
-      this.openModal('m-routes');
-      return;
-    }
+    // v23.8.0: capture no longer requires an active destination — a
+    // captured observation lives in the global pool and is alertable
+    // on any trip past the same road segment. destId is still
+    // attached as a routeTag when a destination is active, so legacy
+    // routePointRefs continue to work for the existing UI.
     State.pendingCapture = {
       id: Utils.uid(),
       type,
@@ -2460,7 +2493,7 @@ const UI = {
       lng: +loc.lng.toFixed(5),
       status: 'active',
       confidence: 1,
-      destId: State.data.activeDestId,
+      destId: State.data.activeDestId || null,
       createdAt: new Date().toISOString(),
     };
     this.closeAllModals();
@@ -2544,8 +2577,16 @@ const UI = {
     const SPEED_DEDUPE_BEARING_DEG = (typeof MigrationConfig !== 'undefined' && MigrationConfig.DEDUPE_BEARING_DIFF_DEGREES)
       || 35;
 
+    // v23.8.0: merge across the GLOBAL pool (no destId gate) with a
+    // conservative type-aware radius per spec 11 + 12d:
+    //   - same canonical type only (never merge different types)
+    //   - speed_change: 25m + 25° bearing (existing tight rule)
+    //   - other types: 18m default (was 100m — too loose, risked
+    //     merging two distinct cameras / signs near each other)
+    //   - directional opposite-heading => never merge
+    const SAFE_MERGE_RADIUS_M = 18;
     const nearby = State.data.points.find(p => {
-      if (p.type !== c.type || p.destId !== c.destId) return false;
+      if (p.type !== c.type) return false;
       const distM = Utils.distKm(p, c) * 1000;
       if (isSpeedChange) {
         if (distM > SPEED_DEDUPE_DIST_M) return false;
@@ -2558,7 +2599,14 @@ const UI = {
         }
         return true;
       }
-      return distM < 100;
+      if (distM > SAFE_MERGE_RADIUS_M) return false;
+      // Directional + opposite-heading => never merge (spec 12d).
+      if (p.directional && c.directional) {
+        const pb = (p.captureBearing != null) ? p.captureBearing : p.heading;
+        const cb = (c.captureBearing != null) ? c.captureBearing : c.heading;
+        if (pb != null && cb != null && Speed.angleDiff(pb, cb) > 35) return false;
+      }
+      return true;
     });
 
     let announce;
@@ -2654,6 +2702,27 @@ const UI = {
           nearby.lastConfirmedAt   = nearby.updatedAt;
           nearby.confidenceStatus  = Speed.deriveConfidenceStatus(nearby);
         }
+        // v23.8.0: mirror confirmation counters on every type so the
+        // global observation pool surfaces re-confirmations through the
+        // spec's confirmedCount + lastConfirmedAt + lastSeenAt fields.
+        nearby.confirmedCount  = (nearby.confirmedCount  || 0) + 1;
+        nearby.lastConfirmedAt = nearby.updatedAt;
+        nearby.lastSeenAt      = nearby.updatedAt;
+        // Preserve the stronger heading evidence: if the new capture
+        // brought a heading and the existing record had none, adopt it.
+        if (nearby.heading == null && c.captureBearing != null) {
+          nearby.heading = c.captureBearing;
+        }
+        // If a directional capture confirms a previously-bidirectional
+        // legacy record with the same bearing, clear the bidirectional
+        // flag so direction filtering can now apply. Conservative:
+        // only flip when both sides agree on direction.
+        if (c.directional && nearby.bidirectional === true
+            && nearby.captureBearing != null && c.captureBearing != null
+            && Speed.angleDiff(nearby.captureBearing, c.captureBearing) < 25) {
+          nearby.bidirectional = false;
+          nearby.directional = true;
+        }
         // Same-speed re-confirmation discards any stale pendingSpeedLimitChange
         // that targeted a different value — the driver just re-confirmed the
         // existing reading.
@@ -2672,6 +2741,19 @@ const UI = {
         logEvent('CAPTURE', `${Utils.typeLabel(c.type)} merged (×${n}) @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
       }
     } else {
+      // v23.8.0: seed additive observation fields on the fresh point
+      // so it shows up consistently in the global pool view. Additive
+      // ONLY — never overwrites anything set earlier in finalizeCapture.
+      if (c.confirmedCount  === undefined) c.confirmedCount  = 0;
+      if (c.firstSeenAt     === undefined) c.firstSeenAt     = c.createdAt || new Date().toISOString();
+      if (c.lastSeenAt      === undefined) c.lastSeenAt      = c.firstSeenAt;
+      if (c.lastConfirmedAt === undefined) c.lastConfirmedAt = null;
+      if (c.heading         === undefined) c.heading         = (typeof c.captureBearing === 'number') ? c.captureBearing : null;
+      if (c.directional     === undefined) c.directional     = false;
+      if (c.bidirectional   === undefined) c.bidirectional   = (c.heading == null);
+      if (c.source          === undefined) c.source          = 'capture';
+      if (c.routeTags       === undefined) c.routeTags       = c.destId ? [c.destId] : [];
+      if (c.roadName        === undefined) c.roadName        = null;
       // v22.101: route via State.addPointToActiveDest so the new id is
       // appended to dest.routePointRefs[] post-migration. Direct
       // State.data.points.push left captures invisible to activePoints().
@@ -3090,7 +3172,7 @@ const UI = {
     const ptCount = State.data.points.filter(p => p.destId === id).length;
     logEvent('DEST', `delete prompt: "${name}" (${ptCount} points tagged)`);
     const ok = await UI.confirm(
-      `Delete "${name}"?` + (ptCount > 0 ? `\n\n${ptCount} captured points are tagged to this destination and will become orphans (still in storage, hidden from the map).` : ''),
+      `Delete "${name}"?` + (ptCount > 0 ? `\n\n${ptCount} captured points are tagged to this destination. They stay in the global observation pool and remain alertable on every trip past the same road.` : ''),
       { title: 'Delete destination' }
     );
     if (!ok) {
@@ -3125,7 +3207,11 @@ const UI = {
 
   renderAuditList() {
     const list = document.getElementById('audit-list');
-    const pts = State.activePoints();
+    // v23.8.0: audit covers the global pool so points captured under
+    // any past destination remain reachable for review/cleanup.
+    const pts = State.data.points.filter(p =>
+      p && typeof p.lat === 'number' && typeof p.lng === 'number'
+    );
     document.getElementById('audit-count').textContent = pts.length;
     if (!pts.length) {
       list.innerHTML = '<div class="empty">No points to audit.</div>';

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.5.7';
+const APP_VERSION = 'v23.5.8';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2287,6 +2287,13 @@ const State = {
   prevTs: null,
   accuracy: null,
   lowAccuracy: false,
+  // v23.5.8: GPS altitude diagnostics. ADDITIVE ONLY — these never
+  // feed alerts, scoring, route logic, or map markers. Surfaced in
+  // the debug modal as a read-only readout. All three may be null
+  // when the device/browser does not expose vertical fix data.
+  altitude: null,            // meters above WGS84 ellipsoid (or null)
+  altitudeAccuracy: null,    // ± meters vertical (or null)
+  gpsTimestamp: null,        // raw pos.timestamp (or null)
   // v23.2.1: PERMISSION_DENIED (code 1) flag. Set when the geolocation
   // API rejects with code 1; cleared when GPS.start() is called again.
   // Codes 2 and 3 (POSITION_UNAVAILABLE / TIMEOUT) do NOT set this flag.
@@ -2908,10 +2915,24 @@ const GPS = {
   },
 
   onTick(pos) {
+    // v23.5.8: capture altitude diagnostics (additive — read-only).
+    // Stored on State for the debug modal; NEVER feeds alerts, scoring,
+    // route logic, or map markers. Null when the device omits vertical fix.
+    State.altitude = (pos.coords && pos.coords.altitude != null && !isNaN(pos.coords.altitude))
+      ? pos.coords.altitude : null;
+    State.altitudeAccuracy = (pos.coords && pos.coords.altitudeAccuracy != null && !isNaN(pos.coords.altitudeAccuracy))
+      ? pos.coords.altitudeAccuracy : null;
+    State.gpsTimestamp = pos.timestamp || null;
+
     // v22.79: rate-limited GPS log — every 10s, not every tick.
+    // v23.5.8: append altitude when present so the existing log doubles
+    // as the altitude trace (no duplicate logger).
     if (!this._lastGpsLogAt || Date.now() - this._lastGpsLogAt > 10000) {
       this._lastGpsLogAt = Date.now();
-      logEvent('GPS', `Pos ${pos.coords.latitude.toFixed(4)},${pos.coords.longitude.toFixed(4)} ±${Math.round(pos.coords.accuracy)}m ${(pos.coords.speed != null ? Math.round(pos.coords.speed * 3.6) + 'km/h' : '')}`.trim());
+      const altPart = (State.altitude != null)
+        ? ` alt ${Math.round(State.altitude)}m${State.altitudeAccuracy != null ? ' ±' + Math.round(State.altitudeAccuracy) + 'm' : ''}`
+        : '';
+      logEvent('GPS', `Pos ${pos.coords.latitude.toFixed(4)},${pos.coords.longitude.toFixed(4)} ±${Math.round(pos.coords.accuracy)}m ${(pos.coords.speed != null ? Math.round(pos.coords.speed * 3.6) + 'km/h' : '')}${altPart}`.trim());
     }
     // v22.1: don't silently drop low-accuracy readings.
     // Show a "LOW GPS" warning in the status line but still use the position;

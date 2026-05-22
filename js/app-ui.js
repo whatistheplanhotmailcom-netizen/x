@@ -1546,6 +1546,10 @@ const UI = {
   renderDebugLog() {
     const list = document.getElementById('debug-log');
     const count = document.getElementById('debug-count');
+    // v23.5.8: refresh the altitude block alongside the log so the
+    // readout stays live while the modal is open. Safe-guarded — if
+    // the block is absent (older markup) the call is a no-op.
+    this.renderAltitudeDiag();
     if (!list) return;
     if (count) count.textContent = `(${Logger.logs.length})`;
     if (!Logger.logs.length) {
@@ -1560,6 +1564,44 @@ const UI = {
       </div>`
     ).join('');
     list.scrollTop = 0;
+  },
+
+  /** v23.5.8: GPS altitude diagnostic readout. Pure display — never
+   *  touches alert logic, scoring, route, or markers. Reads the values
+   *  captured in GPS.onTick (State.altitude / State.altitudeAccuracy)
+   *  and applies a quality label band:
+   *    ≤ 5 m  : Excellent
+   *    ≤ 15 m : Good
+   *    ≤ 30 m : Weak
+   *    > 30 m : Unreliable
+   *    null   : Unknown
+   *  Safe to call before GPS has produced a fix and before the modal
+   *  exists — every DOM lookup is null-guarded. */
+  renderAltitudeDiag() {
+    const altEl = document.getElementById('alt-diag-altitude');
+    const accEl = document.getElementById('alt-diag-accuracy');
+    const qEl = document.getElementById('alt-diag-quality');
+    if (!altEl && !accEl && !qEl) return;
+
+    const alt = State.altitude;
+    const acc = State.altitudeAccuracy;
+
+    if (altEl) {
+      altEl.textContent = (alt != null) ? `${alt.toFixed(1)} m` : 'Unavailable';
+    }
+    if (accEl) {
+      accEl.textContent = (acc != null) ? `± ${acc.toFixed(1)} m` : 'Unavailable';
+    }
+    if (qEl) {
+      let label, color;
+      if (acc == null) { label = 'Unknown'; color = 'var(--ink-3)'; }
+      else if (acc <= 5) { label = 'Excellent'; color = 'var(--green)'; }
+      else if (acc <= 15) { label = 'Good'; color = 'var(--green)'; }
+      else if (acc <= 30) { label = 'Weak'; color = 'var(--amber)'; }
+      else { label = 'Unreliable'; color = 'var(--red)'; }
+      qEl.textContent = label;
+      qEl.style.color = color;
+    }
   },
 
   /** v22.58: render the right-side captured-points timeline rail.

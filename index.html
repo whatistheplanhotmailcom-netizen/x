@@ -717,6 +717,16 @@
       <button class="btn" id="debug-copy" style="flex:1;">📋 Copy</button>
       <button class="btn" id="debug-png" style="flex:1;">🖼 PNG</button>
     </div>
+    <!-- v23.5.8: GPS altitude diagnostic block. READ-ONLY — does not
+         affect alerts, scoring, route logic, or map markers. Populated
+         by UI.renderAltitudeDiag from the values captured in
+         GPS.onTick (State.altitude / State.altitudeAccuracy). -->
+    <div id="alt-diag" style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:11px ui-monospace,monospace;line-height:1.6;color:var(--ink);">
+      <div style="font-weight:700;color:var(--ink-2);margin-bottom:4px;">GPS altitude (diagnostic only)</div>
+      <div>Altitude: <span id="alt-diag-altitude">—</span></div>
+      <div>Vertical accuracy: <span id="alt-diag-accuracy">—</span></div>
+      <div>Quality: <span id="alt-diag-quality">—</span></div>
+    </div>
     <div id="debug-log" style="max-height:62vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
   </div>
 </div>
@@ -789,8 +799,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.5.7"></script>
-<script defer src="js/app-ui.js?v=23.5.7"></script>
+<script defer src="js/app-core.js?v=23.5.8"></script>
+<script defer src="js/app-ui.js?v=23.5.8"></script>
 
 </body>
 </html>

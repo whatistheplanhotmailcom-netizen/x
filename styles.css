@@ -1889,3 +1889,99 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   .map-btn { width: 36px; height: 36px; font-size: 14px; } /* v23.5.7: +20% (30→36, 12→14) */
   .follow-pill { padding: 2px 7px; font-size: 9px; }
 }
+
+/* v23.6.0: Sound Alerts settings table. UI-only — selecting frequency
+   or "Used For" stores the preference but does not affect alert
+   triggering, scoring, route logic, or the main driving screen. */
+.sound-alerts-table {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px;
+  margin: 4px 0 8px;
+  font-size: 12px;
+}
+.sound-alerts-head,
+.sound-alerts-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1.4fr) minmax(80px, 0.9fr) minmax(120px, 1.1fr) minmax(110px, 1.3fr);
+  gap: 6px;
+  align-items: center;
+  padding: 6px 4px;
+}
+.sound-alerts-head {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-3);
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 4px;
+}
+.sound-alerts-row + .sound-alerts-row {
+  border-top: 1px dashed var(--line);
+}
+.sound-alerts-row .sa-name {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.2;
+}
+.sound-alerts-row select {
+  background: var(--bg);
+  border: 1px solid var(--line-2);
+  color: var(--ink);
+  padding: 4px 6px;
+  border-radius: 6px;
+  font: inherit;
+  width: 100%;
+}
+.sound-alerts-row .sa-try {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.sound-alerts-row .sa-try button {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+}
+.sound-alerts-row .sa-try button:active { transform: translateY(1px); }
+.sound-alerts-row .sa-status {
+  font-size: 10px;
+  color: var(--ink-3);
+  min-width: 60px;
+  text-align: left;
+  font-family: ui-monospace, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sound-alerts-row .sa-status.buffering { color: var(--amber); }
+.sound-alerts-row .sa-status.playing   { color: var(--green); }
+.sound-alerts-row .sa-status.played    { color: var(--ink-2); }
+.sound-alerts-row .sa-status.failed    { color: var(--red); }
+
+@media (max-width: 540px) {
+  /* Stack the table on narrow screens — each row becomes a card. */
+  .sound-alerts-head { display: none; }
+  .sound-alerts-row {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "name   name"
+      "try    try"
+      "freq   used";
+    row-gap: 6px;
+  }
+  .sound-alerts-row .sa-name   { grid-area: name; }
+  .sound-alerts-row .sa-freq   { grid-area: freq; }
+  .sound-alerts-row .sa-try    { grid-area: try; }
+  .sound-alerts-row .sa-used   { grid-area: used; }
+}

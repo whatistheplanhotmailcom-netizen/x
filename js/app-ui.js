@@ -1183,6 +1183,83 @@ const MapView = {
 };
 
 /* ============================================================
+   6b. SOUND-PREVIEW CONTROLLER — v23.6.0
+   Single-flight controller for the Settings → Sound Alerts "Try"
+   buttons. Routes ALL preview playback through the shared
+   `Audio.preview()` engine so no duplicate audio system exists.
+
+   State machine per click:
+     idle → buffering → playing → played          (success)
+     idle → buffering → failed                    (audio/context error)
+     (any) + new Try   → previous status reset to "—", new flow starts
+
+   The controller never touches alert triggering, scoring, GPS, route,
+   or map markers. It only mutates the `.sa-status` element passed in
+   by `renderSoundAlertsTable`.
+   ============================================================ */
+const SoundPreview = {
+  _active: null, // { stop, statusEl, timer }
+
+  /** Stop the in-flight preview (if any) and clear its status cell. */
+  cancel() {
+    if (!this._active) return;
+    try { this._active.stop && this._active.stop(); } catch (e) {}
+    if (this._active.timer) clearTimeout(this._active.timer);
+    if (this._active.statusEl) {
+      this._active.statusEl.textContent = '—';
+      this._active.statusEl.className = 'sa-status';
+    }
+    this._active = null;
+  },
+
+  _setStatus(el, text, cls) {
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'sa-status' + (cls ? ' ' + cls : '');
+  },
+
+  play(soundId, statusEl) {
+    // Preempt the currently-playing preview, if any.
+    this.cancel();
+
+    this._setStatus(statusEl, 'Buffering…', 'buffering');
+    // Reserve the slot immediately so a second rapid click sees that
+    // a preview is in-flight even before Audio.preview resolves.
+    const slot = { stop: null, statusEl, timer: null };
+    this._active = slot;
+
+    // Defer the audio call by one microtask so the "Buffering…" label
+    // paints before we possibly block on AudioContext.resume(). This
+    // keeps the UI responsive on the very first click of the session
+    // when the context is still suspended.
+    Promise.resolve().then(() => Audio.preview(soundId)).then(
+      handle => {
+        // The user may have started a different preview while we were
+        // awaiting the context — bail if this slot is no longer active.
+        if (this._active !== slot) {
+          try { handle.stop(); } catch (e) {}
+          return;
+        }
+        slot.stop = handle.stop;
+        this._setStatus(statusEl, 'Playing…', 'playing');
+        slot.timer = setTimeout(() => {
+          if (this._active !== slot) return;
+          this._setStatus(statusEl, 'Played', 'played');
+          this._active = null;
+        }, handle.durationMs + 60);
+      },
+      err => {
+        if (this._active !== slot) return;
+        this._setStatus(statusEl, 'Failed', 'failed');
+        this._active = null;
+        try { logEvent('SOUND', 'preview failed (' + soundId + '): ' + (err && err.message || err), 'err'); }
+        catch (e) {}
+      }
+    );
+  },
+};
+
+/* ============================================================
    7. UI
    ============================================================ */
 const UI = {
@@ -1546,6 +1623,10 @@ const UI = {
   renderDebugLog() {
     const list = document.getElementById('debug-log');
     const count = document.getElementById('debug-count');
+    // v23.5.8: refresh the altitude block alongside the log so the
+    // readout stays live while the modal is open. Safe-guarded — if
+    // the block is absent (older markup) the call is a no-op.
+    this.renderAltitudeDiag();
     if (!list) return;
     if (count) count.textContent = `(${Logger.logs.length})`;
     if (!Logger.logs.length) {
@@ -1560,6 +1641,44 @@ const UI = {
       </div>`
     ).join('');
     list.scrollTop = 0;
+  },
+
+  /** v23.5.8: GPS altitude diagnostic readout. Pure display — never
+   *  touches alert logic, scoring, route, or markers. Reads the values
+   *  captured in GPS.onTick (State.altitude / State.altitudeAccuracy)
+   *  and applies a quality label band:
+   *    ≤ 5 m  : Excellent
+   *    ≤ 15 m : Good
+   *    ≤ 30 m : Weak
+   *    > 30 m : Unreliable
+   *    null   : Unknown
+   *  Safe to call before GPS has produced a fix and before the modal
+   *  exists — every DOM lookup is null-guarded. */
+  renderAltitudeDiag() {
+    const altEl = document.getElementById('alt-diag-altitude');
+    const accEl = document.getElementById('alt-diag-accuracy');
+    const qEl = document.getElementById('alt-diag-quality');
+    if (!altEl && !accEl && !qEl) return;
+
+    const alt = State.altitude;
+    const acc = State.altitudeAccuracy;
+
+    if (altEl) {
+      altEl.textContent = (alt != null) ? `${alt.toFixed(1)} m` : 'Unavailable';
+    }
+    if (accEl) {
+      accEl.textContent = (acc != null) ? `± ${acc.toFixed(1)} m` : 'Unavailable';
+    }
+    if (qEl) {
+      let label, color;
+      if (acc == null) { label = 'Unknown'; color = 'var(--ink-3)'; }
+      else if (acc <= 5) { label = 'Excellent'; color = 'var(--green)'; }
+      else if (acc <= 15) { label = 'Good'; color = 'var(--green)'; }
+      else if (acc <= 30) { label = 'Weak'; color = 'var(--amber)'; }
+      else { label = 'Unreliable'; color = 'var(--red)'; }
+      qEl.textContent = label;
+      qEl.style.color = color;
+    }
   },
 
   /** v22.58: render the right-side captured-points timeline rail.
@@ -3011,6 +3130,115 @@ const UI = {
     document.getElementById('i-gh-path').value = State.gh.path || '';
     this.updateBackupStatus();
     this.updateTripButton();
+    // v23.6.0: render the Sound Alerts table from the catalogue +
+    // saved per-row preferences. UI-only — no alert/scoring/route/GPS
+    // logic is touched by this render.
+    this.renderSoundAlertsTable();
+  },
+
+  /** v23.6.0: render the Settings → Sound Alerts table.
+   *
+   *  Read-only of `Audio.PREVIEW_SOUNDS`, write-back to
+   *  `State.settings.soundAlerts[id] = { frequency, usedFor }`.
+   *
+   *  The Try button uses `SoundPreview.play(id, statusEl)` which
+   *  routes through the existing Audio module — no duplicate audio
+   *  system is created. Only one preview plays at a time; clicking
+   *  Try on a different row preempts the in-flight preview.
+   *
+   *  This function rebuilds the rows from scratch each time settings
+   *  open. That's fine because the catalogue is fixed (10 entries)
+   *  and the previous SoundPreview state is cancelled at the top. */
+  renderSoundAlertsTable() {
+    const container = document.getElementById('sound-alerts-rows');
+    if (!container) return; // older markup — nothing to render into
+
+    // Cancel any preview that was mid-flight when the modal was last open.
+    try { SoundPreview.cancel(); } catch (e) {}
+
+    const sounds = (typeof Audio !== 'undefined' && Array.isArray(Audio.PREVIEW_SOUNDS))
+      ? Audio.PREVIEW_SOUNDS : [];
+    if (!State.settings.soundAlerts) State.settings.soundAlerts = {};
+    const prefs = State.settings.soundAlerts;
+
+    const FREQS = ['High', 'Medium', 'Low'];
+    const CATEGORIES = [
+      'None',
+      'Speed Limit',
+      'Speed Camera',
+      'Hazard',
+      'Police',
+      'Road Work',
+      'Accident',
+      'Route Deviation',
+      'GPS Warning',
+      'General Warning',
+    ];
+
+    container.innerHTML = sounds.map(s => {
+      const row = prefs[s.id] || {};
+      const freq = (row.frequency && FREQS.indexOf(row.frequency) >= 0) ? row.frequency : 'Medium';
+      const used = (row.usedFor && CATEGORIES.indexOf(row.usedFor) >= 0) ? row.usedFor : 'None';
+      const safeId = Utils.escapeHtml(s.id);
+      const safeLabel = Utils.escapeHtml(s.label);
+      const freqOpts = FREQS.map(f =>
+        `<option value="${Utils.escapeHtml(f)}"${f === freq ? ' selected' : ''}>${Utils.escapeHtml(f)}</option>`
+      ).join('');
+      const catOpts = CATEGORIES.map(c =>
+        `<option value="${Utils.escapeHtml(c)}"${c === used ? ' selected' : ''}>${Utils.escapeHtml(c)}</option>`
+      ).join('');
+      return (
+        `<div class="sound-alerts-row" role="row" data-sound-id="${safeId}">
+          <div class="sa-name" role="cell">${safeLabel}</div>
+          <div class="sa-freq" role="cell">
+            <select class="sa-freq-sel" aria-label="Frequency for ${safeLabel}">${freqOpts}</select>
+          </div>
+          <div class="sa-try" role="cell">
+            <button type="button" class="sa-try-btn" aria-label="Try ${safeLabel}">Try</button>
+            <span class="sa-status" aria-live="polite">—</span>
+          </div>
+          <div class="sa-used" role="cell">
+            <select class="sa-used-sel" aria-label="Used For ${safeLabel}">${catOpts}</select>
+          </div>
+        </div>`
+      );
+    }).join('');
+
+    // Wire event handlers per row. We bind here (after the markup is
+    // in the DOM) instead of using delegated listeners, because the
+    // table is rebuilt on every settings open and a fresh bind keeps
+    // the handlers' closures pointing at the right elements.
+    container.querySelectorAll('.sound-alerts-row').forEach(row => {
+      const id = row.dataset.soundId;
+      const statusEl = row.querySelector('.sa-status');
+      const tryBtn = row.querySelector('.sa-try-btn');
+      const freqSel = row.querySelector('.sa-freq-sel');
+      const usedSel = row.querySelector('.sa-used-sel');
+
+      if (freqSel) {
+        freqSel.addEventListener('change', () => {
+          if (!State.settings.soundAlerts) State.settings.soundAlerts = {};
+          const cur = State.settings.soundAlerts[id] || {};
+          State.settings.soundAlerts[id] = { ...cur, frequency: freqSel.value };
+          try { State.saveSettings(); }
+          catch (e) { Utils.toast('Settings save failed', 'bad'); }
+        });
+      }
+      if (usedSel) {
+        usedSel.addEventListener('change', () => {
+          if (!State.settings.soundAlerts) State.settings.soundAlerts = {};
+          const cur = State.settings.soundAlerts[id] || {};
+          State.settings.soundAlerts[id] = { ...cur, usedFor: usedSel.value };
+          try { State.saveSettings(); }
+          catch (e) { Utils.toast('Settings save failed', 'bad'); }
+        });
+      }
+      if (tryBtn) {
+        tryBtn.addEventListener('click', () => {
+          SoundPreview.play(id, statusEl);
+        });
+      }
+    });
   },
 
   applyTheme() {

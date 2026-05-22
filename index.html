@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.6.0">
+<link rel="stylesheet" href="styles.css?v=23.6.1">
 </head>
 <body data-theme="light">
 
@@ -453,26 +453,12 @@
     <div class="row-hint">Show or hide the explanatory paragraphs (like this one) under each setting. Turn off for a denser, more compact Settings screen once you know what each row does.</div>
 
     <div class="section-title">Alerts</div>
-    <!-- v23.3.x Phase 3: alert engine mode. DEFAULT IS LEGACY ONLY.
-         Shadow mode runs the IntelligenceEngine in parallel for log
-         visibility but does NOT change real alerts. Active mode gives
-         intelligence veto power over legacy alerts — opt-in only. -->
-    <div class="row">
-      <span class="label">Alert engine</span>
-      <div class="opts" id="intel-mode-opts">
-        <button data-intel-mode="legacy">Legacy</button>
-        <button data-intel-mode="shadow">Shadow</button>
-        <button data-intel-mode="active">Active</button>
-      </div>
-    </div>
-    <div class="row-hint"><strong>Legacy</strong> · current alert engine controls real alerts (default). <strong>Shadow</strong> · legacy still controls alerts; intelligence engine evaluates in parallel and logs decisions. <strong>Active</strong> · intelligence can suppress legacy alerts on low-confidence cases. Trusted observations (confidence ≥ 3 or 3+ confirmations) are protected from suppression except on strong direction mismatch.</div>
-    <!-- v23.4.1: one-tap rollback to Legacy. Shown only when current
-         mode is Shadow or Active. Always available so the driver can
-         restore Legacy with a single press if anything feels wrong. -->
-    <div class="row" id="intel-rollback-row" style="display:none;">
-      <button class="btn" id="btn-intel-rollback" style="flex:1;background:rgba(239,68,68,0.18);color:var(--red);border-color:var(--red);font-weight:700;">↻ Revert to Legacy</button>
-    </div>
-    <div class="row-hint" id="intel-rollback-hint" style="display:none;">One-tap restore of the original alert engine. Use this immediately if Shadow or Active mode does anything unexpected while you're driving — it's always available, and Legacy is the safe fallback.</div>
+    <!-- v23.6.1: Alert engine selector moved out of driver-facing
+         Settings. The selector + Revert-to-Legacy button now live in
+         the Debug modal under "Developer · Alert engine" so accidental
+         taps cannot disable the intelligence engine. Production
+         default is now Active; runaway-guard + bootCheck remain the
+         only paths that may silently downgrade to Legacy. -->
     <div class="row">
       <span class="label">Sound</span>
       <div class="opts" id="sound-opts">
@@ -748,6 +734,31 @@
       <div>Vertical accuracy: <span id="alt-diag-accuracy">—</span></div>
       <div>Quality: <span id="alt-diag-quality">—</span></div>
     </div>
+
+    <!-- v23.6.1: Developer · Alert engine. Moved out of driver-facing
+         Settings so accidental taps cannot disable the intelligence
+         engine. Same ids/classes as the original markup so existing
+         wiring (UI.applyIntelIndicator, intel-mode-opts onclick,
+         btn-intel-rollback onclick, UI.syncSettings) keeps working
+         without code changes. -->
+    <div id="dev-intel-block" style="background:rgba(239,68,68,0.06);border:1px solid var(--red);border-radius:8px;padding:8px 10px;line-height:1.4;color:var(--ink);">
+      <div style="font-weight:700;color:var(--red);margin-bottom:4px;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;">⚠ Developer · Alert engine</div>
+      <div style="font-size:10px;color:var(--ink-3);margin-bottom:8px;">Production default is <strong>Active</strong>. Change only for diagnostics — modifying this can disable live intelligence and affect alert delivery while driving.</div>
+      <div class="row" style="margin:0;">
+        <span class="label">Alert engine</span>
+        <div class="opts" id="intel-mode-opts">
+          <button data-intel-mode="legacy">Legacy</button>
+          <button data-intel-mode="shadow">Shadow</button>
+          <button data-intel-mode="active">Active</button>
+        </div>
+      </div>
+      <div class="row-hint"><strong>Legacy</strong> · original alert engine controls real alerts. <strong>Shadow</strong> · legacy still controls alerts; intelligence engine evaluates in parallel and logs decisions. <strong>Active</strong> · intelligence can suppress legacy alerts on low-confidence cases (production default). Trusted observations (confidence ≥ 3 or 3+ confirmations) are protected from suppression except on strong direction mismatch.</div>
+      <div class="row" id="intel-rollback-row" style="display:none;margin:0;">
+        <button class="btn" id="btn-intel-rollback" style="flex:1;background:rgba(239,68,68,0.18);color:var(--red);border-color:var(--red);font-weight:700;">↻ Revert to Legacy</button>
+      </div>
+      <div class="row-hint" id="intel-rollback-hint" style="display:none;">One-tap restore of the original alert engine. Use this immediately if Shadow or Active mode does anything unexpected while you're driving — it's always available, and Legacy is the safe fallback.</div>
+    </div>
+
     <div id="debug-log" style="max-height:62vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
   </div>
 </div>
@@ -820,8 +831,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.6.0"></script>
-<script defer src="js/app-ui.js?v=23.6.0"></script>
+<script defer src="js/app-core.js?v=23.6.1"></script>
+<script defer src="js/app-ui.js?v=23.6.1"></script>
 
 </body>
 </html>

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.6.0';
+const APP_VERSION = 'v23.6.1';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1956,12 +1956,19 @@ const Storage = {
       // can switch off in Settings → Display to reclaim vertical space.
       showHints: true,
       // v23.3.x Phase 3: alert engine operating mode.
-      //   'legacy' = current alert engine controls real alerts (default)
+      //   'legacy' = original alert engine controls real alerts
       //   'shadow' = legacy controls alerts; IntelligenceEngine evaluates
       //              in parallel and logs decisions (no real effect)
       //   'active' = IntelligenceEngine can suppress legacy alerts
-      // Must be explicitly switched. Never silently elevated.
-      intelMode: 'legacy',
+      //              (PRODUCTION DEFAULT — v23.6.1)
+      // Active intelligence is the effective production mode.
+      // The selector lives inside the Debug modal's "Developer ·
+      // Alert engine" block — not the driver-facing Settings screen —
+      // and the runaway-guard / bootCheck logic remains the sole
+      // mechanism that may silently downgrade to 'legacy'.
+      // Saved-setting merge `{...defaults, ...saved}` ensures any
+      // explicit value a user previously chose is preserved verbatim.
+      intelMode: 'active',
       // v23.6.0: per-row preferences for the Sound Alerts table in
       // Settings. Keyed by Audio.PREVIEW_SOUNDS[].id. Shape per row:
       //   { frequency: 'High'|'Medium'|'Low', usedFor: '<category>' }

@@ -2537,25 +2537,11 @@ const Audio = {
   _voiceCacheFor: null,
   _unlocked: false,
 
-  // v23.6.0: catalogue for the Settings → Sound Alerts table.
-  // Order in the table follows this array; the `id` doubles as the
-  // settings storage key (State.settings.soundAlerts[id]).
-  // Each entry's `pattern` is an array of {type,freq,dur,gap,detune,gain}
-  // segments, played sequentially by Audio.preview using the SHARED
-  // AudioContext (no duplicate audio system). Generated tones only —
-  // no remote dependency, no audio assets.
-  PREVIEW_SOUNDS: [
-    { id: 'soft_chime',         label: 'Soft Chime' },
-    { id: 'double_beep',        label: 'Double Beep' },
-    { id: 'radar_ping',         label: 'Radar Ping' },
-    { id: 'warning_pulse',      label: 'Warning Pulse' },
-    { id: 'camera_tick',        label: 'Camera Tick' },
-    { id: 'speed_tone',         label: 'Speed Tone' },
-    { id: 'route_alert',        label: 'Route Alert' },
-    { id: 'attention_bell',     label: 'Attention Bell' },
-    { id: 'short_siren',        label: 'Short Siren' },
-    { id: 'calm_notification',  label: 'Calm Notification' },
-  ],
+  // v23.6.0 merge: removed the parallel "Audio.PREVIEW_SOUNDS" 10-sound
+  // metadata array — the 18-sound SoundCatalogue defined above this
+  // module is the spec-compliant source. SoundCatalogue + Audio.preview
+  // own the catalogue surface; the old PREVIEW_SOUNDS array would have
+  // duplicated half of those IDs.
 
   ensure() {
     if (!this.ctx) {

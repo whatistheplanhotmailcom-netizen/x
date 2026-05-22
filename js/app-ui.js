@@ -2537,39 +2537,78 @@ const UI = {
     // v22.25: pole + spider speed cams also need a side selection
     if (type === 'speed_camera' || type === 'mobile_camera' ||
         type === 'pole_camera'  || type === 'spider_camera') this.openModal('m-side');
-    else if (type === 'speed_change') this.openLimitPicker('speedchange');
+    else if (type === 'speed_change') this.openLimitPicker();
     else if (type === 'other') this.openModal('m-other');
     else this.finalizeCapture();
   },
 
-  openLimitPicker(mode) {
-    State.limitPickerMode = mode || 'manual';
-    document.getElementById('limit-title').textContent =
-      mode === 'speedchange' ? 'New speed limit (km/h)' : 'Set current speed limit';
-    document.getElementById('limit-clear').style.display =
-      mode === 'manual' ? 'block' : 'none';
+  /** v23.8.6 — unified speed-limit picker. Both entry points (tapping
+   *  the LIMIT sign and capturing a Speed zone) open the same modal
+   *  with the same behavior:
+   *    - sets State.manualLimit so the LIMIT sign updates instantly
+   *    - captures a speed_change observation at the current GPS
+   *      position (when a fix is available), so the value persists as
+   *      road memory for future trips along this segment
+   *  The captured speed_change is silenced from NEXT AHEAD by the
+   *  v23.8.4 SILENT_ALERT_TYPES filter, so picking a limit never
+   *  produces a focused peep / heartbeat / "Speed zone in 500 m" voice.
+   *  Without GPS, only the manual override is set — capture needs
+   *  coordinates and the existing nearby-merge logic to be safe. */
+  openLimitPicker() {
+    document.getElementById('limit-title').textContent = 'Speed limit';
+    document.getElementById('limit-clear').style.display = 'block';
     const grid = document.getElementById('limit-grid');
     grid.innerHTML = [30,40,50,60,70,80,90,100,110,120,130,140].map(L =>
       `<button class="limit-pick" data-limit="${L}">${L}</button>`
     ).join('');
     grid.querySelectorAll('[data-limit]').forEach(b =>
-      b.onclick = () => {
-        const val = +b.dataset.limit;
-        if (State.limitPickerMode === 'manual') {
-          State.manualLimit = val;
-          UI.closeAllModals();
-          UI.render();
-          Utils.toast('Limit set to ' + val, 'good');
-        } else if (State.pendingCapture) {
-          State.pendingCapture.limit = val;
-          State.pendingCapture.name = `Speed → ${val}`;
-          UI.closeAllModals();
-          UI.finalizeCapture();
-        }
-      }
+      b.onclick = () => UI._commitSpeedLimit(+b.dataset.limit)
     );
     document.getElementById('limit-custom').value = '';
     this.openModal('m-limit');
+  },
+
+  /** Single commit path for both the preset grid and the custom-value
+   *  input. Sets the manual override + captures (when GPS allows). */
+  _commitSpeedLimit(val) {
+    if (!val || val < 10 || val > 250) {
+      Utils.toast('Invalid limit', 'bad');
+      return;
+    }
+    State.manualLimit = val;
+    // Seed pendingCapture from the current GPS position if no capture
+    // is already in flight (e.g. when the user tapped the LIMIT sign
+    // directly, not the Capture → Speed zone menu).
+    const loc = State.captureLocationOverride || State.pos;
+    if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') {
+      if (!State.pendingCapture) {
+        State.pendingCapture = {
+          id: Utils.uid(),
+          type: 'speed_change',
+          name: `Speed → ${val}`,
+          lat: +loc.lat.toFixed(5),
+          lng: +loc.lng.toFixed(5),
+          status: 'active',
+          confidence: 1,
+          destId: State.data.activeDestId || null,
+          createdAt: new Date().toISOString(),
+        };
+      } else {
+        // Capture flow already seeded pendingCapture (e.g. Speed zone
+        // from the Capture menu). Reuse it; just stamp the picked value.
+        State.pendingCapture.type = 'speed_change';
+      }
+      State.pendingCapture.limit = val;
+      State.pendingCapture.name  = `Speed → ${val}`;
+      UI.closeAllModals();
+      UI.finalizeCapture(); // toast + voice come from finalizeCapture
+    } else {
+      // No GPS fix — manual override only, no capture (we need coords
+      // to safely de-dup against existing road memory).
+      UI.closeAllModals();
+      UI.render();
+      Utils.toast('Limit set to ' + val + ' (no GPS — not captured)', 'good');
+    }
   },
 
   finalizeCapture() {
@@ -3972,7 +4011,7 @@ function wire() {
     if (State.followMap && State.pos) MapView.recenter();
     logEvent('NAV', 'Follow ' + (State.followMap ? 'ON' : 'OFF'));
   };
-  document.getElementById('sign').onclick = () => UI.openLimitPicker('manual');
+  document.getElementById('sign').onclick = () => UI.openLimitPicker();
 
   document.querySelectorAll('[data-cap]').forEach(b =>
     b.onclick = () => UI.beginCapture(b.dataset.cap)
@@ -3988,18 +4027,7 @@ function wire() {
   );
   document.getElementById('limit-save').onclick = () => {
     const v = +document.getElementById('limit-custom').value;
-    if (!v || v < 10 || v > 250) { Utils.toast('Invalid limit', 'bad'); return; }
-    if (State.limitPickerMode === 'manual') {
-      State.manualLimit = v;
-      UI.closeAllModals();
-      UI.render();
-      Utils.toast('Limit set to ' + v, 'good');
-    } else if (State.pendingCapture) {
-      State.pendingCapture.limit = v;
-      State.pendingCapture.name = `Speed → ${v}`;
-      UI.closeAllModals();
-      UI.finalizeCapture();
-    }
+    UI._commitSpeedLimit(v);
   };
   document.getElementById('limit-clear').onclick = () => {
     State.manualLimit = null;

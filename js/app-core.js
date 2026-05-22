@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.5';
+const APP_VERSION = 'v23.8.6';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2825,7 +2825,10 @@ const State = {
   captureLocationOverride: null,
   editingPointId: null,
   editingDestId: null,
-  limitPickerMode: 'manual', // 'manual' | 'speedchange'
+  // v23.8.6: limitPickerMode removed — the picker is unified. Both
+  // entry points (LIMIT sign tap, Capture → Speed zone) run through
+  // UI._commitSpeedLimit which sets the manual override AND captures
+  // a speed_change at the current GPS position when available.
   lastTripCaptureId: null, // v22.10: id of most recent point captured this trip (for double-tap recall)
   alertsFiredThisTrip: 0, // v22.12: count alerts fired since trip start, shown in diag strip
   feedbackPassId: null,   // v23.7.1: per-session uid for missed-feedback dedup

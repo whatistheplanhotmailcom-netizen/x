@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.7';
+const APP_VERSION = 'v23.8.8';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -4529,6 +4529,16 @@ const Alerts = {
     State.data.points.forEach(p => {
       if (!p || p.status === 'no') return;
       if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return;
+      // v23.8.8: SILENT_ALERT_TYPES (speed_change, traffic_light, gate)
+      // are permanent road infrastructure. They never become "passed",
+      // never need distance tracking, never need ahead-of-driver gating,
+      // and never need re-approach logic — they stay full-color on the
+      // map forever and their value (for speed_change) is surfaced via
+      // the LIMIT sign through Alerts.currentLimit(). Skipping the
+      // entire per-tick loop for them prevents any code path from
+      // adding them to State.passedPoints, which is what was greying
+      // out the speed-sign markers after a drive-by.
+      if (this.SILENT_ALERT_TYPES.has(p.type)) return;
 
       const distKm = Utils.distKm(State.pos, p);
       // v23.8.7: re-approach detection for u-turns / round trips.

@@ -453,7 +453,13 @@ const MapView = {
       // the v23.8.0 global pool, alert eligibility is no longer
       // destination-bound, so the geometry flag has no business
       // muting markers either.
-      const passed = State.passedPoints.has(p.id);
+      // v23.8.8: SILENT_ALERT_TYPES (speed_change, traffic_light,
+      // gate) are permanent road infrastructure — they never grey
+      // out. Even if something else added them to State.passedPoints
+      // historically, the visual layer ignores that for these types.
+      const silent = (typeof Alerts !== 'undefined' && Alerts.SILENT_ALERT_TYPES)
+        ? Alerts.SILENT_ALERT_TYPES.has(p.type) : false;
+      const passed = !silent && State.passedPoints.has(p.id);
       const cls = ['ra-marker', 't-' + p.type];
       if (passed) cls.push('passed');
       if (p.status === 'no') cls.push('disabled');

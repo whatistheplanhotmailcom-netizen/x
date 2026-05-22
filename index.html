@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.5.8">
+<link rel="stylesheet" href="styles.css?v=23.6.0">
 </head>
 <body data-theme="light">
 
@@ -553,6 +553,27 @@
     <div class="row"><span class="label">Trigger when over by (km/h)</span><input type="number" id="i-over" min="0" max="50"></div>
     <div class="row-hint">How many km/h over the limit before the alert fires. <code>5</code> means a 100 km/h zone won't alert until you hit 105.</div>
 
+    <!-- v23.6.0: Sound Alerts table. UI-only — selecting a Frequency or
+         Used For value stores the preference under
+         State.settings.soundAlerts[<sound-id>] but does NOT change
+         when/which alerts fire, alert thresholds, scoring, route logic,
+         GPS, or map markers. The Try button previews the synthesized
+         tone via the existing Audio module (no duplicate audio system,
+         no remote audio assets). Only one preview plays at a time. -->
+    <div class="section-title">Sound Alerts</div>
+    <div class="row-hint" style="margin-left:0;border-left-color:var(--amber);">
+      Preview the 10 generated alert sounds and pick a Frequency + Used For per sound. <strong>Display-only:</strong> saving a row stores your preference but does not change when alerts fire, alert thresholds, route logic, or the main driving screen.
+    </div>
+    <div class="sound-alerts-table" id="sound-alerts-table" role="table" aria-label="Sound alerts">
+      <div class="sound-alerts-head" role="row">
+        <div role="columnheader">Sound Alert</div>
+        <div role="columnheader">Frequency</div>
+        <div role="columnheader">Test</div>
+        <div role="columnheader">Used For</div>
+      </div>
+      <div id="sound-alerts-rows"><!-- rows rendered by UI.renderSoundAlertsTable --></div>
+    </div>
+
     <!-- v22.98: "Name is here" voice announcement when reaching a point -->
     <div class="section-title">Here-now announcement</div>
     <div class="row-hint" style="margin-left:0;border-left-color:var(--amber);">
@@ -717,6 +738,16 @@
       <button class="btn" id="debug-copy" style="flex:1;">📋 Copy</button>
       <button class="btn" id="debug-png" style="flex:1;">🖼 PNG</button>
     </div>
+    <!-- v23.5.8: GPS altitude diagnostic block. READ-ONLY — does not
+         affect alerts, scoring, route logic, or map markers. Populated
+         by UI.renderAltitudeDiag from the values captured in
+         GPS.onTick (State.altitude / State.altitudeAccuracy). -->
+    <div id="alt-diag" style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:11px ui-monospace,monospace;line-height:1.6;color:var(--ink);">
+      <div style="font-weight:700;color:var(--ink-2);margin-bottom:4px;">GPS altitude (diagnostic only)</div>
+      <div>Altitude: <span id="alt-diag-altitude">—</span></div>
+      <div>Vertical accuracy: <span id="alt-diag-accuracy">—</span></div>
+      <div>Quality: <span id="alt-diag-quality">—</span></div>
+    </div>
     <div id="debug-log" style="max-height:62vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
   </div>
 </div>
@@ -789,8 +820,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.5.8"></script>
-<script defer src="js/app-ui.js?v=23.5.8"></script>
+<script defer src="js/app-core.js?v=23.6.0"></script>
+<script defer src="js/app-ui.js?v=23.6.0"></script>
 
 </body>
 </html>

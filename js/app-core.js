@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.3';
+const APP_VERSION = 'v23.8.4';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -4433,13 +4433,26 @@ const Alerts = {
     return Speed.findBestSpeedPoint(userState, State.data.points);
   },
 
+  /** v23.8.4 — types that have a permanent visual / contextual role
+   *  (map markers, LIMIT sign feed) but should NOT drive per-point
+   *  peeps, NEXT AHEAD card focus, proximity heartbeat, here-now voice,
+   *  flash-near border, or auto-announce. They're road features, not
+   *  alert events:
+   *    speed_change   — fed via the LIMIT sign + over-speed alert
+   *    traffic_light  — static road feature; not an alert
+   *    gate           — static road feature; not an alert */
+  SILENT_ALERT_TYPES: new Set(['speed_change', 'traffic_light', 'gate']),
+
   /** Points relevant for the "Next ahead" display + alert checking.
    *  v23.8.0: pulls from the global observation pool (not just the
    *  active destination's route-pair points) and runs them through
    *  the proximity-first / ahead-of-driver / heading-compatibility
    *  primary gate. Active destination, when set, is used purely to
    *  ORDER + prioritize candidates that lie between the driver and
-   *  the destination — it never filters anything out (spec 1-3, 12a). */
+   *  the destination — it never filters anything out (spec 1-3, 12a).
+   *  v23.8.4: SILENT_ALERT_TYPES are filtered out — they live on the
+   *  map and (for speed_change) drive the LIMIT sign, but they never
+   *  appear in NEXT AHEAD and never become the focused alert point. */
   ahead() {
     if (!State.pos) return [];
     const userState = Observations.buildUserState();
@@ -4449,6 +4462,7 @@ const Alerts = {
     const cands = Observations.liveCandidates(userState, routeCoords);
     const out = cands
       .filter(c => !State.passedPoints.has(c.point.id))
+      .filter(c => !this.SILENT_ALERT_TYPES.has(c.point.type))
       .map(c => Object.assign({}, c.point, {
         dist: c.distM / 1000,
         _onRoute: c.onRoute,
@@ -4516,10 +4530,15 @@ const Alerts = {
       // Repeats N times by concatenating the phrase into a single utterance,
       // so the speech engine handles the pauses naturally without
       // cancel/re-speak races.
+      // v23.8.4: SILENT_ALERT_TYPES (speed_change, traffic_light, gate)
+      // skip this announcement — they're static road features, not
+      // alert events. Speed limits are surfaced through the LIMIT sign
+      // and the over-speed flash on the speed card instead.
       const _speedKmh = State.speedMps * 3.6;
       const _hereSpeedT = +State.settings.hereSpeedThreshold || 100;
       const _hereRingM = _speedKmh >= _hereSpeedT ? 100 : 50;
-      if (meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
+      const _silent = this.SILENT_ALERT_TYPES.has(p.type);
+      if (!_silent && meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
         State.hereAnnouncedPoints.add(p.id);
         // v22.87: suppress the distance-marker announcements ("in 500m",
         // "in 1km") for this point now that we're at it. They were

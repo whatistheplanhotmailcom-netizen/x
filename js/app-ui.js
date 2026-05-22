@@ -2203,11 +2203,15 @@ const UI = {
    *  preview status + Used-For selector. Reads / writes
    *  State.settings.soundAlerts (additive, compatible with older
    *  saved settings that don't have this key).
-   *  PREVIEW-ONLY: changes here do NOT affect live alert triggers. */
+   *  PREVIEW-ONLY: changes here do NOT affect live alert triggers.
+   *  v23.6.2: openSoundAlerts is now a no-op deprecation shim — the
+   *  table is rendered inline in #m-settings via UI.renderSoundAlerts()
+   *  called from the settings-open path. Kept for backward
+   *  compatibility with any console / external caller. */
   openSoundAlerts() {
     Audio.unlock();
     this.renderSoundAlerts();
-    this.openModal('m-sound-alerts');
+    this.openModal('m-settings');
   },
 
   renderSoundAlerts() {
@@ -3197,9 +3201,11 @@ const UI = {
    ============================================================ */
 function wire() {
   document.getElementById('btn-settings').onclick = () => {
+    Audio.unlock(); // v23.6.2: arm audio so the inline Try previews work
     UI.syncSettings();
     UI.renderMigrationStatus(); // v22.96: refresh migration status on open
     UI.refreshStorageStatus();  // v23.x Phase 2a: storage health summary
+    UI.renderSoundAlerts();     // v23.6.2: populate inline 18-row table
     UI.openModal('m-settings');
   };
   // v22.96: data architecture migration wiring
@@ -3898,12 +3904,8 @@ function wire() {
     Audio.unlock();
     UI.openSoundCheck();
   };
-  // v23.6.0: Sound Alerts settings modal
-  const _btnSA = document.getElementById('btn-sound-alerts');
-  if (_btnSA) _btnSA.onclick = () => {
-    Audio.unlock();
-    UI.openSoundAlerts();
-  };
+  // v23.6.2: removed the #btn-sound-alerts handler — the 18-row Sound
+  // Alerts table is now inline in Settings, rendered by syncSettings.
   // v22.99: clear cache & hard reload
   document.getElementById('btn-clear-cache').onclick = async () => {
     const ok = await UI.confirm('Clear cache and reload the page? Your saved data is not affected.');

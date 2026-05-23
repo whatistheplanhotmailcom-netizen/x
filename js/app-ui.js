@@ -4591,6 +4591,59 @@ function wire() {
     if (!ok) return;
     _withLoading('btn-restore', '⬇ Restoring…', () => Backup.pull());
   };
+  // v23.9.8: Reset database — clears local points + destinations only.
+  // Keeps app settings + GitHub config. Leaves the remote backup
+  // untouched so Restore can undo it. Confirmation required.
+  const _resetLocalData = () => {
+    State.data = Storage.defaultData();
+    State.saveData();
+    // Clear runtime alert / pass trackers so stale markers don't linger.
+    try {
+      State.alertedMarkers.clear();
+      State.lastDistByPoint.clear();
+      State.minDistByPoint.clear();
+      State.passedPoints.clear();
+      if (State.passedDistByPoint) State.passedDistByPoint.clear();
+    } catch (e) {}
+    if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
+    try { UI.renderTimeline(); } catch (e) {}
+    try { UI.render(); } catch (e) {}
+    UI.syncSettings();
+  };
+  document.getElementById('btn-reset-data').onclick = async () => {
+    const ptCount = State.data.points.length;
+    const dCount = State.data.destinations.length;
+    const ok = await UI.confirm(
+      `Clear ALL local data?\n\nDeletes ${ptCount} point${ptCount === 1 ? '' : 's'} and ${dCount} destination${dCount === 1 ? '' : 's'} from this device.\n\nYour GitHub backup is NOT touched — you can Restore it afterward. App settings and GitHub config are kept.`,
+      { title: 'Reset database', okLabel: 'Reset' }
+    );
+    if (!ok) return;
+    _resetLocalData();
+    Utils.toast('Local database reset', 'good');
+    try { logEvent('DATA', `[DATA] local database reset — ${ptCount} points + ${dCount} destinations cleared`); } catch (e) {}
+  };
+  // v23.9.8: New database — clears local data AND pushes the empty
+  // database to GitHub, replacing the remote backup with a clean slate.
+  document.getElementById('btn-new-database').onclick = async () => {
+    if (!State.gh.token || !State.gh.repo || !State.gh.path) {
+      Utils.toast('Set token/repo/path first', 'bad');
+      return;
+    }
+    const ptCount = State.data.points.length;
+    const dCount = State.data.destinations.length;
+    const ok = await UI.confirm(
+      `Create a NEW empty database?\n\nClears ${ptCount} point${ptCount === 1 ? '' : 's'} and ${dCount} destination${dCount === 1 ? '' : 's'} locally, then pushes the empty database to GitHub (${State.gh.path}), overwriting the backup.\n\nThis cannot be undone.`,
+      { title: 'Create new database', okLabel: 'Create' }
+    );
+    if (!ok) return;
+    _resetLocalData();
+    await _withLoading('btn-new-database', '✨ Creating…', async () => {
+      const pushed = await Backup.push();
+      if (pushed) Utils.toast('New empty database created + backed up', 'good');
+      else Utils.toast('Local reset done — GitHub push failed', 'bad');
+    });
+    try { logEvent('DATA', `[DATA] new database created — local cleared (${ptCount} pts / ${dCount} dests) + empty pushed to GitHub`); } catch (e) {}
+  };
   document.getElementById('trip-toggle').onclick = () => UI.toggleTrip();
   document.getElementById('trip-list').onclick = () => { UI.renderTripsList(); UI.openModal('m-trips'); };
 

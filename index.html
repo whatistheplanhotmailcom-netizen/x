@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.9.7">
+<link rel="stylesheet" href="styles.css?v=23.9.8">
 </head>
 <body data-theme="light">
 
@@ -659,6 +659,12 @@
       <button class="btn" id="btn-restore" style="flex:1;">⬇ Restore</button>
     </div>
     <div class="row-hint"><strong>Backup now</strong> pushes immediately, ignoring the change-check. <strong>Restore</strong> pulls the remote file and OVERWRITES local data (asks for confirmation first).</div>
+    <!-- v23.9.8: reset / new-database controls. -->
+    <div style="display:flex;gap:6px;margin-top:4px;">
+      <button class="btn" id="btn-reset-data" style="flex:1;color:var(--amber-2);border-color:var(--amber-2);">🗑 Reset database</button>
+      <button class="btn" id="btn-new-database" style="flex:1;color:var(--red);border-color:var(--red);">✨ New database</button>
+    </div>
+    <div class="row-hint"><strong>Reset database</strong> clears all local points + destinations on this device (keeps settings + GitHub config). Your GitHub backup is left untouched, so you can <strong>Restore</strong> to undo. <strong>New database</strong> clears local data AND pushes the empty database to GitHub, replacing the backup with a clean slate. Both ask for confirmation.</div>
 
     <div class="section-title">Data</div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;">
@@ -872,8 +878,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.9.7"></script>
-<script defer src="js/app-ui.js?v=23.9.7"></script>
+<script defer src="js/app-core.js?v=23.9.8"></script>
+<script defer src="js/app-ui.js?v=23.9.8"></script>
 
 </body>
 </html>

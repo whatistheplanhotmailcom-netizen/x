@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.9.8">
+<link rel="stylesheet" href="styles.css?v=23.9.9">
 </head>
 <body data-theme="light">
 
@@ -49,6 +49,8 @@
            driving configuration (zoom 18, 3D pitch, heading-up,
            follow ON). Tap again to exit the preset. -->
       <button class="icon-btn" id="btn-drive-view" title="Drive view (zoom + 3D + follow)">🚗</button>
+      <!-- v23.9.9: master toggle for the "Still there?" feedback popup. -->
+      <button class="icon-btn" id="btn-feedback-toggle" title="Feedback popup on/off">💬</button>
       <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
     </div>
   </div>
@@ -878,8 +880,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.9.8"></script>
-<script defer src="js/app-ui.js?v=23.9.8"></script>
+<script defer src="js/app-core.js?v=23.9.9"></script>
+<script defer src="js/app-ui.js?v=23.9.9"></script>
 
 </body>
 </html>

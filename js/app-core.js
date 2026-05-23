@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.9.8';
+const APP_VERSION = 'v23.9.9';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2426,6 +2426,11 @@ const Storage = {
       // Default OFF — must be explicitly enabled per spec; never fires
       // automatically out of the box.
       speedLimitRevalidation: false,
+      // v23.9.9 — master switch for the "Still there?" feedback popup.
+      // Default ON. Toggled from the topbar 💬 button. When OFF, no
+      // feedback popup is queued or shown (alerts, capture, sounds are
+      // unaffected).
+      feedbackEnabled: true,
       // v23.7.3 — per-type override for the proximity heartbeat ping.
       // Shape: { speed_camera: true, petrol: false, … }. Missing keys
       // default to ON, so legacy installs keep their current behavior.
@@ -5054,6 +5059,7 @@ const Confirm = {
    *  GPS session for the same point. */
   requestFeedbackAhead(point, distM) {
     if (!point || !point.id) return;
+    if (State.settings && State.settings.feedbackEnabled === false) return; // v23.9.9 master switch
     if (!this.ASKABLE_TYPES.includes(point.type)) return;
     if (point.status === 'no') return;
     if (this._askedThisTrip.has(point.id)) return;
@@ -5071,6 +5077,7 @@ const Confirm = {
    *  window faster than one GPS tick. Same queue, same guard. */
   onPassed(point) {
     if (!point || !point.id) return;
+    if (State.settings && State.settings.feedbackEnabled === false) return; // v23.9.9 master switch
     if (!this.ASKABLE_TYPES.includes(point.type)) return;
     if (point.status === 'no') return;
     if (this._askedThisTrip.has(point.id)) return;

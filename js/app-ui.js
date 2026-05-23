@@ -4176,6 +4176,37 @@ function wire() {
     }
   };
 
+  // v23.9.9: feedback-popup master toggle. ON = "Still there?" popups
+  // can appear; OFF = no feedback popup is queued or shown. Persists
+  // via State.settings.feedbackEnabled. If a popup is currently open
+  // when switched off, close it immediately.
+  const _btnFeedback = document.getElementById('btn-feedback-toggle');
+  const _paintFeedbackBtn = () => {
+    if (!_btnFeedback) return;
+    const on = State.settings.feedbackEnabled !== false;
+    _btnFeedback.classList.toggle('on', on);
+    _btnFeedback.style.opacity = on ? '' : '0.45';
+    _btnFeedback.title = on ? 'Feedback popup: ON (tap to turn off)' : 'Feedback popup: OFF (tap to turn on)';
+  };
+  if (_btnFeedback) {
+    _paintFeedbackBtn();
+    _btnFeedback.onclick = () => {
+      const next = !(State.settings.feedbackEnabled !== false);
+      State.settings.feedbackEnabled = next;
+      State.saveSettings();
+      _paintFeedbackBtn();
+      if (!next) {
+        // Switched off — dismiss any open popup + clear the queue so
+        // nothing pops after the toggle.
+        try { Confirm._cleanup(); } catch (e) {}
+        Confirm._queue = [];
+        Confirm._activeId = null;
+      }
+      Utils.toast('Feedback popup ' + (next ? 'on' : 'off'), 'good');
+      try { logEvent('FEEDBACK-POPUP', `master toggle → ${next ? 'on' : 'off'}`); } catch (e) {}
+    };
+  }
+
   // v22.88: map style switcher
   document.getElementById('btn-mapstyle').onclick = () => {
     UI.renderMapStyleList();

@@ -213,6 +213,14 @@ body {
   transition: transform 0.1s;
 }
 .icon-btn:active { transform: scale(0.92); }
+/* v23.9.2: highlighted "on" state for topbar icon-buttons that act as
+   toggles (e.g. #btn-drive-view). Uses the same amber accent the
+   nav/pitch buttons use on the map overlay. */
+.icon-btn.on {
+  background: var(--amber);
+  color: #0c0a09;
+  border-color: var(--amber-2);
+}
 
 /* ROUTE BAR */
 /* v23.5.8: one-row wrapper for the road name + destination cards.

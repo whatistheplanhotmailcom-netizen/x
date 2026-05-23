@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.9.1">
+<link rel="stylesheet" href="styles.css?v=23.9.2">
 </head>
 <body data-theme="light">
 
@@ -45,6 +45,10 @@
       <button class="icon-btn" id="btn-longpress" title="Long-press capture">🔒</button>
       <!-- v22.98: debug log panel — tap to see timestamped event history -->
       <button class="icon-btn" id="btn-debug" title="Debug log">🐛</button>
+      <!-- v23.9.2: Drive view toggle — snaps the map to a fixed
+           driving configuration (zoom 18, 3D pitch, heading-up,
+           follow ON). Tap again to exit the preset. -->
+      <button class="icon-btn" id="btn-drive-view" title="Drive view (zoom + 3D + follow)">🚗</button>
       <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
     </div>
   </div>
@@ -868,8 +872,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.9.1"></script>
-<script defer src="js/app-ui.js?v=23.9.1"></script>
+<script defer src="js/app-core.js?v=23.9.2"></script>
+<script defer src="js/app-ui.js?v=23.9.2"></script>
 
 </body>
 </html>

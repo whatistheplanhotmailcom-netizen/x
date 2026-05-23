@@ -4060,6 +4060,50 @@ function wire() {
     Utils.toast(State.settings.pitchMode ? '3D perspective' : '2D top-down', 'good');
   };
 
+  // v23.9.2: Drive view toggle — single tap snaps the map to a fixed
+  // driving preset (zoom 18 / 3D pitch / heading-up / follow ON);
+  // second tap exits the preset (pitch 0 / nav off; follow stays on
+  // because users typically want it on regardless). Mirrors the
+  // existing per-feature buttons (🧭 nav, 3D pitch, follow-pill) so
+  // each one still works independently after Drive view is engaged.
+  const _btnDrive = document.getElementById('btn-drive-view');
+  if (_btnDrive) _btnDrive.onclick = () => {
+    MapView._driveView = !MapView._driveView;
+    _btnDrive.classList.toggle('on', MapView._driveView);
+    if (MapView._driveView) {
+      State.settings.pitchMode = true;
+      State.settings.navMode = true;
+      State.saveSettings();
+      MapView.setPitchMode(true);
+      document.getElementById('btn-pitch').classList.toggle('on', true);
+      document.getElementById('btn-nav').classList.toggle('on', true);
+      if (State.pos) {
+        State.followMap = true;
+        UI.updateFollowPill();
+        try {
+          MapView.m.easeTo({
+            center: [State.pos.lng, State.pos.lat],
+            zoom: 18,
+            duration: 600,
+          });
+        } catch (e) {}
+      }
+      Utils.toast('Drive view on', 'good');
+      try { logEvent('MAP', '[MAP] drive-view ON (zoom=18, pitch=60, nav=on, follow=on)'); } catch (e) {}
+    } else {
+      State.settings.pitchMode = false;
+      State.settings.navMode = false;
+      State.saveSettings();
+      MapView.setPitchMode(false);
+      document.getElementById('btn-pitch').classList.toggle('on', false);
+      document.getElementById('btn-nav').classList.toggle('on', false);
+      // Reset bearing to north so the map isn't stuck on the last heading.
+      try { MapView.m.easeTo({ bearing: 0, duration: 400 }); } catch (e) {}
+      Utils.toast('Drive view off', 'good');
+      try { logEvent('MAP', '[MAP] drive-view OFF'); } catch (e) {}
+    }
+  };
+
   // v22.88: map style switcher
   document.getElementById('btn-mapstyle').onclick = () => {
     UI.renderMapStyleList();

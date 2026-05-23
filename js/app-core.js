@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.9.6';
+const APP_VERSION = 'v23.9.7';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -5012,6 +5012,13 @@ const Confirm = {
   FEEDBACK_DIST_M: 50,
   // v23.7.1: feedback countdown duration (30 s per spec).
   FEEDBACK_COUNTDOWN_S: 30,
+  // v23.9.7: when one askable point opens a feedback popup, any other
+  // askable points within this radius are silently added to
+  // _askedThisTrip so the same cluster (typically opposite-direction
+  // cameras captured at the same intersection) doesn't queue several
+  // popups back-to-back. Cluster suppression is in-memory only; on a
+  // future GPS session each point can prompt again.
+  FEEDBACK_CLUSTER_RADIUS_M: 50,
   // v23.7.2 — speed-limit revalidation tuning. Trigger when a saved
   // speed_change is this close ahead; auto-dismiss after this many s
   // if the driver doesn't respond; suppress re-prompt for the same
@@ -5051,6 +5058,10 @@ const Confirm = {
     if (point.status === 'no') return;
     if (this._askedThisTrip.has(point.id)) return;
     this._askedThisTrip.add(point.id);
+    // v23.9.7: cluster-suppress nearby askable points so opposite-
+    // direction cameras captured at the same intersection don't both
+    // queue popups for this trip.
+    this._addClusterToAskedThisTrip(point);
     this._queue.push({ id: point.id, kind: 'ahead', distM });
     try { logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${point.id} @ ${Math.round(distM)}m (ahead)`); } catch (e) {}
     if (!this._activeId) this._showNext();
@@ -5064,9 +5075,39 @@ const Confirm = {
     if (point.status === 'no') return;
     if (this._askedThisTrip.has(point.id)) return;
     this._askedThisTrip.add(point.id);
+    // v23.9.7: cluster-suppress nearby askable points so opposite-
+    // direction cameras captured at the same intersection don't both
+    // queue popups for this trip.
+    this._addClusterToAskedThisTrip(point);
     this._queue.push({ id: point.id, kind: 'passed', distM: 0 });
     try { logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${point.id} (passed-fallback)`); } catch (e) {}
     if (!this._activeId) this._showNext();
+  },
+
+  /** v23.9.7: Mark any askable points within FEEDBACK_CLUSTER_RADIUS_M
+   *  of `centerPoint` as already-asked-this-trip. Prevents back-to-back
+   *  popups for cameras captured at the same physical location (e.g.
+   *  one per direction). In-memory only — `resetTrip()` clears the set
+   *  on the next GPS session so each point can prompt again later. */
+  _addClusterToAskedThisTrip(centerPoint) {
+    if (!centerPoint || !State || !State.data || !Array.isArray(State.data.points)) return;
+    const radiusM = Confirm.FEEDBACK_CLUSTER_RADIUS_M;
+    let added = 0;
+    for (const p of State.data.points) {
+      if (!p || p.id === centerPoint.id) continue;
+      if (!Confirm.ASKABLE_TYPES.includes(p.type)) continue;
+      if (this._askedThisTrip.has(p.id)) continue;
+      if (typeof p.lat !== 'number' || typeof p.lng !== 'number') continue;
+      let dM;
+      try { dM = Utils.distKm(p, centerPoint) * 1000; } catch (e) { continue; }
+      if (dM <= radiusM) {
+        this._askedThisTrip.add(p.id);
+        added++;
+      }
+    }
+    if (added > 0) {
+      try { logEvent('FEEDBACK-POPUP', `cluster-suppressed ${added} nearby askable point${added === 1 ? '' : 's'} around ${centerPoint.id} (≤${radiusM}m)`); } catch (e) {}
+    }
   },
 
   /** v23.7.1 — open the popup pointing at a specific missed-feedback

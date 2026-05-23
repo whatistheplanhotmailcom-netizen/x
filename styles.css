@@ -499,6 +499,14 @@ body {
 }
 .timeline-entry:last-child { border-bottom: none; }
 .timeline-entry:active { background: var(--surface-2); }
+/* v23.9.1: brief amber outline after a "locate on map" tap so the user
+   can see which row the second tap will edit. Fades out after ~600ms
+   when the tl-locating class is removed by the click handler. */
+.timeline-entry.tl-locating {
+  background: rgba(245,158,11,0.18);
+  box-shadow: inset 0 0 0 2px var(--amber-2);
+  transition: background 0.25s ease-out, box-shadow 0.25s ease-out;
+}
 /* v22.74: small × delete button on each sidebar entry. Positioned in the
    top-right corner of the entry; tap to delete (with confirm). */
 .timeline-entry { position: relative; }
@@ -1258,6 +1266,27 @@ body {
 /* v22.88: badge visible even at 0 count — grey so it's unobtrusive but
    still announces that confirmations exist as a feature. */
 .ra-marker .conf-badge.conf-zero    { background: var(--ink-3); color: #fff; opacity: 0.85; }
+/* v23.9.1: missed-feedback red SQUARE in the top-left corner of every
+   marker that has unresolved missed-feedback entries. Distinct shape +
+   color from the round green/red feedback-count badge in the top-right
+   so the two can never be confused at a glance. */
+.ra-marker .missed-badge {
+  position: absolute;
+  top: -6px; left: -6px;
+  min-width: 16px; height: 16px;
+  padding: 0 4px;
+  background: #dc2626;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+  border-radius: 3px;
+  border: 2px solid var(--surface);
+  display: grid; place-items: center;
+  line-height: 1;
+  z-index: 3;
+  font-family: ui-monospace, monospace;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
 /* v22.82: Google Maps-style directional triangle marker.
    .ra-current is now a wrapper holding two children:
      .ra-current-halo  - small blue dot + pulsing accuracy halo (always shown)

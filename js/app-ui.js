@@ -300,6 +300,19 @@ const MapView = {
     let cls = 'conf-zero';
     if (total > 0) cls = yes > no ? 'conf-pos' : (no > yes ? 'conf-neg' : 'conf-neutral');
     const confHtml = `<span class="conf-badge ${cls}" title="${yes} yes / ${no} no">${total}</span>`;
+    // v23.9.1 — missed-feedback red square in the top-left corner of the
+    // marker. Shows the count of unresolved missed-feedback entries
+    // (point.feedback.missed[] where status === 'missed_feedback').
+    // Hidden entirely when count is 0 so unaffected markers stay clean.
+    let missedHtml = '';
+    try {
+      const missedN = (typeof Confirm !== 'undefined' && typeof Confirm._countUnresolvedMissed === 'function')
+        ? Confirm._countUnresolvedMissed(p)
+        : 0;
+      if (missedN > 0) {
+        missedHtml = `<span class="missed-badge" title="${missedN} missed feedback">${missedN}</span>`;
+      }
+    } catch (e) {}
     // v23.7.2 — speed_change observations render as proper white-circle
     // road-sign markers with a red border + black number, not as a
     // generic emoji marker. Falls back to a generic sign emoji if the
@@ -312,10 +325,10 @@ const MapView = {
         : '?';
       const conf = p.confidenceStatus || '';
       el.innerHTML = `<div class="${classes.join(' ')} sign-style conf-${Utils.escapeHtml(conf)}">` +
-        `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}</div>`;
+        `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}${missedHtml}</div>`;
       return el;
     }
-    el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}</div>`;
+    el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}</div>`;
     return el;
   },
 
@@ -1756,7 +1769,31 @@ const UI = {
       el.onclick = (ev) => {
         // Skip if the user actually tapped the × delete button
         if (ev.target.classList && ev.target.classList.contains('tl-x')) return;
-        UI.openPointEditor(el.dataset.tlEdit);
+        const id = el.dataset.tlEdit;
+        // v23.9.1 — two-tap behavior: first tap pans the map to the
+        // point, second tap (same row within 2.5s) opens the editor.
+        const now = Date.now();
+        const sameRow = (UI._tlLastTapId === id);
+        const withinWindow = (now - (UI._tlLastTapAt || 0)) < 2500;
+        if (sameRow && withinWindow) {
+          UI._tlLastTapId = null;
+          UI._tlLastTapAt = 0;
+          UI.openPointEditor(id);
+          return;
+        }
+        UI._tlLastTapId = id;
+        UI._tlLastTapAt = now;
+        const p = State.data.points.find(x => x.id === id);
+        if (p && MapView.m && p.lat != null && p.lng != null) {
+          try {
+            MapView.m.easeTo({ center: [p.lng, p.lat], duration: 400, essential: true });
+          } catch (e) {}
+          // Brief visual feedback on the row so the user knows the tap
+          // registered as "locate" rather than "edit".
+          el.classList.add('tl-locating');
+          setTimeout(() => el.classList.remove('tl-locating'), 600);
+          Utils.toast('Tap again to edit', 'good');
+        }
       };
     });
 

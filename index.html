@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.8.9">
+<link rel="stylesheet" href="styles.css?v=23.9.0">
 </head>
 <body data-theme="light">
 
@@ -392,6 +392,17 @@
     </div>
     <div class="row-hint" id="e-soundalert-hint" style="font-size:10px;color:var(--ink-3);margin-bottom:4px;">
       Mapped to this point's <strong>type</strong> (alert group). Manage the full Sound Alerts catalogue in Settings → Sound Alerts.
+    </div>
+    <!-- v23.7.3: per-type heartbeat ping toggle. Gates Audio.updateProximityPing
+         when the focused next-ahead point is of this type. Saves to
+         State.settings.heartbeatByType[type]; default ON (respects global
+         proximityPing). Affects ALL points of this type, not just this one. -->
+    <div class="row" id="e-heartbeat-row">
+      <span class="label">Heartbeat ping</span>
+      <span class="toggle" id="t-heartbeat"></span>
+    </div>
+    <div class="row-hint" style="font-size:10px;color:var(--ink-3);margin-bottom:4px;">
+      Per-type override for the continuous proximity ping (the beeping cadence that speeds up as you approach). When OFF, this type stays silent on approach even if the global ping is on. Threshold alerts (2000/1000/500 m) still fire.
     </div>
     <div class="row"><span class="label">Lat</span><input type="number" id="e-lat" step="0.00001"></div>
     <div class="row"><span class="label">Lng</span><input type="number" id="e-lng" step="0.00001"></div>
@@ -857,8 +868,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.8.9"></script>
-<script defer src="js/app-ui.js?v=23.8.9"></script>
+<script defer src="js/app-core.js?v=23.9.0"></script>
+<script defer src="js/app-ui.js?v=23.9.0"></script>
 
 </body>
 </html>

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.9';
+const APP_VERSION = 'v23.9.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -2411,6 +2411,12 @@ const Storage = {
       // Default OFF — must be explicitly enabled per spec; never fires
       // automatically out of the box.
       speedLimitRevalidation: false,
+      // v23.7.3 — per-type override for the proximity heartbeat ping.
+      // Shape: { speed_camera: true, petrol: false, … }. Missing keys
+      // default to ON, so legacy installs keep their current behavior.
+      // Toggle is on the Edit Point modal; applies to ALL points of
+      // that type. Global proximityPing remains the master switch.
+      heartbeatByType: {},
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest
@@ -3538,9 +3544,18 @@ const Audio = {
    *    < final           →  one ping every 0.2s  (~5 Hz)
    *  Where mid = startM × 0.5, final = startM × 0.2.
    *  When the focused point changes (passed → next), state resets cleanly. */
-  updateProximityPing(pointId, distMeters) {
+  updateProximityPing(pointId, distMeters, pointType) {
     if (State.settings.sound === 'off') { this._proximityPointId = null; return; }
     if (State.settings.proximityPing === false) { this._proximityPointId = null; return; }
+    // v23.7.3 — per-type heartbeat override. When the focused point's
+    // type is explicitly toggled OFF in Edit Point, suppress its ping
+    // even when the global proximityPing setting is ON. Missing entry
+    // (typical for fresh installs) defaults to ON so existing users
+    // hear no change.
+    if (pointType) {
+      const map = (State.settings && State.settings.heartbeatByType) || {};
+      if (map[pointType] === false) { this._proximityPointId = null; return; }
+    }
     const startM = +State.settings.proximityStartM || 1000;
     if (pointId == null || distMeters == null || distMeters >= startM) {
       this._proximityPointId = null;
@@ -4822,12 +4837,12 @@ const Alerts = {
       const focusedPoint = aheadList.find(p => p.id === focusedId);
       if (focusedPoint && !this.PROXIMITY_PING_EXCLUDED_TYPES.has(focusedPoint.type)) {
         const focusedMeters = focusedPoint.dist * 1000;
-        Audio.updateProximityPing(focusedId, focusedMeters);
+        Audio.updateProximityPing(focusedId, focusedMeters, focusedPoint.type);
       } else {
-        Audio.updateProximityPing(null, null);
+        Audio.updateProximityPing(null, null, null);
       }
     } else {
-      Audio.updateProximityPing(null, null);
+      Audio.updateProximityPing(null, null, null);
     }
 
     // v22.68 / v22.91: announce speed limit on zone change.

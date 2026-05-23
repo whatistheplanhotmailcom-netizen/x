@@ -2909,10 +2909,22 @@ const UI = {
     // v23.6.8: populate the Sound-alert dropdown with the sound
     // currently mapped to this point's type.
     this.renderEditPointSoundAlert(p.type);
+    // v23.7.3: paint the per-type heartbeat toggle from settings.
+    this.refreshHeartbeatToggle(p.type);
     // v23.7.1: paint the missed-feedback count chip.
     this.refreshMissedFeedbackCount(p.id);
     this.togglePEFields();
     this.openModal('m-edit');
+  },
+
+  /** v23.7.3 — paint the heartbeat toggle for a given point type.
+   *  Default ON when no entry exists (preserves prior global behavior). */
+  refreshHeartbeatToggle(type) {
+    const btn = document.getElementById('t-heartbeat');
+    if (!btn) return;
+    const map = (State.settings && State.settings.heartbeatByType) || {};
+    const on = (map[type] !== false);
+    btn.classList.toggle('on', on);
   },
 
   /** v23.7.1 — paint "Missed Feedback N" on the Edit Point chip from
@@ -4081,6 +4093,23 @@ function wire() {
     Audio.unlock();
     try { logEvent('SOUND', `[SOUND] try ${soundId} @ medium (from Edit Point)`); } catch (e) {}
     Audio.preview(soundId, { frequency: 'medium' });
+  };
+  // v23.7.3: per-type heartbeat ping toggle. Flips
+  // State.settings.heartbeatByType[type] and persists immediately so
+  // the change takes effect on the next Alerts.tick.
+  const _eHB = document.getElementById('t-heartbeat');
+  if (_eHB) _eHB.onclick = () => {
+    const type = document.getElementById('e-type').value;
+    if (!type) return;
+    if (!State.settings.heartbeatByType || typeof State.settings.heartbeatByType !== 'object') {
+      State.settings.heartbeatByType = {};
+    }
+    const wasOn = State.settings.heartbeatByType[type] !== false;
+    State.settings.heartbeatByType[type] = !wasOn;
+    State.saveSettings();
+    _eHB.classList.toggle('on', !wasOn);
+    Utils.toast(`Heartbeat ping for ${Utils.typeLabel(type)} ` + (!wasOn ? 'on' : 'off'), 'good');
+    try { logEvent('SOUND', `[SOUND] heartbeat-by-type ${type} → ${!wasOn ? 'on' : 'off'}`); } catch (e) {}
   };
   // v23.7.1: Missed Feedback chip — count > 0 opens the YES/NO popup
   // for the first unresolved entry; count === 0 shows a small toast.

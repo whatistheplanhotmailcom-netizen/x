@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.9.5';
+const APP_VERSION = 'v23.9.6';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -898,11 +898,18 @@ const ObservationsConfig = {
 const Observations = {
   /** All usable observations from the global pool. Filters out
    *  retired (status === 'no') and any record missing coordinates.
-   *  Never filters by active destination. */
+   *  Never filters by active destination.
+   *  v23.9.6: also filters out points the false-positive ladder has
+   *  marked suppressedPendingRevalidation. They stay in storage and
+   *  on the map (visible markers and audit trail are unchanged) but
+   *  the alert / next-ahead engines treat them as silent until the
+   *  flag is cleared by manual edit or future positive feedback. */
   globalPool() {
     if (!State || !State.data || !Array.isArray(State.data.points)) return [];
     return State.data.points.filter(p =>
-      p && p.status !== 'no' && typeof p.lat === 'number' && typeof p.lng === 'number'
+      p && p.status !== 'no'
+        && !p.suppressedPendingRevalidation
+        && typeof p.lat === 'number' && typeof p.lng === 'number'
     );
   },
 
@@ -967,6 +974,14 @@ const Observations = {
     if (heading == null) return true;
     if (speedKmh != null && speedKmh < 10) return true;
     const diff = Speed.angleDiff(heading, pointBearing);
+    // v23.9.6: per-observation directional-strictness override. Set
+    // when the false-positive ladder classifies an FP as
+    // opposite_direction_likely / parallel_road_likely. The threshold
+    // drops from the global STRONG_MISMATCH_DEG (135°) to 45° for THIS
+    // observation only — global gating is unchanged.
+    if (p.needsDirectionalValidation === true) {
+      return diff < 45;
+    }
     return diff < ObservationsConfig.STRONG_MISMATCH_DEG;
   },
 
@@ -5148,6 +5163,7 @@ const Confirm = {
       : `Still there?`;
     host.innerHTML = `
       <div class="confirm-card">
+        <button class="confirm-close" id="confirm-x" title="Dismiss" aria-label="Dismiss">×</button>
         <div class="confirm-head">
           <div class="confirm-title">${Utils.emoji(point.type)} ${name}</div>
           <div class="confirm-meta">${Utils.escapeHtml(typeLbl)}${sideText} · ${headline}</div>
@@ -5157,10 +5173,15 @@ const Confirm = {
           <button class="confirm-btn confirm-yes" id="confirm-yes">YES</button>
           <button class="confirm-btn confirm-no"  id="confirm-no">NO</button>
         </div>
+        <div class="confirm-actions confirm-actions-fp">
+          <button class="confirm-btn confirm-fp" id="confirm-fp" title="Alert on the wrong road or wrong direction">False positive</button>
+        </div>
       </div>`;
     host.classList.add('show');
     document.getElementById('confirm-yes').onclick = () => this._answer('yes');
     document.getElementById('confirm-no').onclick  = () => this._answer('no');
+    document.getElementById('confirm-x').onclick   = () => this._dismiss();
+    document.getElementById('confirm-fp').onclick  = () => this._answerFalsePositive();
   },
 
   _startCountdown(secs) {
@@ -5316,6 +5337,126 @@ const Confirm = {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
     const host = document.getElementById('confirm-popup');
     if (host) host.classList.remove('show');
+  },
+
+  /** v23.9.6 — driver taps X. Close popup, do NOT update point fields,
+   *  do NOT count as confirmation or missing, do NOT create a missed-
+   *  feedback entry. Suppression for the rest of this trip is already
+   *  in place via _askedThisTrip (added before the popup was shown). */
+  _dismiss() {
+    const id = this._activeId;
+    try { logEvent('FEEDBACK-POPUP', `dismissed ${id || '(none)'} — no point update`); } catch (e) {}
+    // If we were resolving an existing missed-feedback entry, leave it
+    // in its current state (unresolved). The user explicitly chose not
+    // to answer; treating dismiss as resolution would lose that intent.
+    this._resolvingMissedId = null;
+    this._showNext();
+  },
+
+  /** v23.9.6 — driver taps False Positive. Records a revalidation
+   *  sample with feedbackResult='false_positive' (which uses the
+   *  v23.9.5 path to classify cause, never moves the point, and bumps
+   *  falsePositiveCount), then applies the 1st/2nd/3rd confidence
+   *  ladder (suspect → likely-bad → suppressed-pending-revalidation)
+   *  and, when classification is opposite_direction_likely, marks the
+   *  point as needsDirectionalValidation so the alert engine will
+   *  require stricter heading alignment in future encounters. */
+  _answerFalsePositive() {
+    const id = this._activeId;
+    if (!id) return;
+    const point = State.data.points.find(p => p.id === id);
+    if (!point) { this._showNext(); return; }
+    // Capture sample BEFORE we apply the ladder so the classifier
+    // sees the point in its pre-penalty state (cleaner attribution).
+    try {
+      const sample = Confirm._captureRevalidationSample(point, 'false_positive', 'false_positive');
+      if (sample) Confirm._applyRevalidation(point, sample, 'false_positive');
+      Confirm._applyFalsePositiveConfidence(point);
+      // Opposite-direction learning: if the classifier flagged this as
+      // a direction problem, enable stricter heading gating for THIS
+      // observation only (additive boolean — no global threshold change).
+      const r = point.revalidation;
+      const lastIssue = (r && Array.isArray(r.suggestedAdjustments) && r.suggestedAdjustments.length)
+        ? r.suggestedAdjustments[r.suggestedAdjustments.length - 1].reason
+        : null;
+      if (lastIssue === 'opposite_direction_likely' || lastIssue === 'parallel_road_likely') {
+        point.needsDirectionalValidation = true;
+        if (!point.feedbackStats) point.feedbackStats = {};
+        if (!Array.isArray(point.feedbackStats.falsePositiveDirectionEvidence)) {
+          point.feedbackStats.falsePositiveDirectionEvidence = [];
+        }
+        const delta = (typeof point.captureBearing === 'number' && sample && sample.heading != null)
+          ? Speed.angleDiff(point.captureBearing, sample.heading) : null;
+        point.feedbackStats.falsePositiveDirectionEvidence.push({
+          ts: Date.now(),
+          headingDelta: delta,
+          classification: lastIssue,
+        });
+      }
+    } catch (e) {
+      try { logEvent('FEEDBACK-POPUP', 'false_positive handling error: ' + (e && e.message || e), 'err'); } catch (e2) {}
+    }
+    // Persist
+    State.saveData();
+    try {
+      if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackConfirmSound === 'function') {
+        Audio.playFeedbackConfirmSound();
+      }
+    } catch (e) {}
+    try { logEvent('FEEDBACK-POPUP', `false_positive submitted ${point.id}`); } catch (e) {}
+    Utils.toast(`Marked false positive`, 'bad');
+    if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
+    this._resolvingMissedId = null;
+    this._showNext();
+  },
+
+  /** v23.9.6 — confidence ladder for false-positive feedback.
+   *  Reads point.revalidation.falsePositiveCount (already incremented
+   *  by Confirm._applyRevalidation). Applies an inverse of the
+   *  possible/probable/trusted observation ladder:
+   *
+   *    1st FP  → feedbackStats.suspect = true   (warning, minor penalty)
+   *    2nd FP  → feedbackStats.probableIssue = true (stronger penalty)
+   *    3rd FP+ → point.suppressedPendingRevalidation = true
+   *              UNLESS recent positive confirmations (last 30 days)
+   *              outweigh the FP count.
+   *
+   *  Counter penalty: confirmationCount is reduced by 1 (floor 0) per
+   *  FP, mirroring how YES bumps it by 1 elsewhere. observationCount
+   *  is bumped (every FP is still an observation event). The
+   *  confidenceStatus is then re-derived. */
+  _applyFalsePositiveConfidence(point) {
+    if (!point) return;
+    const r = point.revalidation || {};
+    const fpCount = r.falsePositiveCount || 0;
+    // Count recent positives (last 30 days)
+    const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+    let recentPositives = 0;
+    if (Array.isArray(point.confirmations)) {
+      for (const c of point.confirmations) {
+        if (c && c.value === 'yes' && (c.ts || 0) > cutoff) recentPositives++;
+      }
+    }
+    if (!point.feedbackStats) point.feedbackStats = {};
+    if (fpCount >= 1) point.feedbackStats.suspect = true;
+    if (fpCount >= 2) point.feedbackStats.probableIssue = true;
+    if (fpCount >= 3 && recentPositives < fpCount) {
+      point.suppressedPendingRevalidation = true;
+    }
+    // Adjust the v23.7.2 counters used by Speed.deriveConfidenceStatus.
+    // Treat each FP as a counter-observation: bump observationCount,
+    // decrement confirmationCount, and bump rejectionCount.
+    point.observationCount  = (point.observationCount  || 1) + 1;
+    point.confirmationCount = Math.max(0, (point.confirmationCount || 0) - 1);
+    point.rejectionCount    = (point.rejectionCount    || 0) + 1;
+    point.lastObservedAt    = new Date().toISOString();
+    if (typeof Speed !== 'undefined' && typeof Speed.deriveConfidenceStatus === 'function') {
+      try { point.confidenceStatus = Speed.deriveConfidenceStatus(point); } catch (e) {}
+    }
+    try {
+      logEvent('FEEDBACK-POPUP',
+        `false_positive ladder ${point.id} · fpCount=${fpCount} recentPos=${recentPositives} suspect=${!!point.feedbackStats.suspect} probableIssue=${!!point.feedbackStats.probableIssue} suppressed=${!!point.suppressedPendingRevalidation}`);
+    } catch (e) {}
   },
 
   /* ============================================================

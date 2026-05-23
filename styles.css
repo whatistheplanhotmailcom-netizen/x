@@ -1156,7 +1156,27 @@ body {
   border-radius: 12px;
   box-shadow: 0 8px 24px rgba(0,0,0,0.25);
   padding: 10px 12px 12px;
+  position: relative;
 }
+/* v23.9.6: dismiss × in the top-right corner of the popup. Easy tap
+   target (32 px), high contrast, never overlaps the title/meta. */
+.confirm-close {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: var(--ink-2);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.confirm-close:active { background: var(--surface-2); transform: scale(0.94); }
 .confirm-head { margin-bottom: 8px; }
 .confirm-title {
   font-size: 15px;
@@ -1201,6 +1221,25 @@ body {
 .confirm-yes { background: var(--green-2); color: #0c0a09; }
 .confirm-no  { background: var(--red);     color: #fff;     }
 .confirm-btn:active { transform: scale(0.96); opacity: 0.85; }
+/* v23.9.6: False Positive row sits beneath YES/NO. Secondary visual
+   weight (outlined, not filled) so it doesn't compete with the
+   primary YES/NO answers and won't be accidentally tapped while
+   driving. */
+.confirm-actions-fp {
+  grid-template-columns: 1fr;
+  margin-top: 8px;
+}
+.confirm-fp {
+  background: transparent;
+  color: var(--ink-2);
+  border: 1.5px solid var(--ink-3);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  min-height: 38px;
+  padding: 8px 0;
+}
+.confirm-fp:active { background: var(--surface-2); transform: scale(0.97); }
 .ra-marker.t-petrol        { border-color: #65a30d; background: #ecfccb; }
 .ra-marker.t-checkpoint    { border-color: #ca8a04; background: #fef9c3; }
 .ra-marker.t-speed_camera  { border-color: #dc2626; background: #fee2e2; }

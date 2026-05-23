@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.8.9';
+const APP_VERSION = 'v23.9.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1214,6 +1214,50 @@ const Observations = {
       }
       if (p.roadName === undefined) {
         p.roadName = null;
+        changed = true;
+      }
+      // v23.9.0: Road Movement Fingerprint additive fields. NEVER
+      // overwrites existing values — purely fills the schema so legacy
+      // points don't break the evidence gate / debug surfaces.
+      if (p.directionStatus === undefined) {
+        p.directionStatus = (p.captureBearing != null) ? 'known' : 'unknown';
+        changed = true;
+      }
+      if (p.altitudeStatus === undefined) {
+        p.altitudeStatus = (typeof p.altitudeM === 'number') ? 'known' : 'unavailable';
+        changed = true;
+      }
+      if (p.altitudeQuality === undefined) {
+        p.altitudeQuality = (typeof p.altitudeM === 'number')
+          ? (typeof p.verticalAccuracyM === 'number' && p.verticalAccuracyM <= 20
+             ? 'usable'
+             : (typeof p.verticalAccuracyM === 'number' && p.verticalAccuracyM <= 40
+                ? 'low_confidence' : 'unavailable'))
+          : 'unavailable';
+        changed = true;
+      }
+      if (p.sameDirectionConfirmations === undefined) {
+        p.sameDirectionConfirmations = (typeof p.confirmedCount === 'number') ? p.confirmedCount : 0;
+        changed = true;
+      }
+      if (p.oppositeDirectionRejects === undefined) {
+        p.oppositeDirectionRejects = 0;
+        changed = true;
+      }
+      if (p.directionConfidence === undefined) {
+        p.directionConfidence = (p.captureBearing != null) ? 0.5 : 0.2;
+        changed = true;
+      }
+      if (p.observationConfidence === undefined) {
+        p.observationConfidence = 0.5;
+        changed = true;
+      }
+      if (p.confidenceState === undefined) {
+        p.confidenceState = p.confidenceStatus || 'possible';
+        changed = true;
+      }
+      if (p.fingerprintVersion === undefined) {
+        p.fingerprintVersion = 1;
         changed = true;
       }
       if (changed) touched++;
@@ -3621,6 +3665,10 @@ const GPS = {
     // v22.36: reset U-turn detection state
     State.prevHeading = null;
     State.uTurnTicks = 0;
+    // v23.9.0: reset Road Movement Fingerprint runtime buffers + state
+    // machine so a fresh drive does not inherit stale heading / U-turn /
+    // passed-sequence context from the previous session.
+    try { if (typeof RoadMovement !== 'undefined') RoadMovement.resetTripState(); } catch (e) {}
     // v22.38: reset confirmation queue for fresh trip
     Confirm.resetTrip();
     // v23.7.1: fresh feedback pass id so missed_feedback dedup works
@@ -3915,6 +3963,19 @@ const GPS = {
         const segKm = Utils.distKm(prevPos, State.pos);
         if (segKm < 1) State.activeTrip.distanceKm += segKm;
       }
+    }
+
+    // v23.9.0: feed the Road Movement Fingerprint buffer + tick the
+    // U-turn / movement state machine. Wrapped so a thrown error in the
+    // movement module NEVER breaks the GPS loop — alerts and UI must
+    // keep working even when the new helpers are unavailable.
+    try {
+      if (typeof RoadMovement !== 'undefined') {
+        RoadMovement.pushSample(pos.coords, pos.timestamp || Date.now());
+        RoadMovement.tickMovementState(Date.now());
+      }
+    } catch (e) {
+      try { logEvent('RMF', '[RMF] tick step-down: ' + (e && e.message || e), 'err'); } catch (_) {}
     }
 
     // v22.12 FIX: only skip alerts on TRULY garbage GPS readings (>500m).
@@ -4390,6 +4451,1144 @@ const IntelligenceEngine = {
 };
 
 /* ============================================================
+   4c. ROAD MOVEMENT FINGERPRINT — v23.9.0
+   Directional-alert hardening. Replaces proximity-only matching
+   for directional types with evidence-based scoring built from a
+   short rolling movement buffer + capture-time enrichment.
+
+   Source of truth stays in State.data.points; this module never
+   creates a parallel store. It is additive only:
+     - runtime buffer in RoadMovement._samples (not persisted)
+     - capture-time enrichment via RoadMovement.enrichCapture
+     - match-time evidence gate via RoadMovement.evaluateAlert
+     - U-turn state machine that complements GPS._handleUTurn
+     - recent passed-point sequence (runtime only)
+     - altitude as supporting evidence (never primary)
+     - decision-function replay harness for testing without driving
+
+   Failure mode: every public entry point is wrapped so a thrown
+   exception NEVER breaks the GPS loop. On any internal failure the
+   gate steps down to "insufficient_evidence" and lets the caller
+   keep the existing safe behavior path (location-based / legacy
+   compatibility fallback).
+
+   Thresholds live in RoadMovementConfig — single source so tuning
+   is one edit, not a hunt across the file.
+   ============================================================ */
+const RoadMovementConfig = {
+  // GPS quality bands (horizontal).
+  H_ACC_GOOD_M:     15,
+  H_ACC_DEGRADED_M: 25,
+  // Altitude (vertical) quality bands.
+  V_ACC_USABLE_M:        20,
+  V_ACC_LOW_CONF_M:      40,
+  // Movement reliability thresholds.
+  HEADING_TRUST_SPEED_MPS: 1.5,
+  MIN_SAMPLES_FOR_BEARING: 3,
+  STABLE_BEARING_MAX_SPREAD_DEG: 30,
+  // Direction-delta bands (Phase 5).
+  DIR_SAME_MAX_DEG:       35,
+  DIR_WEAK_MAX_DEG:       70,
+  DIR_AMBIG_MAX_DEG:     120,
+  // Ahead-delta bands (Phase 5).
+  AHEAD_MAX_DEG:          45,
+  AHEAD_SIDE_MAX_DEG:     90,
+  AHEAD_SIDE_BEHIND_MAX:  135,
+  // U-turn detection (Phase 6).
+  UTURN_BEARING_DELTA:    120,
+  UTURN_PERSIST_TICKS:    2,
+  UTURN_FRESH_WINDOW_MS:  15000,
+  // Distance / approach trend tolerances.
+  APPROACH_MIN_CLOSE_M:   2,
+  CLOSE_TRUST_M:          120,
+  // Buffer sizing (Phase 2).
+  BUFFER_MAX_SAMPLES:     30,
+  BUFFER_MAX_AGE_MS:      90000,
+  // Recent-passed-points sequence (Phase 7).
+  PASSED_SEQUENCE_MAX:    8,
+  PASSED_SEQUENCE_TTL_MS: 600000,
+  // Confidence floors for weak/ambiguous bands (Phase 5/9).
+  WEAK_DIR_MIN_SCORE:     55,
+  AMBIG_MIN_SCORE:        80,
+  // Logging throttle per (point, decision).
+  DECISION_LOG_THROTTLE_MS: 4000,
+  // Step-down log throttle (Phase 10).
+  STEPDOWN_LOG_THROTTLE_MS: 30000,
+  // Replay harness identifier.
+  FINGERPRINT_VERSION: 1,
+};
+
+const RoadMovement = {
+  // ---- runtime state (not persisted) ----
+  _samples: [],
+  _movementState: 'UNKNOWN',
+  _movementStatePrev: 'UNKNOWN',
+  _stableBearingCurr: null,
+  _stableBearingPrev: null,
+  _uturnTickCount: 0,
+  _lastUTurnAt: 0,
+  _passedSequence: [],
+  _decisionLogAt: new Map(),
+  _stepdownLogAt: new Map(),
+  _lastDecisionByPoint: new Map(),
+  _lastTickDiag: null,
+
+  /** Reset runtime state — called when GPS.start() resets the trip. */
+  resetTripState() {
+    this._samples = [];
+    this._movementState = 'UNKNOWN';
+    this._movementStatePrev = 'UNKNOWN';
+    this._stableBearingCurr = null;
+    this._stableBearingPrev = null;
+    this._uturnTickCount = 0;
+    this._lastUTurnAt = 0;
+    this._passedSequence = [];
+    this._decisionLogAt.clear();
+    this._stepdownLogAt.clear();
+    this._lastDecisionByPoint.clear();
+    this._lastTickDiag = null;
+  },
+
+  /** Phase 4 — directional alert types. */
+  DIRECTIONAL_TYPES: new Set([
+    'speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera',
+    'speed_change', 'checkpoint', 'traffic_light', 'gate',
+  ]),
+  /** Phase 4 — location-based alert type(s). */
+  LOCATION_TYPES: new Set(['petrol']),
+
+  /** Phase 4 — true when the point's type should be evidence-gated.
+   *  "other" defaults to directional (reported in trace findings). */
+  isDirectionalType(type) {
+    if (!type) return false;
+    if (this.LOCATION_TYPES.has(type)) return false;
+    if (this.DIRECTIONAL_TYPES.has(type)) return true;
+    return type === 'other'; // default per spec
+  },
+
+  // ---- Phase 1: pure helpers ----
+
+  /** Shortest-arc angular difference in degrees, [0, 180]. */
+  circularAngleDelta(a, b) {
+    if (a == null || b == null || isNaN(a) || isNaN(b)) return null;
+    let d = Math.abs((a - b) % 360);
+    if (d > 180) d = 360 - d;
+    return d;
+  },
+
+  /** Initial-bearing from (lat1,lng1) to (lat2,lng2), degrees [0,360). */
+  bearingBetween(lat1, lng1, lat2, lng2) {
+    return Speed.bearingBetween(lat1, lng1, lat2, lng2);
+  },
+
+  /** Classify a direction delta into one of the Phase 5 bands. */
+  classifyDirectionDelta(deltaDeg) {
+    if (deltaDeg == null) return 'unknown';
+    const C = RoadMovementConfig;
+    if (deltaDeg <= C.DIR_SAME_MAX_DEG)  return 'same_direction';
+    if (deltaDeg <= C.DIR_WEAK_MAX_DEG)  return 'weak_same_direction';
+    if (deltaDeg <= C.DIR_AMBIG_MAX_DEG) return 'ambiguous';
+    return 'opposite_direction';
+  },
+
+  /** Classify an ahead-delta into one of the Phase 5 bands. */
+  classifyAheadDelta(deltaDeg) {
+    if (deltaDeg == null) return 'unknown';
+    const C = RoadMovementConfig;
+    if (deltaDeg <= C.AHEAD_MAX_DEG)        return 'ahead';
+    if (deltaDeg <= C.AHEAD_SIDE_MAX_DEG)   return 'side_or_curve';
+    if (deltaDeg <= C.AHEAD_SIDE_BEHIND_MAX) return 'side_behind';
+    return 'behind';
+  },
+
+  /** Approach bearing from recent samples: vector-sum of step bearings,
+   *  weighted by step length. Returns null if insufficient movement. */
+  calculateApproachBearing(recentSamples) {
+    const C = RoadMovementConfig;
+    if (!Array.isArray(recentSamples) || recentSamples.length < 2) return null;
+    let sx = 0, sy = 0, totalW = 0;
+    for (let i = 1; i < recentSamples.length; i++) {
+      const a = recentSamples[i - 1];
+      const b = recentSamples[i];
+      if (!a || !b || a.lat == null || b.lat == null) continue;
+      const dM = Utils.distKm(a, b) * 1000;
+      if (dM < C.APPROACH_MIN_CLOSE_M) continue;
+      const bg = this.bearingBetween(a.lat, a.lng, b.lat, b.lng);
+      const rad = bg * Math.PI / 180;
+      sx += Math.cos(rad) * dM;
+      sy += Math.sin(rad) * dM;
+      totalW += dM;
+    }
+    if (totalW < C.APPROACH_MIN_CLOSE_M * 2) return null;
+    let avg = Math.atan2(sy, sx) * 180 / Math.PI;
+    if (avg < 0) avg += 360;
+    return avg;
+  },
+
+  /** Stable bearing — vector-average of the most recent valid headings.
+   *  Returns null when fewer than 3 reliable samples are available. */
+  calculateStableBearing(recentSamples) {
+    const C = RoadMovementConfig;
+    if (!Array.isArray(recentSamples)) return null;
+    let sx = 0, sy = 0, n = 0;
+    for (const s of recentSamples) {
+      if (!s || s.headingDeg == null || isNaN(s.headingDeg)) continue;
+      if (s.speedMps != null && s.speedMps < C.HEADING_TRUST_SPEED_MPS) continue;
+      const rad = s.headingDeg * Math.PI / 180;
+      sx += Math.cos(rad);
+      sy += Math.sin(rad);
+      n++;
+    }
+    if (n < C.MIN_SAMPLES_FOR_BEARING) return null;
+    let avg = Math.atan2(sy / n, sx / n) * 180 / Math.PI;
+    if (avg < 0) avg += 360;
+    return avg;
+  },
+
+  /** Distance trend: 'approaching' / 'receding' / 'flat' / 'unknown'.
+   *  Compares first vs last distance in the window. */
+  calculateDistanceTrend(point, recentSamples) {
+    if (!point || !Array.isArray(recentSamples) || recentSamples.length < 2) return 'unknown';
+    const first = recentSamples[0];
+    const last  = recentSamples[recentSamples.length - 1];
+    if (!first || !last || first.lat == null || last.lat == null) return 'unknown';
+    const d0 = Utils.distKm(first, point) * 1000;
+    const d1 = Utils.distKm(last,  point) * 1000;
+    const delta = d0 - d1;
+    if (Math.abs(delta) < 5) return 'flat';
+    return (delta > 0) ? 'approaching' : 'receding';
+  },
+
+  /** Altitude trend over the window: 'climbing' / 'descending' / 'flat' /
+   *  'unknown'. Uses only samples with usable altitudeQuality. */
+  calculateAltitudeTrend(recentSamples) {
+    if (!Array.isArray(recentSamples) || recentSamples.length < 3) return 'unknown';
+    const usable = recentSamples.filter(s =>
+      s && s.altitudeM != null && s.altitudeQuality && s.altitudeQuality !== 'unavailable'
+    );
+    if (usable.length < 3) return 'unknown';
+    const first = usable[0].altitudeM;
+    const last  = usable[usable.length - 1].altitudeM;
+    const delta = last - first;
+    if (Math.abs(delta) < 2) return 'flat';
+    return (delta > 0) ? 'climbing' : 'descending';
+  },
+
+  /** GPS quality tier from horizontal accuracy. */
+  calculateGpsQuality(sample) {
+    const C = RoadMovementConfig;
+    const acc = sample && sample.horizontalAccuracyM;
+    if (acc == null || isNaN(acc)) return 'unknown';
+    if (acc <= C.H_ACC_GOOD_M)     return 'good';
+    if (acc <= C.H_ACC_DEGRADED_M) return 'degraded';
+    return 'poor';
+  },
+
+  /** Altitude quality tier from vertical accuracy. */
+  calculateAltitudeQuality(sample) {
+    const C = RoadMovementConfig;
+    if (!sample || sample.altitudeM == null) return 'unavailable';
+    const vacc = sample.verticalAccuracyM;
+    if (vacc == null || isNaN(vacc) || vacc > C.V_ACC_LOW_CONF_M) return 'unavailable';
+    if (vacc <= C.V_ACC_USABLE_M)   return 'usable';
+    return 'low_confidence';
+  },
+
+  /** Is the point ahead of the vehicle given the current approach bearing?
+   *  Returns { aheadDelta, band }. band ∈ ahead/side_or_curve/side_behind/behind/unknown. */
+  isPointAheadOfVehicle(currentPosition, point, currentApproachBearing) {
+    if (!currentPosition || !point || currentApproachBearing == null) {
+      return { aheadDelta: null, band: 'unknown' };
+    }
+    const bToPoint = this.bearingBetween(currentPosition.lat, currentPosition.lng, point.lat, point.lng);
+    const delta = this.circularAngleDelta(currentApproachBearing, bToPoint);
+    return { aheadDelta: delta, band: this.classifyAheadDelta(delta) };
+  },
+
+  /** Phase 6 — classify movement state from recent samples + previous
+   *  stable bearing. States:
+   *    UNKNOWN, FORWARD_TRACKING, TURNING, UTURN_DETECTED,
+   *    REVERSE_TRACKING, AMBIGUOUS.
+   *  Detection is conservative: requires persistence across multiple
+   *  valid samples. Caller is responsible for clearing candidates on
+   *  UTURN_DETECTED. */
+  classifyMovementState(recentSamples, previousStableBearing) {
+    const C = RoadMovementConfig;
+    if (!Array.isArray(recentSamples) || recentSamples.length < C.MIN_SAMPLES_FOR_BEARING) {
+      return { state: 'UNKNOWN', stableBearing: null, reason: 'insufficient_movement_history' };
+    }
+    const stable = this.calculateStableBearing(recentSamples);
+    if (stable == null) {
+      return { state: 'AMBIGUOUS', stableBearing: null, reason: 'no_stable_bearing' };
+    }
+    if (previousStableBearing == null) {
+      return { state: 'FORWARD_TRACKING', stableBearing: stable, reason: 'first_stable_bearing' };
+    }
+    const delta = this.circularAngleDelta(previousStableBearing, stable);
+    if (delta == null) {
+      return { state: 'AMBIGUOUS', stableBearing: stable, reason: 'bearing_compare_unknown' };
+    }
+    if (delta > C.UTURN_BEARING_DELTA) {
+      return { state: 'UTURN_DETECTED', stableBearing: stable, reason: 'reversed_stable_bearing', delta };
+    }
+    if (delta > 60) {
+      return { state: 'TURNING', stableBearing: stable, reason: 'large_bearing_change', delta };
+    }
+    return { state: 'FORWARD_TRACKING', stableBearing: stable, reason: 'stable_forward', delta };
+  },
+
+  /** Phase 1/5 — pure-math fingerprint score for (point, runtime). NOT a
+   *  driver-facing decision; the evidence gate (evaluateAlert) consumes
+   *  this output. Returns null when the point is missing, or when there
+   *  is no usable runtime state — never throws. */
+  calculateRoadMovementFingerprint(point, runtimeState) {
+    if (!point || !runtimeState) return null;
+    const r = runtimeState;
+    const C = RoadMovementConfig;
+    const out = {
+      fingerprintVersion: C.FINGERPRINT_VERSION,
+      distM: null,
+      directionDelta: null,
+      directionBand: 'unknown',
+      aheadDelta: null,
+      aheadBand: 'unknown',
+      distanceTrend: 'unknown',
+      altitudeTrend: 'unknown',
+      altitudeDeltaM: null,
+      gpsQuality: r.gpsQuality || 'unknown',
+      altitudeQuality: r.altitudeQuality || 'unavailable',
+      movementState: r.movementState || 'UNKNOWN',
+      uTurnFresh: !!r.uTurnFresh,
+      hasRecentSequenceSupport: false,
+      sequenceConflict: false,
+      score: 0,
+      reasons: [],
+    };
+    if (!r.position) return out;
+    out.distM = Utils.distKm(r.position, point) * 1000;
+    // Direction match
+    const capturedBearing =
+      (point.capturedHeadingDeg != null) ? point.capturedHeadingDeg :
+      (point.approachBearingDeg != null) ? point.approachBearingDeg :
+      (point.captureBearing     != null) ? point.captureBearing     :
+      (typeof point.heading === 'number') ? point.heading : null;
+    if (capturedBearing != null && r.approachBearing != null) {
+      out.directionDelta = this.circularAngleDelta(capturedBearing, r.approachBearing);
+      out.directionBand  = this.classifyDirectionDelta(out.directionDelta);
+    }
+    // Ahead
+    if (r.approachBearing != null) {
+      const ahead = this.isPointAheadOfVehicle(r.position, point, r.approachBearing);
+      out.aheadDelta = ahead.aheadDelta;
+      out.aheadBand  = ahead.band;
+    }
+    // Distance trend
+    out.distanceTrend = this.calculateDistanceTrend(point, r.samples || []);
+    // Altitude
+    if (Array.isArray(r.samples) && r.samples.length) {
+      out.altitudeTrend = this.calculateAltitudeTrend(r.samples);
+      const last = r.samples[r.samples.length - 1];
+      if (last && last.altitudeM != null && typeof point.altitudeM === 'number') {
+        out.altitudeDeltaM = last.altitudeM - point.altitudeM;
+      }
+    }
+    // Recent passed sequence support / conflict (Phase 7)
+    const seq = this._passedSequence;
+    if (seq.length >= 2) {
+      const last2 = seq.slice(-2);
+      const bA = last2[0].passBearingDeg;
+      const bB = last2[1].passBearingDeg;
+      if (bA != null && bB != null) {
+        const dAB = this.circularAngleDelta(bA, bB);
+        const supports = (dAB != null && dAB <= C.DIR_SAME_MAX_DEG);
+        const reverses = (dAB != null && dAB > C.DIR_AMBIG_MAX_DEG);
+        out.hasRecentSequenceSupport = supports;
+        out.sequenceConflict = reverses;
+      }
+    }
+    // Score assembly (Phase 9 — supporting evidence only)
+    let score = 0;
+    if (out.directionBand === 'same_direction') { score += 35; out.reasons.push('direction_same +35'); }
+    else if (out.directionBand === 'weak_same_direction') { score += 18; out.reasons.push('direction_weak +18'); }
+    else if (out.directionBand === 'ambiguous') { score += 0;  out.reasons.push('direction_ambiguous 0'); }
+    else if (out.directionBand === 'opposite_direction') { score -= 50; out.reasons.push('direction_opposite -50'); }
+    if (out.aheadBand === 'ahead') { score += 25; out.reasons.push('ahead +25'); }
+    else if (out.aheadBand === 'side_or_curve') { score += 10; out.reasons.push('side_or_curve +10'); }
+    else if (out.aheadBand === 'side_behind') { score -= 15; out.reasons.push('side_behind -15'); }
+    else if (out.aheadBand === 'behind') { score -= 50; out.reasons.push('behind -50'); }
+    if (out.distanceTrend === 'approaching') { score += 15; out.reasons.push('approaching +15'); }
+    else if (out.distanceTrend === 'receding') { score -= 15; out.reasons.push('receding -15'); }
+    if (out.gpsQuality === 'good') { score += 8; out.reasons.push('gps_good +8'); }
+    else if (out.gpsQuality === 'degraded') { /* neutral */ out.reasons.push('gps_degraded 0'); }
+    else if (out.gpsQuality === 'poor') { score -= 18; out.reasons.push('gps_poor -18'); }
+    if (out.movementState === 'UTURN_DETECTED' || out.uTurnFresh) { score -= 30; out.reasons.push('u_turn -30'); }
+    if (out.movementState === 'TURNING') { score -= 10; out.reasons.push('turning -10'); }
+    if (out.hasRecentSequenceSupport) { score += 8; out.reasons.push('sequence_support +8'); }
+    if (out.sequenceConflict)        { score -= 12; out.reasons.push('sequence_conflict -12'); }
+    if (out.altitudeQuality === 'usable') {
+      if (out.altitudeTrend !== 'unknown' && point.altitudeTrend && out.altitudeTrend === point.altitudeTrend) {
+        score += 4; out.reasons.push('altitude_trend_match +4');
+      } else if (out.altitudeTrend !== 'unknown' && point.altitudeTrend
+                 && out.altitudeTrend !== 'flat' && point.altitudeTrend !== 'flat'
+                 && out.altitudeTrend !== point.altitudeTrend) {
+        score -= 4; out.reasons.push('altitude_trend_conflict -4');
+      }
+    }
+    out.score = Math.max(0, Math.min(100, score + 50)); // anchor neutral at 50
+    return out;
+  },
+
+  // ---- Phase 2: movement buffer ----
+
+  /** Push a normalized GPS sample into the rolling buffer. Returns the
+   *  inserted sample or null when the input was rejected. Never throws.
+   *  Buffer is runtime-only — never persisted. */
+  pushSample(coords, timestamp) {
+    try {
+      const C = RoadMovementConfig;
+      if (!coords || typeof coords.latitude !== 'number' || typeof coords.longitude !== 'number') {
+        return null;
+      }
+      const sample = {
+        lat: coords.latitude,
+        lng: coords.longitude,
+        timestamp: timestamp || Date.now(),
+        speedMps: (typeof coords.speed === 'number' && coords.speed >= 0 && !isNaN(coords.speed))
+          ? coords.speed : null,
+        headingDeg: (typeof coords.heading === 'number' && !isNaN(coords.heading))
+          ? coords.heading : null,
+        altitudeM: (typeof coords.altitude === 'number' && !isNaN(coords.altitude))
+          ? coords.altitude : null,
+        horizontalAccuracyM: (typeof coords.accuracy === 'number' && !isNaN(coords.accuracy))
+          ? coords.accuracy : null,
+        verticalAccuracyM: (typeof coords.altitudeAccuracy === 'number' && !isNaN(coords.altitudeAccuracy))
+          ? coords.altitudeAccuracy : null,
+      };
+      sample.gpsQuality = this.calculateGpsQuality(sample);
+      sample.altitudeQuality = this.calculateAltitudeQuality(sample);
+      // Validity flags — keep the sample but mark it.
+      sample.validForBearing = (sample.gpsQuality !== 'poor')
+        && (sample.speedMps == null || sample.speedMps >= C.HEADING_TRUST_SPEED_MPS);
+      this._samples.push(sample);
+      // Trim by size and age.
+      while (this._samples.length > C.BUFFER_MAX_SAMPLES) this._samples.shift();
+      const now = sample.timestamp;
+      while (this._samples.length && (now - this._samples[0].timestamp) > C.BUFFER_MAX_AGE_MS) {
+        this._samples.shift();
+      }
+      return sample;
+    } catch (e) {
+      this._safeLog('pushSample threw', e);
+      return null;
+    }
+  },
+
+  /** Slice of the buffer with samples newer than maxAgeMs (default: full
+   *  window). Returns a shallow copy so callers can safely sort/filter. */
+  recentSamples(maxAgeMs) {
+    const win = (maxAgeMs == null) ? RoadMovementConfig.BUFFER_MAX_AGE_MS : maxAgeMs;
+    const now = Date.now();
+    return this._samples.filter(s => (now - s.timestamp) <= win).slice();
+  },
+
+  // ---- Phase 3: capture-time enrichment ----
+
+  /** Enrich a freshly captured point in place with road-movement
+   *  metadata. Additive only — never overwrites existing meaningful
+   *  values unless the new value is clearly better quality. Safe to
+   *  call even when GPS state is sparse: missing fields are recorded
+   *  with explicit "unknown" / "unavailable" status. */
+  enrichCapture(point) {
+    try {
+      if (!point || typeof point !== 'object') return point;
+      const C = RoadMovementConfig;
+      const samples = this.recentSamples();
+      const last = samples.length ? samples[samples.length - 1] : null;
+      const approachBearing = this.calculateApproachBearing(samples);
+      const stableBearing   = this.calculateStableBearing(samples);
+      const altitudeTrend   = this.calculateAltitudeTrend(samples);
+      const stateInfo = this.classifyMovementState(samples, this._stableBearingPrev);
+      const nowIso = new Date().toISOString();
+
+      const setIfUndef = (k, v) => { if (point[k] === undefined) point[k] = v; };
+
+      // capturedHeadingDeg — prefer device/GPS heading at capture time;
+      // fall back to stable bearing from movement.
+      const headingAtCapture = (last && last.headingDeg != null) ? last.headingDeg
+        : (typeof State !== 'undefined' && State.heading != null) ? State.heading
+        : null;
+      setIfUndef('capturedHeadingDeg', headingAtCapture);
+      setIfUndef('approachBearingDeg', approachBearing);
+      // Mirror to legacy captureBearing/heading when those are missing,
+      // so existing scoring code keeps working.
+      if (point.captureBearing == null) {
+        if (approachBearing != null) point.captureBearing = approachBearing;
+        else if (headingAtCapture != null) point.captureBearing = headingAtCapture;
+      }
+      if (point.heading == null && point.captureBearing != null) {
+        point.heading = point.captureBearing;
+      }
+
+      const dirBucket = (approachBearing != null) ? Math.round(approachBearing / 22.5) * 22.5 % 360 : null;
+      setIfUndef('directionBucket', dirBucket);
+      setIfUndef('directionStatus', approachBearing != null ? 'known' : 'unknown');
+      if (approachBearing == null) {
+        setIfUndef('directionStatusReason', samples.length < C.MIN_SAMPLES_FOR_BEARING
+          ? 'insufficient_movement_history' : 'no_stable_bearing');
+      }
+
+      // GPS / speed / altitude snapshot.
+      setIfUndef('gpsAccuracyM', last && last.horizontalAccuracyM != null
+        ? last.horizontalAccuracyM
+        : (typeof State !== 'undefined' && typeof State.accuracy === 'number' ? State.accuracy : null));
+      setIfUndef('speedMps', last && last.speedMps != null
+        ? last.speedMps
+        : (typeof State !== 'undefined' && State.speedMps != null ? State.speedMps : null));
+      setIfUndef('altitudeM', last && last.altitudeM != null
+        ? last.altitudeM
+        : (typeof State !== 'undefined' && State.altitude != null ? State.altitude : null));
+      setIfUndef('verticalAccuracyM', last && last.verticalAccuracyM != null
+        ? last.verticalAccuracyM
+        : (typeof State !== 'undefined' && State.altitudeAccuracy != null ? State.altitudeAccuracy : null));
+      setIfUndef('altitudeTrend', altitudeTrend);
+      const altQ = this.calculateAltitudeQuality({
+        altitudeM: point.altitudeM,
+        verticalAccuracyM: point.verticalAccuracyM,
+      });
+      setIfUndef('altitudeQuality', altQ);
+      setIfUndef('altitudeStatus',
+        point.altitudeM == null ? 'unavailable'
+          : (altQ === 'low_confidence' ? 'low_confidence' : 'known'));
+
+      setIfUndef('movementStateAtCapture', stateInfo.state);
+
+      // Lifecycle timestamps.
+      setIfUndef('capturedAt', point.createdAt || nowIso);
+      setIfUndef('firstSeenAt', point.firstSeenAt || point.createdAt || nowIso);
+      setIfUndef('lastSeenAt', point.lastSeenAt || nowIso);
+      setIfUndef('lastConfirmedAt', null);
+      setIfUndef('lastPassedAt', null);
+      setIfUndef('lastDirectionMatchedAt', null);
+      setIfUndef('lastOppositeSuppressedAt', null);
+
+      // Counters / confidence (Phase 9).
+      setIfUndef('sameDirectionConfirmations', 0);
+      setIfUndef('oppositeDirectionRejects', 0);
+      setIfUndef('directionConfidence', approachBearing != null ? 0.5 : 0.2);
+      setIfUndef('observationConfidence', 0.5);
+      setIfUndef('confidenceState', point.confidenceStatus
+        ? point.confidenceStatus
+        : 'possible');
+      setIfUndef('fingerprintVersion', C.FINGERPRINT_VERSION);
+
+      return point;
+    } catch (e) {
+      this._safeLog('enrichCapture threw', e);
+      return point;
+    }
+  },
+
+  // ---- Phase 12: existing point lazy migration ----
+
+  /** Lazy migration helper — called from Alerts.tick when a point is
+   *  next observed with reliable data. Additive only. Never throws. */
+  enrichExistingLazy(point, opportunity) {
+    try {
+      if (!point) return false;
+      let touched = false;
+      const setIfUndef = (k, v) => {
+        if (point[k] === undefined) { point[k] = v; touched = true; }
+      };
+      setIfUndef('directionStatus', point.captureBearing != null ? 'known' : 'unknown');
+      setIfUndef('altitudeStatus', point.altitudeM != null ? 'known' : 'unavailable');
+      setIfUndef('altitudeQuality', this.calculateAltitudeQuality({
+        altitudeM: point.altitudeM,
+        verticalAccuracyM: point.verticalAccuracyM,
+      }));
+      setIfUndef('sameDirectionConfirmations', 0);
+      setIfUndef('oppositeDirectionRejects', 0);
+      setIfUndef('directionConfidence', point.captureBearing != null ? 0.5 : 0.2);
+      setIfUndef('observationConfidence', 0.5);
+      setIfUndef('confidenceState', point.confidenceStatus || 'possible');
+      setIfUndef('fingerprintVersion', RoadMovementConfig.FINGERPRINT_VERSION);
+      setIfUndef('firstSeenAt', point.createdAt || null);
+      setIfUndef('lastSeenAt', point.lastObservedAt || point.updatedAt || point.createdAt || null);
+      if (touched) {
+        try { logEvent('RMF-MIGRATE', `[RMF-MIGRATE] ${point.id} (${point.type}) on ${opportunity || 'observe'}`); } catch (e) {}
+      }
+      return touched;
+    } catch (e) {
+      this._safeLog('enrichExistingLazy threw', e);
+      return false;
+    }
+  },
+
+  // ---- Phase 5/6/7/8: match-time evidence gate ----
+
+  /** Build the runtime state passed to the fingerprint + gate. Reads
+   *  the latest sample, current movement state, and approach bearing. */
+  buildRuntimeState() {
+    const samples = this.recentSamples();
+    const last = samples.length ? samples[samples.length - 1] : null;
+    const approachBearing = this.calculateApproachBearing(samples);
+    const stableBearing   = this.calculateStableBearing(samples);
+    const headingSource =
+      (approachBearing != null) ? 'movement_trail'
+      : (last && last.headingDeg != null && last.speedMps != null && last.speedMps >= RoadMovementConfig.HEADING_TRUST_SPEED_MPS)
+        ? 'raw_heading'
+        : (last && last.headingDeg != null) ? 'raw_heading_low_speed'
+        : 'none';
+    const usedBearing =
+      (approachBearing != null) ? approachBearing
+      : (last && last.headingDeg != null && last.speedMps != null && last.speedMps >= RoadMovementConfig.HEADING_TRUST_SPEED_MPS)
+        ? last.headingDeg
+        : null;
+    return {
+      samples,
+      lastSample: last,
+      position: last ? { lat: last.lat, lng: last.lng } : (State.pos ? { lat: State.pos.lat, lng: State.pos.lng } : null),
+      approachBearing: usedBearing,
+      headingSource,
+      stableBearing,
+      gpsQuality: last ? last.gpsQuality : 'unknown',
+      altitudeQuality: last ? last.altitudeQuality : 'unavailable',
+      movementState: this._movementState,
+      movementStatePrev: this._movementStatePrev,
+      uTurnFresh: this.isUTurnFresh(),
+      speedMps: (last && last.speedMps != null) ? last.speedMps
+        : (typeof State !== 'undefined' && State.speedMps != null ? State.speedMps : 0),
+      horizontalAccuracyM: last ? last.horizontalAccuracyM : (typeof State !== 'undefined' ? State.accuracy : null),
+      verticalAccuracyM: last ? last.verticalAccuracyM : (typeof State !== 'undefined' ? State.altitudeAccuracy : null),
+      sampleCount: samples.length,
+    };
+  },
+
+  /** Phase 5 — evidence gate. Returns:
+   *    { allowed, reason, fingerprint, runtimeState, directional, suppressions }
+   *  - allowed=false means the directional alert MUST be suppressed for
+   *    sound / popup / card flash / feedback prompt.
+   *  - allowed=true means caller may proceed using their existing path.
+   *  - Non-directional point types short-circuit to allowed=true and a
+   *    'location_based_passthrough' reason so caller logic is unchanged.
+   *  Never throws — internal failures step down to a permissive verdict
+   *  with reason='evidence_gate_stepped_down' so legacy behavior is
+   *  preserved on engine failure (one false alert vs. broken app). */
+  evaluateAlert(point, options) {
+    const C = RoadMovementConfig;
+    const opts = options || {};
+    const directional = this.isDirectionalType(point && point.type);
+    try {
+      if (!point) {
+        return { allowed: false, reason: 'no_point', directional: false };
+      }
+      if (!directional) {
+        return { allowed: true, reason: 'location_based_passthrough', directional: false };
+      }
+      const r = this.buildRuntimeState();
+      const fp = this.calculateRoadMovementFingerprint(point, r);
+      const suppressions = [];
+
+      // Step-down: insufficient movement history. Permissive but
+      // tagged so caller (and debug) can see why.
+      if (r.sampleCount < C.MIN_SAMPLES_FOR_BEARING) {
+        this._stepdownLog('insufficient_movement_history',
+          `point=${point.id} samples=${r.sampleCount}`);
+        return {
+          allowed: true,
+          reason: 'insufficient_movement_history',
+          directional: true,
+          fingerprint: fp,
+          runtimeState: r,
+          suppressions,
+        };
+      }
+
+      // Hard suppressions per spec.
+      if (r.gpsQuality === 'poor' && !opts.alreadyTrusted) {
+        suppressions.push('gps_low_confidence_suppression');
+      }
+      if (fp && fp.aheadBand === 'behind') {
+        suppressions.push('behind_vehicle');
+      }
+      if (fp && fp.directionBand === 'opposite_direction') {
+        suppressions.push('opposite_direction');
+      }
+      if (this.isUTurnFresh() && !opts.candidateRebuilt) {
+        suppressions.push('u_turn_stale_candidate');
+      }
+      if (r.movementState === 'TURNING' && !opts.criticalAndAhead) {
+        suppressions.push('turning_state');
+      }
+      if (fp && fp.sequenceConflict) {
+        suppressions.push('recent_sequence_reversed');
+      }
+
+      // Soft band rules (Phase 5).
+      let allowed = true;
+      let reason = 'evidence_ok';
+      if (suppressions.length) {
+        allowed = false;
+        reason = suppressions[0];
+      } else if (fp && fp.directionBand === 'weak_same_direction') {
+        if (fp.score < C.WEAK_DIR_MIN_SCORE) {
+          allowed = false;
+          suppressions.push('weak_direction_low_score');
+          reason = 'weak_direction_low_score';
+        } else {
+          reason = 'evidence_weak_direction_ok';
+        }
+      } else if (fp && fp.directionBand === 'ambiguous') {
+        const veryClose = fp.distM != null && fp.distM <= C.CLOSE_TRUST_M;
+        if (!(opts.alreadyTrusted && veryClose) && fp.score < C.AMBIG_MIN_SCORE) {
+          allowed = false;
+          suppressions.push('ambiguous_direction');
+          reason = 'ambiguous_direction';
+        } else {
+          reason = 'evidence_ambiguous_close_trusted';
+        }
+      } else if (fp && fp.aheadBand === 'side_behind') {
+        if (!opts.alreadyTrusted) {
+          allowed = false;
+          suppressions.push('side_behind');
+          reason = 'side_behind';
+        }
+      }
+
+      // Stamp the decision on the point (Phase 9 counters).
+      try {
+        const ts = new Date().toISOString();
+        if (allowed && fp && fp.directionBand === 'same_direction') {
+          point.sameDirectionConfirmations = (point.sameDirectionConfirmations || 0) + 1;
+          point.lastDirectionMatchedAt = ts;
+        } else if (!allowed && fp && fp.directionBand === 'opposite_direction') {
+          point.oppositeDirectionRejects = (point.oppositeDirectionRejects || 0) + 1;
+          point.lastOppositeSuppressedAt = ts;
+        }
+      } catch (e) { /* never break the gate */ }
+
+      const decision = {
+        allowed,
+        reason,
+        directional: true,
+        fingerprint: fp,
+        runtimeState: r,
+        suppressions,
+      };
+      this._recordDecision(point, decision);
+      return decision;
+    } catch (e) {
+      this._safeLog('evaluateAlert threw', e);
+      return {
+        allowed: true,
+        reason: 'evidence_gate_stepped_down',
+        directional,
+        suppressions: ['gate_exception'],
+      };
+    }
+  },
+
+  /** Record + throttle-log a decision. Visible in the debug log. */
+  _recordDecision(point, decision) {
+    try {
+      const pid = point && point.id;
+      if (!pid) return;
+      this._lastDecisionByPoint.set(pid, { ts: Date.now(), decision });
+      const now = Date.now();
+      const last = this._decisionLogAt.get(pid) || 0;
+      if (now - last < RoadMovementConfig.DECISION_LOG_THROTTLE_MS) return;
+      this._decisionLogAt.set(pid, now);
+      const fp = decision.fingerprint || {};
+      const r  = decision.runtimeState || {};
+      const parts = [
+        `[RMF] ${pid}`,
+        `type=${point.type}`,
+        `dist=${fp.distM != null ? Math.round(fp.distM) + 'm' : '—'}`,
+        `cur=${r.approachBearing != null ? Math.round(r.approachBearing) + '°' : '—'}`,
+        `pt=${(point.capturedHeadingDeg != null ? point.capturedHeadingDeg : point.captureBearing) != null
+          ? Math.round(point.capturedHeadingDeg != null ? point.capturedHeadingDeg : point.captureBearing) + '°' : '—'}`,
+        `Δh=${fp.directionDelta != null ? Math.round(fp.directionDelta) + '°' : '—'}`,
+        `Δa=${fp.aheadDelta != null ? Math.round(fp.aheadDelta) + '°' : '—'}`,
+        `dir=${fp.directionBand}`,
+        `ahead=${fp.aheadBand}`,
+        `mv=${r.movementState}`,
+        `gps=${fp.gpsQuality}`,
+        `alt=${fp.altitudeQuality}/${fp.altitudeTrend}`,
+        `seq=${fp.sequenceConflict ? 'reversed' : fp.hasRecentSequenceSupport ? 'support' : 'n/a'}`,
+        `score=${fp.score}`,
+        `alert=${decision.allowed ? 'YES' : 'NO'}`,
+        `reason=${decision.reason}`,
+      ];
+      logEvent(decision.allowed ? 'RMF-ALERT' : 'RMF-SUPPRESS', parts.join(' '),
+        decision.allowed ? 'ok' : 'err');
+    } catch (e) {
+      this._safeLog('_recordDecision threw', e);
+    }
+  },
+
+  /** Quick reference for the Edit Point + Debug surfaces. */
+  describeLastDecision(pointId) {
+    return this._lastDecisionByPoint.get(pointId) || null;
+  },
+
+  // ---- Phase 6: U-turn state machine ----
+
+  /** Tick the movement state machine once per GPS sample. Called from
+   *  GPS.onTick after pushSample. On UTURN_DETECTED, clears stale
+   *  candidate state via the spec contract:
+   *    - State.alertedMarkers / lastDistByPoint / minDistByPoint refreshed
+   *    - passedPoints partially cleared (handled by existing GPS._handleUTurn)
+   *    - cooldown window opened so suppress_u_turn_stale_candidate fires
+   *  Never throws. */
+  tickMovementState(now) {
+    try {
+      const samples = this.recentSamples();
+      const info = this.classifyMovementState(samples, this._stableBearingPrev);
+      this._movementStatePrev = this._movementState;
+      this._stableBearingCurr = info.stableBearing;
+      // Persistence: require UTURN_DETECTED to repeat across UTURN_PERSIST_TICKS
+      // before promoting (defensive against GPS jitter). The classifier
+      // already requires a large delta between previous and current stable
+      // bearings; this counter just ensures it persists.
+      if (info.state === 'UTURN_DETECTED') {
+        this._uturnTickCount = (this._uturnTickCount || 0) + 1;
+        if (this._uturnTickCount >= RoadMovementConfig.UTURN_PERSIST_TICKS) {
+          this._movementState = 'UTURN_DETECTED';
+          this._lastUTurnAt = now || Date.now();
+          this._onUTurnPromoted();
+          // Rotate so next pass classifies as REVERSE_TRACKING.
+          this._stableBearingPrev = info.stableBearing;
+          this._uturnTickCount = 0;
+          return this._movementState;
+        } else {
+          this._movementState = 'TURNING';
+        }
+      } else {
+        this._uturnTickCount = 0;
+        if (this._movementState === 'UTURN_DETECTED' && info.state === 'FORWARD_TRACKING') {
+          this._movementState = 'REVERSE_TRACKING';
+        } else {
+          this._movementState = info.state;
+        }
+        // Update previous stable bearing only when we have a fresh one.
+        if (info.stableBearing != null) {
+          this._stableBearingPrev = info.stableBearing;
+        }
+      }
+      return this._movementState;
+    } catch (e) {
+      this._safeLog('tickMovementState threw', e);
+      return this._movementState;
+    }
+  },
+
+  /** True while the U-turn cooldown window is open. Candidates that
+   *  predate the U-turn must wait this window out before alerting. */
+  isUTurnFresh() {
+    if (!this._lastUTurnAt) return false;
+    return (Date.now() - this._lastUTurnAt) < RoadMovementConfig.UTURN_FRESH_WINDOW_MS;
+  },
+
+  /** Hook fired exactly once when UTURN_DETECTED is promoted. Clears
+   *  stale forward candidate state so a stale "next alert" cannot
+   *  keep firing. Does NOT delete stored points; only runtime state. */
+  _onUTurnPromoted() {
+    try {
+      logEvent('RMF-UTURN', `[RMF-UTURN] state=UTURN_DETECTED · clearing stale forward candidates`, 'ok');
+      // Suppress any pending feedback that was queued from the old direction.
+      try {
+        if (typeof Confirm !== 'undefined' && Confirm._queue) {
+          const dropped = Confirm._queue.length;
+          Confirm._queue = [];
+          if (dropped) logEvent('RMF-UTURN', `[RMF-UTURN] cleared ${dropped} pending feedback prompt(s)`);
+        }
+      } catch (e) {}
+      // Re-arm nearby passed points so the rebuilt candidate list can re-engage.
+      try { if (typeof GPS !== 'undefined' && GPS._handleUTurn) GPS._handleUTurn(); } catch (e) {}
+      // Open the cooldown window — Alerts.tick will read isUTurnFresh().
+      this._lastUTurnAt = Date.now();
+    } catch (e) {
+      this._safeLog('_onUTurnPromoted threw', e);
+    }
+  },
+
+  // ---- Phase 7: recent passed-point sequence ----
+
+  /** Record that a point was just passed. Caller (Alerts.tick passed
+   *  detection) supplies the distance-at-pass. Sequence is runtime-only
+   *  and aged out automatically. */
+  recordPassedPoint(point, distAtPass) {
+    try {
+      if (!point || !point.id) return;
+      const C = RoadMovementConfig;
+      const r = this.buildRuntimeState();
+      const entry = {
+        pointId: point.id,
+        type: point.type,
+        passedAt: Date.now(),
+        passBearingDeg: r.approachBearing,
+        distanceAtPass: distAtPass != null ? distAtPass : null,
+        directionDecision: r.movementState,
+        sequenceIndex: this._passedSequence.length,
+      };
+      // Drop stale entries first.
+      const now = entry.passedAt;
+      this._passedSequence = this._passedSequence.filter(e =>
+        (now - e.passedAt) <= C.PASSED_SEQUENCE_TTL_MS);
+      this._passedSequence.push(entry);
+      while (this._passedSequence.length > C.PASSED_SEQUENCE_MAX) {
+        this._passedSequence.shift();
+      }
+      // Point-level timestamp.
+      try { point.lastPassedAt = new Date(entry.passedAt).toISOString(); } catch (e) {}
+      logEvent('RMF-SEQ',
+        `[RMF-SEQ] pass ${point.id} bearing=${entry.passBearingDeg != null ? Math.round(entry.passBearingDeg) + '°' : '—'} state=${entry.directionDecision}`);
+    } catch (e) {
+      this._safeLog('recordPassedPoint threw', e);
+    }
+  },
+
+  // ---- Phase 1 Mode B replay harness ----
+
+  /** Synthesize a sample for the replay harness. Mirrors the shape of
+   *  the live pushSample input but builds a coords-like object. */
+  _replaySample(opts) {
+    return this.pushSample({
+      latitude: opts.lat,
+      longitude: opts.lng,
+      accuracy: opts.accuracy != null ? opts.accuracy : 10,
+      heading: opts.heading != null ? opts.heading : null,
+      speed: opts.speed != null ? opts.speed : 15,
+      altitude: opts.altitude != null ? opts.altitude : null,
+      altitudeAccuracy: opts.altitudeAccuracy != null ? opts.altitudeAccuracy : null,
+    }, opts.timestamp || Date.now());
+  },
+
+  /** Predefined scenarios — decision-function replay (Mode B). Each
+   *  scenario constructs an isolated runtime state, evaluates the gate,
+   *  and returns a verdict. Use RoadMovement.runReplay() in the debug
+   *  console to run them all. */
+  scenarios: {
+    'A_same_direction': function(RM) {
+      RM.resetTripState();
+      // Drive northbound (bearing ~0°). 6 samples advancing ~10 m north each tick.
+      const t0 = Date.now() - 6000;
+      for (let i = 0; i < 6; i++) {
+        RM._replaySample({ lat: 32.0 + i * 0.0001, lng: 35.0, speed: 20, heading: 0,
+          accuracy: 8, altitude: 100, altitudeAccuracy: 8, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      const point = { id: '_A', type: 'speed_camera', lat: 32.001, lng: 35.0,
+        capturedHeadingDeg: 0, altitudeM: 102, altitudeTrend: 'flat', directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'B_opposite_direction': function(RM) {
+      RM.resetTripState();
+      // Camera captured northbound (0°); driver travelling southbound (180°).
+      const t0 = Date.now() - 6000;
+      for (let i = 0; i < 6; i++) {
+        RM._replaySample({ lat: 32.001 - i * 0.0001, lng: 35.0, speed: 20, heading: 180,
+          accuracy: 8, altitude: 100, altitudeAccuracy: 8, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      const point = { id: '_B', type: 'speed_camera', lat: 32.0, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'C_uturn_before_reach': function(RM) {
+      RM.resetTripState();
+      const t0 = Date.now() - 12000;
+      // First half — drive north.
+      for (let i = 0; i < 5; i++) {
+        RM._replaySample({ lat: 32.0 + i * 0.0001, lng: 35.0, speed: 18, heading: 0,
+          accuracy: 8, timestamp: t0 + i * 1000 });
+        RM.tickMovementState();
+      }
+      // Now u-turn — heading flips to 180°, 5 more samples south.
+      for (let i = 0; i < 5; i++) {
+        RM._replaySample({ lat: 32.0004 - i * 0.0001, lng: 35.0, speed: 18, heading: 180,
+          accuracy: 8, timestamp: t0 + (5 + i) * 1000 });
+        RM.tickMovementState();
+      }
+      const point = { id: '_C', type: 'speed_camera', lat: 32.001, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'D_reversed_sequence': function(RM) {
+      RM.resetTripState();
+      // Record two passes with opposing bearings — should mark sequenceConflict.
+      RM._replaySample({ lat: 32.0, lng: 35.0, speed: 18, heading: 0, accuracy: 8 });
+      RM._replaySample({ lat: 32.0001, lng: 35.0, speed: 18, heading: 0, accuracy: 8 });
+      RM._replaySample({ lat: 32.0002, lng: 35.0, speed: 18, heading: 0, accuracy: 8 });
+      RM.tickMovementState();
+      RM.recordPassedPoint({ id: '_D1', type: 'speed_camera' }, 10);
+      // Now driver reverses; new pass bearing should be ~180°.
+      RM.resetTripState();
+      for (let i = 0; i < 4; i++) {
+        RM._replaySample({ lat: 32.0003 - i * 0.0001, lng: 35.0, speed: 18, heading: 180,
+          accuracy: 8 });
+      }
+      RM.tickMovementState();
+      RM.recordPassedPoint({ id: '_D2', type: 'speed_camera' }, 10);
+      // The next candidate ahead — expect sequenceConflict in fingerprint.
+      const point = { id: '_D3', type: 'speed_camera', lat: 31.999, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'E_missing_altitude': function(RM) {
+      RM.resetTripState();
+      const t0 = Date.now() - 4000;
+      for (let i = 0; i < 4; i++) {
+        RM._replaySample({ lat: 32.0 + i * 0.0001, lng: 35.0, speed: 20, heading: 0,
+          accuracy: 8, altitude: null, altitudeAccuracy: null, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      const point = { id: '_E', type: 'speed_camera', lat: 32.001, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'F_poor_altitude_accuracy': function(RM) {
+      RM.resetTripState();
+      const t0 = Date.now() - 4000;
+      for (let i = 0; i < 4; i++) {
+        RM._replaySample({ lat: 32.0 + i * 0.0001, lng: 35.0, speed: 20, heading: 0,
+          accuracy: 8, altitude: 100, altitudeAccuracy: 80, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      const point = { id: '_F', type: 'speed_camera', lat: 32.001, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'G_poor_gps_accuracy': function(RM) {
+      RM.resetTripState();
+      const t0 = Date.now() - 4000;
+      for (let i = 0; i < 4; i++) {
+        RM._replaySample({ lat: 32.0 + i * 0.0001, lng: 35.0, speed: 20, heading: 0,
+          accuracy: 80, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      const point = { id: '_G', type: 'speed_camera', lat: 32.001, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'H_point_behind_vehicle': function(RM) {
+      RM.resetTripState();
+      const t0 = Date.now() - 4000;
+      for (let i = 0; i < 4; i++) {
+        RM._replaySample({ lat: 32.001 + i * 0.0001, lng: 35.0, speed: 20, heading: 0,
+          accuracy: 8, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      // Point sits behind the driver who is moving north.
+      const point = { id: '_H', type: 'speed_camera', lat: 32.0, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+    'I_point_ahead_and_approaching': function(RM) {
+      RM.resetTripState();
+      const t0 = Date.now() - 4000;
+      for (let i = 0; i < 4; i++) {
+        RM._replaySample({ lat: 32.0 + i * 0.0001, lng: 35.0, speed: 20, heading: 0,
+          accuracy: 8, altitude: 100, altitudeAccuracy: 8, timestamp: t0 + i * 1000 });
+      }
+      RM.tickMovementState();
+      const point = { id: '_I', type: 'speed_camera', lat: 32.002, lng: 35.0,
+        capturedHeadingDeg: 0, directional: true };
+      return RM.evaluateAlert(point);
+    },
+  },
+
+  /** Run a single replay scenario by name. Returns the decision +
+   *  expectation match. */
+  runReplay(name) {
+    const fn = this.scenarios[name];
+    if (typeof fn !== 'function') return { ok: false, error: 'unknown_scenario' };
+    const savedSamples = this._samples.slice();
+    const savedState = {
+      movementState: this._movementState,
+      movementStatePrev: this._movementStatePrev,
+      stableBearingPrev: this._stableBearingPrev,
+      stableBearingCurr: this._stableBearingCurr,
+      lastUTurnAt: this._lastUTurnAt,
+      uturnTickCount: this._uturnTickCount,
+      passedSequence: this._passedSequence.slice(),
+    };
+    let decision;
+    try {
+      decision = fn(this);
+    } catch (e) {
+      decision = { allowed: null, reason: 'replay_exception', error: e && e.message };
+    } finally {
+      // Restore runtime state — replay must not pollute the live trip.
+      this._samples = savedSamples;
+      this._movementState        = savedState.movementState;
+      this._movementStatePrev    = savedState.movementStatePrev;
+      this._stableBearingPrev    = savedState.stableBearingPrev;
+      this._stableBearingCurr    = savedState.stableBearingCurr;
+      this._lastUTurnAt          = savedState.lastUTurnAt;
+      this._uturnTickCount       = savedState.uturnTickCount;
+      this._passedSequence       = savedState.passedSequence;
+    }
+    return { name, decision };
+  },
+
+  /** Run every replay scenario and emit a concise PASS/FAIL summary to
+   *  the Logger. Expectations are baked in by scenario letter. */
+  runReplayAll() {
+    const expectations = {
+      'A_same_direction':           r => r.allowed === true,
+      'B_opposite_direction':       r => r.allowed === false && r.suppressions.includes('opposite_direction'),
+      'C_uturn_before_reach':       r => r.allowed === false || r.runtimeState && r.runtimeState.uTurnFresh,
+      'D_reversed_sequence':        r => r.allowed === false || (r.fingerprint && r.fingerprint.sequenceConflict),
+      'E_missing_altitude':         r => r.allowed === true,
+      'F_poor_altitude_accuracy':   r => r.allowed === true,
+      'G_poor_gps_accuracy':        r => r.allowed === false && r.suppressions.includes('gps_low_confidence_suppression'),
+      'H_point_behind_vehicle':     r => r.allowed === false && r.suppressions.includes('behind_vehicle'),
+      'I_point_ahead_and_approaching': r => r.allowed === true,
+    };
+    const results = [];
+    let pass = 0;
+    for (const name of Object.keys(this.scenarios)) {
+      const out = this.runReplay(name);
+      const exp = expectations[name];
+      const ok  = exp ? !!exp(out.decision || {}) : true;
+      if (ok) pass++;
+      results.push({ name, ok, reason: out.decision && out.decision.reason });
+      logEvent('RMF-REPLAY',
+        `[RMF-REPLAY] ${name} → ${ok ? 'PASS' : 'FAIL'} reason=${out.decision && out.decision.reason}`,
+        ok ? 'ok' : 'err');
+    }
+    logEvent('RMF-REPLAY',
+      `[RMF-REPLAY] summary ${pass}/${results.length} passed`,
+      pass === results.length ? 'ok' : 'err');
+    return { pass, total: results.length, results };
+  },
+
+  // ---- Phase 10: step-down / error helpers ----
+
+  _stepdownLog(key, detail) {
+    try {
+      const now = Date.now();
+      const last = this._stepdownLogAt.get(key) || 0;
+      if (now - last < RoadMovementConfig.STEPDOWN_LOG_THROTTLE_MS) return;
+      this._stepdownLogAt.set(key, now);
+      logEvent('RMF', `[RMF] step_down · ${key}` + (detail ? ' · ' + detail : ''));
+    } catch (e) {}
+  },
+
+  _safeLog(label, err) {
+    try {
+      logEvent('RMF', `[RMF] ${label}: ${err && err.message ? err.message : err}`, 'err');
+    } catch (e) {
+      try { console.error('[RMF]', label, err); } catch (_) {}
+    }
+  },
+};
+
+// Convenience: surface replay harness to the window so it can be run
+// from the DevTools console without exporting the whole module.
+try { if (typeof window !== 'undefined') window.RoadMovement = RoadMovement; } catch (e) {}
+
+/* ============================================================
    5. ALERTS — threshold crossing
    ============================================================ */
 const Alerts = {
@@ -4653,6 +5852,9 @@ const Alerts = {
         State.alertedMarkers.delete(p.id);
         State.lastDistByPoint.delete(p.id);
         State.minDistByPoint.delete(p.id);
+        // v23.9.0: record the pass in the Road Movement sequence so the
+        // next directional candidate can read sequence support/conflict.
+        try { if (typeof RoadMovement !== 'undefined') RoadMovement.recordPassedPoint(p, curMin); } catch (e) {}
         // v22.56: only ASK the user to confirm if we got DIRECTLY over the
         // point (≤30m). If we only got close (30–200m), still mark passed
         // for the visual greyout — but skip the popup, since we can't be
@@ -4699,6 +5901,8 @@ const Alerts = {
           State.alertedMarkers.delete(p.id);
           State.lastDistByPoint.delete(p.id);
           State.minDistByPoint.delete(p.id);
+          // v23.9.0: record the pass in the Road Movement sequence.
+          try { if (typeof RoadMovement !== 'undefined') RoadMovement.recordPassedPoint(p, curMin); } catch (e) {}
           // v22.56: same 30m gate on the geometry-based pass path
           if (curMin != null && curMin <= 30) Confirm.onPassed(p);
         } else {
@@ -4706,6 +5910,30 @@ const Alerts = {
         }
         return;
       }
+
+      // v23.9.0: Road Movement Fingerprint evidence gate. Runs ONCE per
+      // tick per point on the live alert path. Decision is reused for
+      // marker-cross / feedback-prompt / proximity hooks below so we
+      // never have two competing verdicts in the same frame.
+      let rmfDecision = null;
+      try {
+        if (typeof RoadMovement !== 'undefined') {
+          const trusted = (p.confidenceStatus === 'trusted')
+            || (typeof p.confidence === 'number' && p.confidence >= 3);
+          // Lazy migrate legacy points the first time we see them ahead.
+          if (p.fingerprintVersion === undefined) {
+            RoadMovement.enrichExistingLazy(p, 'observed_ahead');
+          }
+          rmfDecision = RoadMovement.evaluateAlert(p, { alreadyTrusted: trusted });
+        }
+      } catch (e) {
+        try { logEvent('RMF', '[RMF] gate step-down: ' + (e && e.message || e), 'err'); } catch (_) {}
+      }
+      // Directional + opposite/behind/u-turn → hard suppress for THIS
+      // tick. Skip threshold-cross alerts AND the feedback prompt. Map
+      // marker, NEXT-AHEAD ordering, and silent state tracking are
+      // unchanged so the driver still sees the point on the map.
+      const rmfSuppress = !!(rmfDecision && rmfDecision.directional && rmfDecision.allowed === false);
 
       // v22.18: ONLY the focused (closest ahead) point fires alerts.
       // Other points just track distance state for passed-detection.
@@ -4719,8 +5947,10 @@ const Alerts = {
       // 500 m accuracy in GPS.onTick). The _askedThisTrip Set inside
       // Confirm prevents duplicate prompts per pass. Does NOT replace
       // the threshold-cross alerts below — pure validation overlay.
+      // v23.9.0: suppress when the Road Movement Fingerprint gate
+      // rejects the candidate (opposite direction / behind / u-turn).
       if (isFocused && meters <= Confirm.FEEDBACK_DIST_M
-          && Confirm.ASKABLE_TYPES.includes(p.type)) {
+          && Confirm.ASKABLE_TYPES.includes(p.type) && !rmfSuppress) {
         try { Confirm.requestFeedbackAhead(p, meters); } catch (e) {}
       }
 
@@ -4781,14 +6011,22 @@ const Alerts = {
             // modes, legacy decision wins unconditionally — Audio.alert always fires.
             // v23.4.1: feed the runaway counter on both branches.
             const suppressedByIntel = (intelMode === 'active' && intelEval && !intelEval.intelligenceWouldAlert);
+            // v23.9.0: Road Movement Fingerprint hard-suppresses
+            // directional alerts when evidence shows opposite direction,
+            // point-behind, U-turn staleness, or low GPS. Non-directional
+            // types (petrol) pass straight through.
+            const suppressedByRmf = rmfSuppress;
             if (suppressedByIntel) {
               IntelligenceEngine.noteSuppression(p, intelEval, meters, m);
+              fired.add(m); // legacy parity: mark the marker as consumed
+            } else if (suppressedByRmf) {
+              fired.add(m); // mark consumed so we don't fire later when state changes
             } else {
               Audio.alert(p, m);
               if (intelMode === 'active') IntelligenceEngine.noteAlertFired();
+              fired.add(m);
+              if (navigator.vibrate) navigator.vibrate(60);
             }
-            fired.add(m);
-            if (navigator.vibrate && !suppressedByIntel) navigator.vibrate(60);
           }
         }
         // Disagreement on the OTHER direction: legacy didn't fire this tick

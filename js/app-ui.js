@@ -1597,6 +1597,9 @@ const UI = {
     // readout stays live while the modal is open. Safe-guarded — if
     // the block is absent (older markup) the call is a no-op.
     this.renderAltitudeDiag();
+    // v23.9.0: refresh the Road Movement Fingerprint diagnostic block
+    // alongside the log so the readout stays live. Safe-guarded.
+    try { this.renderRoadMovementDiag(); } catch (e) {}
     if (!list) return;
     if (count) count.textContent = `(${Logger.logs.length})`;
     if (!Logger.logs.length) {
@@ -1648,6 +1651,78 @@ const UI = {
       else { label = 'Unreliable'; color = 'var(--red)'; }
       qEl.textContent = label;
       qEl.style.color = color;
+    }
+  },
+
+  /** v23.9.0 — Road Movement Fingerprint readout. Surfaces movement
+   *  state, current approach/stable bearing, U-turn freshness, GPS
+   *  quality, altitude trend, recent passed sequence, and the LAST
+   *  evidence-gate decision so a driver can verify why an alert fired
+   *  or was suppressed. All DOM lookups are null-guarded; the entire
+   *  function is wrapped in a try in renderDebugLog so a missing
+   *  RoadMovement module (e.g. partial deploy) cannot break the modal. */
+  renderRoadMovementDiag() {
+    const stEl = document.getElementById('rmf-diag-state');
+    if (!stEl) return; // markup absent — no-op
+    const get = id => document.getElementById(id);
+    const RM = (typeof RoadMovement !== 'undefined') ? RoadMovement : null;
+    if (!RM) {
+      stEl.textContent = 'unavailable';
+      return;
+    }
+    const r = RM.buildRuntimeState ? RM.buildRuntimeState() : null;
+    stEl.textContent = (r && r.movementState) || RM._movementState || 'UNKNOWN';
+    const approachEl = get('rmf-diag-approach');
+    if (approachEl) approachEl.textContent = (r && r.approachBearing != null)
+      ? Math.round(r.approachBearing) + '°  (' + (r.headingSource || '—') + ')'
+      : '— (' + ((r && r.headingSource) || 'none') + ')';
+    const stableEl = get('rmf-diag-stable');
+    if (stableEl) stableEl.textContent = (r && r.stableBearing != null)
+      ? Math.round(r.stableBearing) + '°' : '—';
+    const uturnEl = get('rmf-diag-uturn');
+    if (uturnEl) uturnEl.textContent = (r && r.uTurnFresh) ? 'YES' : 'no';
+    const gpsqEl = get('rmf-diag-gpsq');
+    if (gpsqEl) gpsqEl.textContent = (r && r.gpsQuality) ? r.gpsQuality : '—';
+    const altTrendEl = get('rmf-diag-alttrend');
+    if (altTrendEl) altTrendEl.textContent = (r && r.samples && r.samples.length)
+      ? RM.calculateAltitudeTrend(r.samples) : '—';
+    const bufferEl = get('rmf-diag-buffer');
+    if (bufferEl) bufferEl.textContent = `${(r && r.sampleCount) || 0} samples`;
+    const seqEl = get('rmf-diag-seq');
+    if (seqEl) {
+      const seq = RM._passedSequence || [];
+      if (!seq.length) seqEl.textContent = '— none';
+      else seqEl.textContent = seq.map(e =>
+        `${(e.type || '?').slice(0, 3)}@${e.passBearingDeg != null ? Math.round(e.passBearingDeg) + '°' : '—'}`
+      ).join(' → ');
+    }
+    // Last decision — pull the most recent entry across all points.
+    let last = null;
+    let lastPid = null;
+    if (RM._lastDecisionByPoint && RM._lastDecisionByPoint.size) {
+      let bestTs = 0;
+      for (const [pid, rec] of RM._lastDecisionByPoint) {
+        if (rec && rec.ts > bestTs) { bestTs = rec.ts; last = rec.decision; lastPid = pid; }
+      }
+    }
+    const setText = (id, val) => { const el = get(id); if (el) el.textContent = val; };
+    if (!last) {
+      setText('rmf-diag-last-point', '—');
+      setText('rmf-diag-last-allowed', '—');
+      setText('rmf-diag-last-reason', '—');
+      setText('rmf-diag-last-dir', '—');
+      setText('rmf-diag-last-ahead', '—');
+      setText('rmf-diag-last-score', '—');
+    } else {
+      const fp = last.fingerprint || {};
+      setText('rmf-diag-last-point', (lastPid || '—').slice(0, 18));
+      setText('rmf-diag-last-allowed', last.allowed ? 'YES' : 'NO');
+      setText('rmf-diag-last-reason', last.reason || '—');
+      setText('rmf-diag-last-dir', `${fp.directionBand || '—'}` +
+        (fp.directionDelta != null ? ` (Δ${Math.round(fp.directionDelta)}°)` : ''));
+      setText('rmf-diag-last-ahead', `${fp.aheadBand || '—'}` +
+        (fp.aheadDelta != null ? ` (Δ${Math.round(fp.aheadDelta)}°)` : ''));
+      setText('rmf-diag-last-score', fp.score != null ? String(fp.score) : '—');
     }
   },
 
@@ -2625,6 +2700,11 @@ const UI = {
   finalizeCapture() {
     const c = State.pendingCapture;
     if (!c) return;
+    // v23.9.0: Road Movement Fingerprint capture-time enrichment.
+    // Runs FIRST so the v22.91 block below (legacy) can rely on the
+    // new approachBearing / direction status without overwriting it.
+    // Wrapped — a failure here must not block the capture.
+    try { if (typeof RoadMovement !== 'undefined') RoadMovement.enrichCapture(c); } catch (e) {}
     // v22.91: auto-fill the v22.91 schema fields for speed_change + cameras.
     // User can edit them via the Edit Point modal afterwards.
     const camTypes = new Set(['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera']);
@@ -2632,7 +2712,10 @@ const UI = {
       // Cameras default directional, speed_change non-directional (per spec)
       c.directional = camTypes.has(c.type);
       c.roadType = Speed.inferRoadTypeFromRollingSpeed(State.avgSpeedKmh());
-      c.captureBearing = State.avgHeading();
+      // Preserve any captureBearing already seeded by RoadMovement.enrichCapture
+      // (approach-bearing from movement trail). Fall back to avgHeading for
+      // legacy behavior when no movement-derived bearing is available.
+      if (c.captureBearing == null) c.captureBearing = State.avgHeading();
       c.updatedAt = c.createdAt || new Date().toISOString();
       if (c.type === 'speed_change' && typeof c.limit === 'number') {
         c.speedLimit = c.limit;
@@ -3781,6 +3864,25 @@ function wire() {
     Logger.clear();
     Utils.toast('Log cleared', 'good');
   };
+  // v23.9.0: run the Road Movement Fingerprint replay scenarios from
+  // the Debug modal so the gate can be validated without real driving.
+  // Output goes to the in-app log; PASS/FAIL count surfaces as a toast.
+  const rmfReplayBtn = document.getElementById('rmf-diag-replay');
+  if (rmfReplayBtn) {
+    rmfReplayBtn.onclick = () => {
+      try {
+        if (typeof RoadMovement === 'undefined') {
+          Utils.toast('RoadMovement not loaded', 'bad');
+          return;
+        }
+        const r = RoadMovement.runReplayAll();
+        UI.renderDebugLog();
+        Utils.toast(`Replay: ${r.pass}/${r.total} passed`, r.pass === r.total ? 'good' : 'bad');
+      } catch (e) {
+        Utils.toast('Replay error: ' + (e && e.message || e), 'bad');
+      }
+    };
+  }
   document.getElementById('debug-copy').onclick = async () => {
     const text = Logger.asText();
     if (!text) { Utils.toast('Nothing to copy', 'bad'); return; }

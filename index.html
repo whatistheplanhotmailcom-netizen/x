@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.8.9">
+<link rel="stylesheet" href="styles.css?v=23.9.0">
 </head>
 <body data-theme="light">
 
@@ -785,6 +785,32 @@
       <div>Vertical accuracy: <span id="alt-diag-accuracy">—</span></div>
       <div>Quality: <span id="alt-diag-quality">—</span></div>
     </div>
+    <!-- v23.9.0: Road Movement Fingerprint runtime diagnostic block.
+         READ-ONLY — surfaces approach bearing, movement state, U-turn
+         flag, GPS quality, altitude trend, and the LAST evaluated
+         alert decision so a driver can verify why an alert fired (or
+         did not). Populated by UI.renderRoadMovementDiag. -->
+    <div id="rmf-diag" style="background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:11px ui-monospace,monospace;line-height:1.6;color:var(--ink);">
+      <div style="font-weight:700;color:var(--ink-2);margin-bottom:4px;">Road Movement Fingerprint</div>
+      <div>Movement state: <span id="rmf-diag-state">—</span></div>
+      <div>Approach bearing: <span id="rmf-diag-approach">—</span></div>
+      <div>Stable bearing: <span id="rmf-diag-stable">—</span></div>
+      <div>U-turn fresh: <span id="rmf-diag-uturn">—</span></div>
+      <div>GPS quality: <span id="rmf-diag-gpsq">—</span></div>
+      <div>Altitude trend: <span id="rmf-diag-alttrend">—</span></div>
+      <div>Buffer: <span id="rmf-diag-buffer">—</span></div>
+      <div>Passed sequence: <span id="rmf-diag-seq">—</span></div>
+      <div style="margin-top:4px;font-weight:600;color:var(--ink-2);">Last decision</div>
+      <div>Point: <span id="rmf-diag-last-point">—</span></div>
+      <div>Allowed: <span id="rmf-diag-last-allowed">—</span></div>
+      <div>Reason: <span id="rmf-diag-last-reason">—</span></div>
+      <div>Direction: <span id="rmf-diag-last-dir">—</span></div>
+      <div>Ahead: <span id="rmf-diag-last-ahead">—</span></div>
+      <div>Score: <span id="rmf-diag-last-score">—</span></div>
+      <div style="margin-top:6px;display:flex;gap:6px;">
+        <button class="btn" id="rmf-diag-replay" style="flex:1;padding:4px 8px;font-size:11px;">Run replay scenarios</button>
+      </div>
+    </div>
     <div id="debug-log" style="max-height:62vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
   </div>
 </div>
@@ -857,8 +883,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.8.9"></script>
-<script defer src="js/app-ui.js?v=23.8.9"></script>
+<script defer src="js/app-core.js?v=23.9.0"></script>
+<script defer src="js/app-ui.js?v=23.9.0"></script>
 
 </body>
 </html>

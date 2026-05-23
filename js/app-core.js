@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.9.4';
+const APP_VERSION = 'v23.9.5';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -5256,6 +5256,22 @@ const Confirm = {
         point.status = 'no';
       }
     }
+    // v23.9.5 — feedback revalidation. Capture a sample from current
+    // State (lat/lng, gps accuracy, altitude, heading, speed) and use
+    // it as additional evidence on the point. Quality-gated field
+    // updates only — never overwrites high-quality original data with
+    // low-quality samples, never auto-moves the point on a single
+    // feedback event. See Confirm._applyRevalidation for the policy.
+    try {
+      const resolvingNow = !!this._resolvingMissedId;
+      const feedbackType = resolvingNow ? 'missed_feedback_submit'
+                        : (value === 'yes' ? 'confirm' : 'negative');
+      const feedbackResult = (value === 'yes') ? 'positive' : 'negative';
+      const sample = Confirm._captureRevalidationSample(point, feedbackResult, feedbackType);
+      if (sample) Confirm._applyRevalidation(point, sample, feedbackResult);
+    } catch (e) {
+      try { logEvent('FEEDBACK-REVALIDATION', 'sample apply error: ' + (e && e.message || e), 'err'); } catch (e2) {}
+    }
     // v23.7.1 — if this _answer is closing out a missed-feedback
     // entry (opened from Edit Point), mark that entry resolved.
     const resolvingId = this._resolvingMissedId;
@@ -5300,6 +5316,301 @@ const Confirm = {
     if (this._timer) { clearInterval(this._timer); this._timer = null; }
     const host = document.getElementById('confirm-popup');
     if (host) host.classList.remove('show');
+  },
+
+  /* ============================================================
+     v23.9.5 — Feedback-based observation revalidation.
+     ============================================================
+     Tuning constants. Conservative on purpose so trusted points
+     are never disturbed by a single low-quality sample. */
+  REVAL_GOOD_ACC_M: 10,
+  REVAL_MEDIUM_ACC_M: 25,
+  REVAL_MIN_SPEED_KMH: 10,
+  REVAL_MAX_POS_DELTA_M: 50,
+  REVAL_BEARING_TOL_DEG: 30,
+  REVAL_MIN_SAMPLES_FOR_REFINE: 3,
+  REVAL_MAX_SAMPLES: 50,
+  REVAL_ALT_AGREEMENT_M: 5,
+  REVAL_GPS_ACC_IMPROVEMENT_M: 5,
+  REVAL_ALT_ACC_IMPROVEMENT_M: 2,
+
+  /** Build a revalidation sample from current State + point. Reads
+   *  only — no side effects. Returns null if no GPS fix yet. */
+  _captureRevalidationSample(point, feedbackResult, feedbackType) {
+    if (!point) return null;
+    const pos = State.pos;
+    const acc = (typeof State.accuracy === 'number') ? State.accuracy : null;
+    const alt = (typeof State.altitude === 'number') ? State.altitude : null;
+    const altAcc = (typeof State.altitudeAccuracy === 'number') ? State.altitudeAccuracy : null;
+    const hdg = (typeof State.heading === 'number') ? State.heading : null;
+    const spdKmh = (typeof State.speedMps === 'number') ? State.speedMps * 3.6 : null;
+    const sample = {
+      ts: Date.now(),
+      pointId: point.id,
+      pointType: point.type,
+      feedbackType: feedbackType || 'confirm',
+      feedbackResult: feedbackResult || 'unknown',
+      lat: pos ? pos.lat : null,
+      lng: pos ? pos.lng : null,
+      gpsAccuracy: acc,
+      altitude: alt,
+      altitudeAccuracy: altAcc,
+      heading: hdg,
+      speedKmh: spdKmh,
+      // Snapshot of original point fields at time of feedback so the
+      // audit trail is self-contained even if the point is later edited.
+      originalLat: point.lat,
+      originalLng: point.lng,
+      originalAltitude: (typeof point.altitude === 'number') ? point.altitude : null,
+      originalCaptureBearing: (typeof point.captureBearing === 'number') ? point.captureBearing : null,
+    };
+    if (pos) {
+      try {
+        sample.distanceM = Utils.distKm(pos, point) * 1000;
+        sample.bearingToPoint = Utils.bearing(pos, point);
+      } catch (e) {}
+    }
+    sample.quality = Confirm._classifySampleQuality(sample);
+    return sample;
+  },
+
+  /** Classify a sample as good/medium/poor. */
+  _classifySampleQuality(s) {
+    if (!s || s.lat == null || s.lng == null) return 'poor';
+    const acc = s.gpsAccuracy;
+    if (acc == null || acc > 50) return 'poor';
+    if (acc <= Confirm.REVAL_GOOD_ACC_M
+        && s.heading != null
+        && (s.speedKmh || 0) >= Confirm.REVAL_MIN_SPEED_KMH) {
+      return 'good';
+    }
+    if (acc <= Confirm.REVAL_MEDIUM_ACC_M) return 'medium';
+    return 'poor';
+  },
+
+  /** Apply a revalidation sample to a point. Quality-gated. Never
+   *  overwrites high-quality original data with low-quality samples;
+   *  never auto-moves the point on a single sample. Position
+   *  refinement is SUGGESTED, not auto-applied. */
+  _applyRevalidation(point, sample, feedbackResult) {
+    if (!point || !sample) return;
+    if (!point.revalidation) {
+      point.revalidation = {
+        count: 0,
+        lastAt: null,
+        samples: [],
+        positionEvidence: [],
+        altitudeEvidence: [],
+        headingEvidence: [],
+        falsePositiveCount: 0,
+        lastFalsePositiveAt: null,
+        qualitySummary: { good: 0, medium: 0, poor: 0 },
+        suggestedAdjustments: [],
+      };
+    }
+    const r = point.revalidation;
+    r.samples.push(sample);
+    if (r.samples.length > Confirm.REVAL_MAX_SAMPLES) {
+      r.samples = r.samples.slice(-Confirm.REVAL_MAX_SAMPLES);
+    }
+    r.count++;
+    r.lastAt = new Date(sample.ts).toISOString();
+    r.qualitySummary[sample.quality] = (r.qualitySummary[sample.quality] || 0) + 1;
+
+    if (feedbackResult === 'false_positive') {
+      r.falsePositiveCount = (r.falsePositiveCount || 0) + 1;
+      r.lastFalsePositiveAt = new Date(sample.ts).toISOString();
+      const issue = Confirm._classifyFalsePositive(point, sample);
+      r.suggestedAdjustments.push({ at: sample.ts, type: 'false_positive_issue', reason: issue });
+      try { logEvent('FEEDBACK-REVALIDATION', `false_positive ${point.id} · quality=${sample.quality} · issue=${issue}`); } catch (e) {}
+      return; // Do NOT update fields or move the point.
+    }
+
+    if (feedbackResult === 'negative') {
+      // Record evidence only — no field updates, no refinement.
+      try { logEvent('FEEDBACK-REVALIDATION', `negative ${point.id} · quality=${sample.quality} · evidence-only`); } catch (e) {}
+      return;
+    }
+
+    // From here on, feedbackResult === 'positive'.
+    point.lastConfirmedAt = new Date(sample.ts).toISOString();
+    point.lastObservedAt = point.lastConfirmedAt;
+
+    const filled = [];
+    const improved = [];
+
+    // (B) Fill missing fields when sample is at least medium quality.
+    if (sample.quality === 'good' || sample.quality === 'medium') {
+      if (point.altitude == null && sample.altitude != null) {
+        point.altitude = sample.altitude;
+        if (sample.altitudeAccuracy != null) point.altitudeAccuracy = sample.altitudeAccuracy;
+        filled.push('altitude');
+      }
+      if (point.gpsAccuracy == null && sample.gpsAccuracy != null) {
+        point.gpsAccuracy = sample.gpsAccuracy;
+        filled.push('gpsAccuracy');
+      }
+    }
+
+    // (C) Improve weak fields only if the new sample is materially better
+    // AND it is a 'good' sample.
+    if (sample.quality === 'good') {
+      if (point.altitude != null && sample.altitude != null
+          && typeof point.altitudeAccuracy === 'number'
+          && typeof sample.altitudeAccuracy === 'number'
+          && sample.altitudeAccuracy < point.altitudeAccuracy - Confirm.REVAL_ALT_ACC_IMPROVEMENT_M) {
+        point.altitude = sample.altitude;
+        point.altitudeAccuracy = sample.altitudeAccuracy;
+        improved.push('altitude');
+      }
+      if (point.gpsAccuracy != null && sample.gpsAccuracy != null
+          && sample.gpsAccuracy < point.gpsAccuracy - Confirm.REVAL_GPS_ACC_IMPROVEMENT_M) {
+        point.gpsAccuracy = sample.gpsAccuracy;
+        improved.push('gpsAccuracy');
+      }
+    }
+
+    // Add to evidence arrays for cluster-based refinement (good only).
+    if (sample.quality === 'good') {
+      if (sample.lat != null && sample.lng != null) {
+        r.positionEvidence.push({ lat: sample.lat, lng: sample.lng, ts: sample.ts, acc: sample.gpsAccuracy });
+        if (r.positionEvidence.length > Confirm.REVAL_MAX_SAMPLES) r.positionEvidence = r.positionEvidence.slice(-Confirm.REVAL_MAX_SAMPLES);
+      }
+      if (sample.altitude != null && sample.altitudeAccuracy != null) {
+        r.altitudeEvidence.push({ alt: sample.altitude, accuracy: sample.altitudeAccuracy, ts: sample.ts });
+        if (r.altitudeEvidence.length > Confirm.REVAL_MAX_SAMPLES) r.altitudeEvidence = r.altitudeEvidence.slice(-Confirm.REVAL_MAX_SAMPLES);
+      }
+      if (sample.heading != null) {
+        r.headingEvidence.push({ heading: sample.heading, ts: sample.ts });
+        if (r.headingEvidence.length > Confirm.REVAL_MAX_SAMPLES) r.headingEvidence = r.headingEvidence.slice(-Confirm.REVAL_MAX_SAMPLES);
+      }
+    }
+
+    // (E,F,J) Conservative refinements after enough evidence.
+    Confirm._tryBearingRefinement(point);
+    Confirm._tryAltitudeRefinement(point);
+    Confirm._suggestPositionRefinement(point);
+
+    if (filled.length || improved.length) {
+      try { logEvent('FEEDBACK-REVALIDATION',
+        `positive ${point.id} · quality=${sample.quality} · filled=[${filled.join(',')}] improved=[${improved.join(',')}]`); } catch (e) {}
+    } else if (sample.quality === 'poor') {
+      try { logEvent('FEEDBACK-REVALIDATION', `positive ${point.id} · quality=poor · audit-only`); } catch (e) {}
+    } else {
+      try { logEvent('FEEDBACK-REVALIDATION', `positive ${point.id} · quality=${sample.quality} · recorded`); } catch (e) {}
+    }
+  },
+
+  /** Classify suspected cause when a false-positive is reported. */
+  _classifyFalsePositive(point, sample) {
+    if (typeof point.captureBearing === 'number' && sample.heading != null) {
+      const d = Speed.angleDiff(point.captureBearing, sample.heading);
+      if (d > 150) return 'opposite_direction_likely';
+      if (d > 60) return 'parallel_road_likely';
+    }
+    if (sample.gpsAccuracy != null && sample.gpsAccuracy > 30) return 'gps_drift_possible';
+    if (sample.distanceM != null && sample.distanceM > 80) return 'radius_too_large_possible';
+    const lastSeen = point.lastObservedAt || point.updatedAt || point.createdAt;
+    if (lastSeen) {
+      const ageMs = Date.now() - new Date(lastSeen).getTime();
+      if (ageMs > 90 * 24 * 3600 * 1000) return 'stale_observation_possible';
+    }
+    return 'unknown_false_positive';
+  },
+
+  /** Derive captureBearing if it's missing AND we have 3+ aligned
+   *  positive heading samples. Never overwrites an existing bearing. */
+  _tryBearingRefinement(point) {
+    if (typeof point.captureBearing === 'number') return; // never overwrite
+    const r = point.revalidation;
+    if (!r || !r.headingEvidence || r.headingEvidence.length < Confirm.REVAL_MIN_SAMPLES_FOR_REFINE) return;
+    const recent = r.headingEvidence.slice(-5);
+    let sx = 0, sy = 0;
+    for (const h of recent) {
+      const rad = h.heading * Math.PI / 180;
+      sx += Math.cos(rad);
+      sy += Math.sin(rad);
+    }
+    const meanRad = Math.atan2(sy, sx);
+    const mean = ((meanRad * 180 / Math.PI) + 360) % 360;
+    for (const h of recent) {
+      if (Speed.angleDiff(h.heading, mean) > Confirm.REVAL_BEARING_TOL_DEG) return;
+    }
+    point.captureBearing = mean;
+    if (typeof point.heading !== 'number') point.heading = mean;
+    try { logEvent('FEEDBACK-REVALIDATION', `bearing derived ${point.id} → ${mean.toFixed(1)}° (n=${recent.length})`); } catch (e) {}
+  },
+
+  /** Refine altitude with the possible/probable/trusted progression
+   *  defined in spec §E. Only refines when 3+ samples agree within
+   *  REVAL_ALT_AGREEMENT_M; otherwise records altitudeConfidence as
+   *  low_or_mixed without overwriting the stored value. */
+  _tryAltitudeRefinement(point) {
+    const r = point.revalidation;
+    if (!r || !r.altitudeEvidence || r.altitudeEvidence.length === 0) return;
+    const recent = r.altitudeEvidence.slice(-5);
+    let sum = 0;
+    for (const a of recent) sum += a.alt;
+    const mean = sum / recent.length;
+    let maxDelta = 0;
+    for (const a of recent) {
+      const d = Math.abs(a.alt - mean);
+      if (d > maxDelta) maxDelta = d;
+    }
+    if (maxDelta > Confirm.REVAL_ALT_AGREEMENT_M) {
+      point.altitudeConfidence = 'low_or_mixed';
+      return;
+    }
+    point.altitudeConfidence = recent.length >= 3 ? 'trusted'
+                            : recent.length >= 2 ? 'probable'
+                            : 'possible';
+    // Only update the stored value when accuracy is better OR
+    // we now have enough agreement to upgrade confidence.
+    if (recent.length < Confirm.REVAL_MIN_SAMPLES_FOR_REFINE) return;
+    let bestAcc = Infinity;
+    for (const a of recent) if (a.accuracy < bestAcc) bestAcc = a.accuracy;
+    const improves = (typeof point.altitudeAccuracy !== 'number')
+                  || (bestAcc < point.altitudeAccuracy - Confirm.REVAL_ALT_ACC_IMPROVEMENT_M);
+    if (improves) {
+      point.altitude = mean;
+      point.altitudeAccuracy = bestAcc;
+      try { logEvent('FEEDBACK-REVALIDATION', `altitude refined ${point.id} → ${mean.toFixed(1)}m ±${bestAcc.toFixed(1)}m (n=${recent.length})`); } catch (e) {}
+    }
+  },
+
+  /** Position adjustment: SUGGESTION only. Never auto-moves a point.
+   *  When 3+ good positive samples cluster within 25 m of each other
+   *  AND the cluster centroid is 3-50 m from the stored point, record
+   *  a suggestedAdjustment for later review. */
+  _suggestPositionRefinement(point) {
+    const r = point.revalidation;
+    if (!r || !r.positionEvidence || r.positionEvidence.length < Confirm.REVAL_MIN_SAMPLES_FOR_REFINE) return;
+    const recent = r.positionEvidence.slice(-5);
+    let slat = 0, slng = 0;
+    for (const e of recent) { slat += e.lat; slng += e.lng; }
+    const cLat = slat / recent.length;
+    const cLng = slng / recent.length;
+    let distM;
+    try { distM = Utils.distKm({ lat: point.lat, lng: point.lng }, { lat: cLat, lng: cLng }) * 1000; } catch (e) { return; }
+    if (distM > Confirm.REVAL_MAX_POS_DELTA_M || distM < 3) return;
+    let maxSpread = 0;
+    for (const e of recent) {
+      try {
+        const d = Utils.distKm({ lat: e.lat, lng: e.lng }, { lat: cLat, lng: cLng }) * 1000;
+        if (d > maxSpread) maxSpread = d;
+      } catch (e2) {}
+    }
+    if (maxSpread > 25) return;
+    r.suggestedAdjustments.push({
+      at: Date.now(),
+      type: 'position_refine',
+      proposedLat: cLat,
+      proposedLng: cLng,
+      currentDeltaM: distM,
+      sampleCount: recent.length,
+      maxSpreadM: maxSpread,
+    });
+    try { logEvent('FEEDBACK-REVALIDATION', `position adjustment suggested ${point.id} · Δ ${distM.toFixed(1)}m · spread ${maxSpread.toFixed(1)}m · n=${recent.length} (not auto-applied)`); } catch (e) {}
   },
 
   /** v23.7.2 — speed-limit revalidation entry point.

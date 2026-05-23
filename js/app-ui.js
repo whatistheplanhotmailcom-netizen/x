@@ -300,6 +300,34 @@ const MapView = {
     let cls = 'conf-zero';
     if (total > 0) cls = yes > no ? 'conf-pos' : (no > yes ? 'conf-neg' : 'conf-neutral');
     const confHtml = `<span class="conf-badge ${cls}" title="${yes} yes / ${no} no">${total}</span>`;
+    // v23.9.3 — directional radar decoration on camera markers.
+    // Three short thin arcs centred on the captureBearing, anchored at
+    // the marker's centre (SVG origin = 0,0). Screen-aligned (no map-
+    // bearing counter-rotation) so the visual can never desync from
+    // the marker. Hidden for passed / disabled markers and for points
+    // without a valid captureBearing. Pure decoration: no DOM siblings
+    // outside the existing marker wrapper, no new MapLibre marker.
+    const CAM_TYPES_RADAR = { speed_camera: 1, mobile_camera: 1, pole_camera: 1, spider_camera: 1 };
+    let radarHtml = '';
+    if (CAM_TYPES_RADAR[p.type]
+        && p.directional !== false
+        && typeof p.captureBearing === 'number'
+        && isFinite(p.captureBearing)
+        && p.status !== 'no'
+        && !classes.includes('passed')
+        && !classes.includes('disabled')) {
+      const b = Math.round(p.captureBearing);
+      // Three arcs spanning 60° at radii 22 / 27 / 32 (just outside the
+      // 18 px marker rim). sin(30°)=0.5, cos(30°)≈0.866.
+      radarHtml =
+        '<svg class="cam-radar" width="64" height="64" viewBox="-32 -32 64 64" aria-hidden="true">' +
+          `<g transform="rotate(${b})">` +
+            '<path class="cam-radar-arc cam-radar-arc-1" d="M -11 -19.05 A 22 22 0 0 1 11 -19.05"/>' +
+            '<path class="cam-radar-arc cam-radar-arc-2" d="M -13.5 -23.38 A 27 27 0 0 1 13.5 -23.38"/>' +
+            '<path class="cam-radar-arc cam-radar-arc-3" d="M -16 -27.71 A 32 32 0 0 1 16 -27.71"/>' +
+          '</g>' +
+        '</svg>';
+    }
     // v23.9.1 — missed-feedback red square in the top-left corner of the
     // marker. Shows the count of unresolved missed-feedback entries
     // (point.feedback.missed[] where status === 'missed_feedback').
@@ -328,7 +356,7 @@ const MapView = {
         `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}${missedHtml}</div>`;
       return el;
     }
-    el.innerHTML = `<div class="${classes.join(' ')}">${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}</div>`;
+    el.innerHTML = `<div class="${classes.join(' ')}">${radarHtml}${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}</div>`;
     return el;
   },
 

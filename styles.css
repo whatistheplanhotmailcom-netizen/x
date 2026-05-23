@@ -1274,6 +1274,36 @@ body {
 /* v22.88: badge visible even at 0 count — grey so it's unobtrusive but
    still announces that confirmations exist as a feature. */
 .ra-marker .conf-badge.conf-zero    { background: var(--ink-3); color: #fff; opacity: 0.85; }
+/* v23.9.3: directional radar decoration on directional camera markers.
+   SVG sits inside the existing .ra-marker wrapper, centred at the
+   marker's centre, with overflow:visible so the 3 thin arc segments
+   extend just past the 36 px rim. Pointer-events:none so taps still
+   hit the underlying marker. Screen-aligned (no map-bearing counter-
+   rotation) — the bearing is encoded in the SVG <g> rotation at build
+   time, so the visual stays glued to the marker no matter what. */
+.ra-marker .cam-radar {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 64px;
+  height: 64px;
+  margin: -32px 0 0 -32px;
+  overflow: visible;
+  pointer-events: none;
+  z-index: 0;  /* below the emoji/badges of the marker */
+}
+.ra-marker .cam-radar-arc {
+  fill: none;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+.ra-marker.t-speed_camera  .cam-radar-arc { stroke: #dc2626; }
+.ra-marker.t-mobile_camera .cam-radar-arc { stroke: #ea580c; }
+.ra-marker.t-pole_camera   .cam-radar-arc { stroke: #b91c1c; }
+.ra-marker.t-spider_camera .cam-radar-arc { stroke: #7e22ce; }
+.ra-marker .cam-radar-arc-1 { stroke-opacity: 0.55; }
+.ra-marker .cam-radar-arc-2 { stroke-opacity: 0.4;  }
+.ra-marker .cam-radar-arc-3 { stroke-opacity: 0.25; }
 /* v23.9.1: missed-feedback red SQUARE in the top-left corner of every
    marker that has unresolved missed-feedback entries. Distinct shape +
    color from the round green/red feedback-count badge in the top-right

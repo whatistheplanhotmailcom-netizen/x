@@ -1787,10 +1787,14 @@ const UI = {
       if (pb == null) return false;
       return Speed.angleDiff(heading, pb) > 135;
     };
+    // v23.11.0: only split when the left rail is enabled — otherwise
+    // every capture stays on the right rail (original behavior) so
+    // nothing disappears into a hidden rail.
+    const leftEnabled = State.settings.leftRailEnabled !== false;
     const rightPts = [];
     const leftPts = [];
     for (const p of pts) {
-      if (railL && isOpposite(p)) leftPts.push(p);
+      if (railL && leftEnabled && isOpposite(p)) leftPts.push(p);
       else rightPts.push(p);
     }
 
@@ -4215,6 +4219,36 @@ function wire() {
       }
       Utils.toast('Feedback popup ' + (next ? 'on' : 'off'), 'good');
       try { logEvent('FEEDBACK-POPUP', `master toggle → ${next ? 'on' : 'off'}`); } catch (e) {}
+    };
+  }
+
+  // v23.11.0: left-rail master toggle. ON = the left rail (opposite-
+  // direction captures) is shown and the timeline split is active;
+  // OFF = the rail is hidden, the map-row falls back to its 2-column
+  // layout, and ALL captures stay on the right rail (original behavior).
+  // Persists via State.settings.leftRailEnabled. Default ON.
+  const _btnLeftRail = document.getElementById('btn-left-rail');
+  const _paintLeftRailBtn = () => {
+    const on = State.settings.leftRailEnabled !== false;
+    const row = document.querySelector('.map-row');
+    if (row) row.classList.toggle('lr-off', !on);
+    if (!_btnLeftRail) return;
+    _btnLeftRail.classList.toggle('on', on);
+    _btnLeftRail.style.opacity = on ? '' : '0.45';
+    _btnLeftRail.title = on ? 'Left rail: ON (tap to hide)' : 'Left rail: OFF (tap to show)';
+  };
+  UI._paintLeftRailBtn = _paintLeftRailBtn;
+  if (_btnLeftRail) {
+    _paintLeftRailBtn();
+    _btnLeftRail.onclick = () => {
+      const next = !(State.settings.leftRailEnabled !== false);
+      State.settings.leftRailEnabled = next;
+      State.saveSettings();
+      _paintLeftRailBtn();
+      UI.renderTimeline();
+      if (MapView.m) { try { MapView.m.resize(); } catch (e) {} }
+      Utils.toast('Left rail ' + (next ? 'on' : 'off'), 'good');
+      try { logEvent('LEFT-RAIL', `toggle → ${next ? 'on' : 'off'}`); } catch (e) {}
     };
   }
 

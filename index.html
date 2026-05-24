@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.10.0">
+<link rel="stylesheet" href="styles.css?v=23.11.0">
 </head>
 <body data-theme="light">
 
@@ -51,6 +51,8 @@
       <button class="icon-btn" id="btn-drive-view" title="Drive view (zoom + 3D + follow)">🚗</button>
       <!-- v23.9.9: master toggle for the "Still there?" feedback popup. -->
       <button class="icon-btn" id="btn-feedback-toggle" title="Feedback popup on/off">💬</button>
+      <!-- v23.11.0: show/hide the LEFT rail (opposite-direction captures). -->
+      <button class="icon-btn" id="btn-left-rail" title="Left rail (opposite direction) on/off">⬅</button>
       <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
     </div>
   </div>
@@ -886,8 +888,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.10.0"></script>
-<script defer src="js/app-ui.js?v=23.10.0"></script>
+<script defer src="js/app-core.js?v=23.11.0"></script>
+<script defer src="js/app-ui.js?v=23.11.0"></script>
 
 </body>
 </html>

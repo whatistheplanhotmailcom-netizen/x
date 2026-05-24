@@ -2795,6 +2795,12 @@ const UI = {
         c.confidenceStatus = Speed.deriveConfidenceStatus(c);
       }
     }
+    // v23.14.0: attach the read-only capture-metadata block BEFORE any
+    // merge/push/save. Additive only — fills the 20 metadata fields and
+    // never touches captureBearing or any alert/heading/route path.
+    if (typeof CaptureMeta !== 'undefined' && CaptureMeta.applyCaptureMetadata) {
+      CaptureMeta.applyCaptureMetadata(c);
+    }
     // v23.5.1 fix 3: speed_change uses bearing-aware dedup matching the
     // MigrationConfig rules (25m / 25°). Opposite-direction signs and
     // parallel-road signs no longer merge. Other types keep the legacy
@@ -2884,6 +2890,10 @@ const UI = {
           nearby.lastRejectedAt    = nearby.updatedAt;
           delete nearby.pendingSpeedLimitChange;
           nearby.confidenceStatus  = Speed.deriveConfidenceStatus(nearby);
+          // v23.14.0: true merge — fold capture metadata into the kept point.
+          if (typeof CaptureMeta !== 'undefined' && CaptureMeta.mergeCaptureMetadata) {
+            CaptureMeta.mergeCaptureMetadata(nearby, c);
+          }
           Utils.toast(`Speed limit updated ${existingLimit}→${incomingLimit}`, 'good');
           announce = `Speed limit updated to ${incomingLimit}`;
           trackedId = nearby.id;
@@ -2958,6 +2968,10 @@ const UI = {
             && nearby.pendingSpeedLimitChange.newLimit !== existingLimit) {
           delete nearby.pendingSpeedLimitChange;
         }
+        // v23.14.0: true merge — fold capture metadata into the kept point.
+        if (typeof CaptureMeta !== 'undefined' && CaptureMeta.mergeCaptureMetadata) {
+          CaptureMeta.mergeCaptureMetadata(nearby, c);
+        }
         Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
         announce = Utils.typeLabel(c.type) + ' updated';
         trackedId = nearby.id;
@@ -3002,6 +3016,22 @@ const UI = {
     State.pendingCapture = null;
     State.captureLocationOverride = null; // v22.39: clear map-tap override
     State.saveData();
+    // v23.14.0: read the ACTUAL saved point back by id and verify all 20
+    // capture-metadata fields are present. Observability log only.
+    try {
+      if (typeof CaptureMeta !== 'undefined' && typeof CaptureMetaConfig !== 'undefined') {
+        const savedPt = State.data.points.find(x => x.id === trackedId);
+        if (savedPt) {
+          const fields = CaptureMetaConfig.FIELDS;
+          const present = fields.filter(f => savedPt[f] !== undefined);
+          const complete = present.length === fields.length;
+          const tag = complete ? `all ${fields.length} present` : `${present.length}/${fields.length} present`;
+          logEvent('CAPTURE-META',
+            `[CAPTURE-META] point fields present: ${present.join(', ')} · ${tag}`,
+            complete ? 'ok' : 'err');
+        }
+      }
+    } catch (e) {}
     // v23.5 Phase 4: audit trail — note when capture happens while
     // network is degraded/offline. Local save already succeeded above;
     // remote backup will queue via tryAuto's next tick.
@@ -3054,8 +3084,62 @@ const UI = {
     this.refreshHeartbeatToggle(p.type);
     // v23.7.1: paint the missed-feedback count chip.
     this.refreshMissedFeedbackCount(p.id);
+    // v23.14.0: render the read-only capture-metadata summary every time
+    // the editor opens.
+    this.renderCaptureMetaSummary(p);
     this.togglePEFields();
     this.openModal('m-edit');
+  },
+
+  /** v23.14.0 — paint the read-only Capture Metadata block (#e-capmeta)
+   *  for the point being edited. Shows all 20 metadata fields; a missing
+   *  field renders as "—". The whole block is shown whenever the point
+   *  exists (one missing field never hides it). HTML is escaped; the
+   *  block is purely informational and never editable. */
+  renderCaptureMetaSummary(point) {
+    const box = document.getElementById('e-capmeta');
+    if (!box) return;
+    if (!point) { box.innerHTML = ''; box.style.display = 'none'; return; }
+    box.style.display = '';
+    const fmt = (v) => {
+      if (v === undefined || v === null || v === '') return '—';
+      if (Array.isArray(v)) return v.length ? Utils.escapeHtml(v.join(', ')) : '—';
+      if (typeof v === 'object') {
+        try { return Utils.escapeHtml(JSON.stringify(v)); } catch (e) { return '—'; }
+      }
+      if (typeof v === 'number') {
+        const r = (Math.abs(v) >= 1000 || Number.isInteger(v)) ? v : Math.round(v * 100) / 100;
+        return Utils.escapeHtml(String(r));
+      }
+      return Utils.escapeHtml(String(v));
+    };
+    const rows = [
+      ['Captured at', point.capturedAt],
+      ['GPS timestamp', point.gpsTimestamp],
+      ['Accuracy (m)', point.accuracyM],
+      ['Altitude (m)', point.altitudeM],
+      ['Altitude acc (m)', point.altitudeAccuracyM],
+      ['Heading (°)', point.headingDeg],
+      ['Heading source', point.headingSource],
+      ['Direction quality', point.directionQuality],
+      ['Motion state', point.captureMotionState],
+      ['Prev similar IDs', point.previousSimilarAlertIds],
+      ['Prev similar count', point.previousSimilarCount],
+      ['Repetition count', point.repetitionCount],
+      ['Confirmed count', point.confirmedCount],
+      ['False-positive count', point.falsePositiveCount],
+      ['Alert sound id', point.alertSoundId],
+      ['Configured alert dist (m)', point.configuredAlertDistanceM],
+      ['Side of road', point.sideOfRoadEstimate],
+      ['Side confidence', point.sideOfRoadConfidence],
+      ['Heartbeat at capture', point.heartbeatAtCapture],
+      ['Capture quality', point.captureQuality],
+    ];
+    const body = rows.map(([label, val]) =>
+      `<div class="capmeta-row"><span class="capmeta-k">${Utils.escapeHtml(label)}</span>` +
+      `<span class="capmeta-v">${fmt(val)}</span></div>`
+    ).join('');
+    box.innerHTML = `<div class="capmeta-title">Capture Metadata</div>${body}`;
   },
 
   /** v23.7.3 — paint the heartbeat toggle for a given point type.

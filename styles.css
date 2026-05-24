@@ -2197,3 +2197,38 @@ body[data-hide-hints="true"] .row-hint { display: none; }
 /* v23.6.0 merge: removed parallel agent's duplicate Sound Alerts
    CSS. The 18-row table lives inside #m-sound-alerts modal and is
    styled by the earlier .sound-alerts-table / .sa-row rules above. */
+
+/* v23.14.0: read-only Capture Metadata block in the Edit Point modal.
+   Purely informational; no inputs, no editable controls. */
+.capmeta {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.capmeta-title {
+  font: 700 11px ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-bottom: 6px;
+}
+.capmeta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.capmeta-row:last-child { border-bottom: none; }
+.capmeta-k { color: var(--ink-3); flex: 0 0 auto; }
+.capmeta-v {
+  color: var(--ink);
+  font: 600 11px ui-monospace, monospace;
+  text-align: right;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}

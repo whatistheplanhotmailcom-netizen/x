@@ -363,6 +363,19 @@ const MapView = {
         missedHtml = `<span class="missed-badge" title="${missedN} missed feedback">${missedN}</span>`;
       }
     } catch (e) {}
+    // v23.12.0 — prior-capture count badge in the BOTTOM-LEFT corner.
+    // Shows how many times this point was previously captured/confirmed
+    // (p.confirmedCount, default 0). Bold, circled, color-coded:
+    //   0       → orange  (single sighting)
+    //   1       → red
+    //   2 or 3+ → green   (well confirmed)
+    // Always shown (even at 0) so the count is glanceable on every marker.
+    const depN = (typeof p.confirmedCount === 'number' && isFinite(p.confirmedCount))
+      ? p.confirmedCount : 0;
+    let depCls = 'dep-zero';
+    if (depN === 1) depCls = 'dep-one';
+    else if (depN >= 2) depCls = 'dep-ok';
+    const depHtml = `<span class="dep-badge ${depCls}" title="${depN} prior confirmations">${depN}</span>`;
     // v23.7.2 — speed_change observations render as proper white-circle
     // road-sign markers with a red border + black number, not as a
     // generic emoji marker. Falls back to a generic sign emoji if the
@@ -375,10 +388,10 @@ const MapView = {
         : '?';
       const conf = p.confidenceStatus || '';
       el.innerHTML = `<div class="${classes.join(' ')} sign-style conf-${Utils.escapeHtml(conf)}">` +
-        `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}${missedHtml}</div>`;
+        `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}${missedHtml}${depHtml}</div>`;
       return el;
     }
-    el.innerHTML = `<div class="${classes.join(' ')}">${radarHtml}${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}</div>`;
+    el.innerHTML = `<div class="${classes.join(' ')}">${radarHtml}${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}${depHtml}</div>`;
     return el;
   },
 

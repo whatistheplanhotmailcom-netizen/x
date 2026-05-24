@@ -1384,6 +1384,29 @@ body {
   font-family: ui-monospace, monospace;
   box-shadow: 0 1px 3px rgba(0,0,0,0.4);
 }
+/* v23.12.0: prior-capture count badge in the BOTTOM-LEFT corner. Bold,
+   circled, color-coded by how many times the point was confirmed:
+     0       → orange
+     1       → red
+     2 or 3+ → green */
+.ra-marker .dep-badge {
+  position: absolute;
+  bottom: -6px; left: -6px;
+  width: 16px; height: 16px;
+  background: var(--amber);
+  color: #0c0a09;
+  font-size: 9px;
+  font-weight: 900;
+  border-radius: 50%;
+  border: 2px solid var(--surface);
+  display: grid; place-items: center;
+  line-height: 1;
+  z-index: 3;
+  font-family: ui-monospace, monospace;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+}
+.ra-marker .dep-badge.dep-one { background: var(--red);   color: #fff; }
+.ra-marker .dep-badge.dep-ok  { background: var(--green); color: #fff; }
 /* v22.82: Google Maps-style directional triangle marker.
    .ra-current is now a wrapper holding two children:
      .ra-current-halo  - small blue dot + pulsing accuracy halo (always shown)

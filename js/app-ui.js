@@ -3082,77 +3082,87 @@ const UI = {
     this.openModal('m-edit');
   },
 
-  /** v23.11.0 — compact read-only capture-metadata readout in the Edit
-   *  Point modal. Display only; never edits stored data. Always shown for a
-   *  captured point: every expected field renders, with "—" for anything
-   *  missing (old normalized / imported points) so the block never crashes
-   *  and never hides the whole record. captureBearing / heading are not shown
-   *  here — they have their own dedicated row; headingDeg is metadata-only. */
+  /** v23.11.0 — read-only "Capture Metadata" section in the Edit Point
+   *  modal. Display only; never edits stored data, never feeds alerts /
+   *  scoring / captureBearing. Shown for EVERY point that opens (hidden only
+   *  when the point is null). Every one of the 20 expected fields renders,
+   *  with "—" for anything missing (old normalized / imported points), so
+   *  the block never crashes and never hides the whole record. This is NOT
+   *  the per-type "Heartbeat ping" setting — that is a separate editable row;
+   *  here `Heartbeat (capture)` shows the stored heartbeatAtCapture snapshot. */
   renderCaptureMetaSummary(p) {
     const el = document.getElementById('e-capmeta');
-    if (!el) return;
+    if (!el) {
+      try { logEvent('CAPTURE-META', '[CAPTURE-META] editor container missing', 'err'); } catch (e) {}
+      return;
+    }
     if (!p) { el.style.display = 'none'; el.innerHTML = ''; return; }
     const esc = Utils.escapeHtml;
     const DASH = '—';
     const has = v => v !== undefined && v !== null && !(typeof v === 'number' && isNaN(v));
-    // string value with escape + dash fallback
-    const sv = v => has(v) ? esc(String(v)) : DASH;
-    // numeric value with optional suffix + dash fallback (0 is valid)
-    const nv = (v, suffix) => (typeof v === 'number' && !isNaN(v)) ? esc(Math.round(v) + (suffix || '')) : DASH;
-    const rawNv = v => (typeof v === 'number' && !isNaN(v)) ? esc(String(v)) : DASH;
+    const sv = v => has(v) ? esc(String(v)) : DASH;                                   // string + dash fallback
+    const nv = (v, suffix) => (typeof v === 'number' && !isNaN(v)) ? esc(Math.round(v) + (suffix || '')) : DASH; // rounded number
+    const rawNv = v => (typeof v === 'number' && !isNaN(v)) ? esc(String(v)) : DASH;  // exact number (counts)
 
-    // capturedAt / gpsTimestamp
+    // capturedAt
     let capturedTxt = DASH;
-    if (has(p.capturedAt)) {
-      const ago = Utils.fmtAgo(p.capturedAt);
-      capturedTxt = esc(ago || String(p.capturedAt));
-    }
+    if (has(p.capturedAt)) { const ago = Utils.fmtAgo(p.capturedAt); capturedTxt = esc(ago || String(p.capturedAt)); }
+    // gpsTimestamp (epoch ms -> local time)
     let gpsTsTxt = DASH;
     if (typeof p.gpsTimestamp === 'number' && !isNaN(p.gpsTimestamp)) {
-      try { gpsTsTxt = esc(new Date(p.gpsTimestamp).toLocaleTimeString()); }
-      catch (e) { gpsTsTxt = rawNv(p.gpsTimestamp); }
+      try { gpsTsTxt = esc(new Date(p.gpsTimestamp).toLocaleTimeString()); } catch (e) { gpsTsTxt = rawNv(p.gpsTimestamp); }
     }
-
-    // altitude ± accuracy
-    let altTxt = DASH;
-    if (typeof p.altitudeM === 'number' && !isNaN(p.altitudeM)) {
-      const aa = (typeof p.altitudeAccuracyM === 'number' && !isNaN(p.altitudeAccuracyM))
-        ? ' ± ' + Math.round(p.altitudeAccuracyM) + ' m' : '';
-      altTxt = esc(Math.round(p.altitudeM) + ' m' + aa);
+    // previousSimilarAlertIds (count handled separately): show short ids or dash
+    let prevIdsTxt = DASH;
+    if (Array.isArray(p.previousSimilarAlertIds)) {
+      prevIdsTxt = p.previousSimilarAlertIds.length
+        ? esc(p.previousSimilarAlertIds.slice(0, 3).map(id => String(id).slice(0, 6)).join(', ')) +
+          (p.previousSimilarAlertIds.length > 3 ? '…' : '')
+        : DASH;
     }
-
-    // previousSimilar: count + short ids
-    let prevTxt = rawNv(p.previousSimilarCount);
-    if (Array.isArray(p.previousSimilarAlertIds) && p.previousSimilarAlertIds.length) {
-      const ids = p.previousSimilarAlertIds.slice(0, 3).map(id => esc(String(id).slice(0, 6))).join(', ');
-      prevTxt = `${rawNv(p.previousSimilarCount)} (${ids})`;
-    }
-
-    // heartbeat summary
+    // heartbeatAtCapture snapshot (the STORED health record, not the ping setting)
     let hbTxt = DASH;
     const hb = p.heartbeatAtCapture;
     if (hb && typeof hb === 'object') {
-      const yn = b => (b === true ? 'yes' : b === false ? 'no' : '—');
+      const yn = b => (b === true ? 'y' : b === false ? 'n' : '—');
       const age = (typeof hb.gpsAgeMs === 'number' && !isNaN(hb.gpsAgeMs)) ? Math.round(hb.gpsAgeMs) + 'ms' : '—';
       hbTxt = esc(`gps:${yn(hb.gpsFresh)} online:${yn(hb.appOnline)} map:${yn(hb.mapReady)} storage:${yn(hb.storageOk)} age:${age}`);
     }
 
-    const lines = [
-      [['Captured', capturedTxt], ['GPS time', gpsTsTxt]],
-      [['Accuracy', nv(p.accuracyM, ' m')], ['Altitude', altTxt]],
-      [['Heading', nv(p.headingDeg, '°')], ['Source', sv(p.headingSource)]],
-      [['Dir quality', sv(p.directionQuality)], ['Motion', sv(p.captureMotionState)], ['Quality', sv(p.captureQuality)]],
-      [['Reps', rawNv(p.repetitionCount)], ['Prev similar', prevTxt]],
-      [['Confirmed', rawNv(p.confirmedCount)], ['False+', rawNv(p.falsePositiveCount)]],
-      [['Sound', sv(p.alertSoundId)], ['Alert dist', nv(p.configuredAlertDistanceM, ' m')]],
-      [['Side', sv(p.sideOfRoadEstimate)], ['Side conf', rawNv(p.sideOfRoadConfidence)]],
-      [['Heartbeat', hbTxt]],
+    // All 20 expected fields. {wide:true} spans both columns.
+    const cells = [
+      ['Captured At', capturedTxt],
+      ['GPS Timestamp', gpsTsTxt],
+      ['Accuracy', nv(p.accuracyM, ' m')],
+      ['Altitude', nv(p.altitudeM, ' m')],
+      ['Altitude Acc.', nv(p.altitudeAccuracyM, ' m')],
+      ['Heading', nv(p.headingDeg, '°')],
+      ['Heading Source', sv(p.headingSource)],
+      ['Direction Quality', sv(p.directionQuality)],
+      ['Motion State', sv(p.captureMotionState)],
+      ['Prev Similar Count', rawNv(p.previousSimilarCount)],
+      ['Repetition Count', rawNv(p.repetitionCount)],
+      ['Confirmed Count', rawNv(p.confirmedCount)],
+      ['False Positive Count', rawNv(p.falsePositiveCount)],
+      ['Alert Sound ID', sv(p.alertSoundId)],
+      ['Configured Alert Dist', nv(p.configuredAlertDistanceM, ' m')],
+      ['Side Estimate', sv(p.sideOfRoadEstimate)],
+      ['Side Confidence', rawNv(p.sideOfRoadConfidence)],
+      ['Capture Quality', sv(p.captureQuality)],
+      ['Prev Similar IDs', prevIdsTxt, true],
+      ['Heartbeat (capture)', hbTxt, true],
     ];
-    el.innerHTML = '<strong>Capture metadata</strong><br>' +
-      lines.map(line =>
-        line.map(pair => `${esc(pair[0])}: <strong>${pair[1]}</strong>`).join(' · ')
-      ).join('<br>');
+    el.innerHTML =
+      '<span class="capmeta-title">Capture Metadata</span>' +
+      '<div class="capmeta-grid">' +
+      cells.map(c =>
+        `<div class="capmeta-cell${c[2] ? ' wide' : ''}"><span class="k">${esc(c[0])}:</span> <span class="v">${c[1]}</span></div>`
+      ).join('') +
+      '</div>';
     el.style.display = 'block';
+    try {
+      logEvent('CAPTURE-META', `[CAPTURE-META] editor render id=${p.id} block=yes fields=${cells.length}`, 'ok');
+    } catch (e) {}
   },
 
   /** v23.7.3 — paint the heartbeat toggle for a given point type.

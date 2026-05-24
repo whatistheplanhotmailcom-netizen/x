@@ -1753,6 +1753,41 @@ body {
 /* v23.0.1: user toggle to hide every explanatory paragraph at once.
    Driven by the Settings → "Show help text" toggle via a body attribute. */
 body[data-hide-hints="true"] .row-hint { display: none; }
+/* v23.11.0: read-only Capture Metadata section in the Edit Point modal.
+   Intentionally independent of .row-hint so it is NEVER hidden by the
+   "Show help text" toggle. Compact 2-column grid, read-only. */
+.capmeta-block {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--ink-2);
+}
+.capmeta-block .capmeta-title {
+  display: block;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink);
+  margin-bottom: 5px;
+}
+.capmeta-block .capmeta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px 12px;
+}
+.capmeta-block .capmeta-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.capmeta-block .capmeta-cell.wide { grid-column: 1 / -1; white-space: normal; }
+.capmeta-block .k { color: var(--ink-3); }
+.capmeta-block .v { font-weight: 600; color: var(--ink); }
 /* v22.17: chip-style markers for alert distances */
 .marker-chip {
   display: inline-flex;

@@ -174,6 +174,31 @@ State.gpsFixBuffer = [
   check('apply2: motion stationary', cam2.captureMotionState === 'stationary');
 }
 
+console.log('--- 3b. all 20 expected metadata keys present after apply ---');
+{
+  // Restore a moving snapshot so apply runs the full path.
+  State.headingHistory = [{ t: now, deg: 90 }, { t: now, deg: 91 }, { t: now, deg: 89 }];
+  State.speedMps = 20;
+  State.gpsFixBuffer = [
+    { lat: 39.999, lng: -73.0, accuracyM: 9, altitudeM: 99, altitudeAccuracyM: 5, gpsTimestamp: now - 3000, rawGpsHeadingDeg: 90, rawSpeedMps: 20 },
+    { lat: 40.0, lng: -73.0, accuracyM: 8, altitudeM: 100, altitudeAccuracyM: 5, gpsTimestamp: now - 1000, rawGpsHeadingDeg: 90, rawSpeedMps: 20 },
+  ];
+  const EXPECTED = [
+    'capturedAt', 'gpsTimestamp', 'accuracyM', 'altitudeM', 'altitudeAccuracyM',
+    'headingDeg', 'headingSource', 'directionQuality', 'captureMotionState',
+    'previousSimilarAlertIds', 'previousSimilarCount', 'repetitionCount',
+    'confirmedCount', 'falsePositiveCount', 'alertSoundId', 'configuredAlertDistanceM',
+    'sideOfRoadEstimate', 'sideOfRoadConfidence', 'heartbeatAtCapture', 'captureQuality',
+  ];
+  const fresh = { id: 'fresh', type: 'speed_camera', lat: 40.0, lng: -73.0, createdAt: iso(now), captureBearing: State.avgHeading(), directional: true };
+  CaptureMeta.applyCaptureMetadata(fresh);
+  const missing = EXPECTED.filter(k => !(k in fresh));
+  check('apply: all 20 expected keys present (' + (20 - missing.length) + '/20)', missing.length === 0);
+  if (missing.length) console.log('    missing:', missing.join(', '));
+  check('apply: heartbeat has 5 sub-keys', fresh.heartbeatAtCapture &&
+    ['gpsFresh', 'appOnline', 'mapReady', 'storageOk', 'gpsAgeMs'].every(k => k in fresh.heartbeatAtCapture));
+}
+
 console.log('--- 4. mergeCaptureMetadata ---');
 // Existing point with NO direction adopts new heading + captureBearing (spec §11).
 {

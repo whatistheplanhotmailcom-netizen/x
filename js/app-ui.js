@@ -2998,6 +2998,32 @@ const UI = {
     State.pendingCapture = null;
     State.captureLocationOverride = null; // v22.39: clear map-tap override
     State.saveData();
+    // v23.11.0: capture-save verification — read the ACTUAL stored point back
+    // out of State.data.points (the only persisted alert list) and confirm the
+    // expected metadata keys landed. Fires once per capture only (never per GPS
+    // tick). Helps distinguish "missing from storage" vs "missing from UI".
+    try {
+      const saved = State.data.points.find(pt => pt.id === trackedId);
+      if (saved) {
+        const EXPECTED_META = [
+          'capturedAt', 'gpsTimestamp', 'accuracyM', 'altitudeM', 'altitudeAccuracyM',
+          'headingDeg', 'headingSource', 'directionQuality', 'captureMotionState',
+          'previousSimilarAlertIds', 'previousSimilarCount', 'repetitionCount',
+          'confirmedCount', 'falsePositiveCount', 'alertSoundId', 'configuredAlertDistanceM',
+          'sideOfRoadEstimate', 'sideOfRoadConfidence', 'heartbeatAtCapture', 'captureQuality',
+        ];
+        const missing = EXPECTED_META.filter(k => !(k in saved));
+        logEvent('CAPTURE-META',
+          `[CAPTURE-META] point fields present: id=${saved.id}` +
+          ` capturedAt=${saved.capturedAt != null ? 'y' : '—'}` +
+          ` accuracyM=${saved.accuracyM != null ? saved.accuracyM : '—'}` +
+          ` headingDeg=${typeof saved.headingDeg === 'number' ? Math.round(saved.headingDeg) + '°' : '—'}` +
+          ` captureQuality=${saved.captureQuality || '—'}` +
+          ` configuredAlertDistanceM=${saved.configuredAlertDistanceM != null ? saved.configuredAlertDistanceM : '—'}` +
+          (missing.length ? ` · missing(${missing.length}): ${missing.join(',')}` : ' · all 20 present'),
+          'ok');
+      }
+    } catch (e) {}
     // v23.5 Phase 4: audit trail — note when capture happens while
     // network is degraded/offline. Local save already succeeded above;
     // remote backup will queue via tryAuto's next tick.
@@ -3057,35 +3083,75 @@ const UI = {
   },
 
   /** v23.11.0 — compact read-only capture-metadata readout in the Edit
-   *  Point modal. Display only; never edits stored data. Hidden when the
-   *  point predates the capture-metadata schema and has nothing to show. */
+   *  Point modal. Display only; never edits stored data. Always shown for a
+   *  captured point: every expected field renders, with "—" for anything
+   *  missing (old normalized / imported points) so the block never crashes
+   *  and never hides the whole record. captureBearing / heading are not shown
+   *  here — they have their own dedicated row; headingDeg is metadata-only. */
   renderCaptureMetaSummary(p) {
     const el = document.getElementById('e-capmeta');
     if (!el) return;
     if (!p) { el.style.display = 'none'; el.innerHTML = ''; return; }
     const esc = Utils.escapeHtml;
-    const num = (v, suffix) => (typeof v === 'number' && !isNaN(v)) ? (Math.round(v) + (suffix || '')) : null;
-    const rows = [];
-    const acc = num(p.accuracyM, ' m');
-    if (acc != null) rows.push(['GPS accuracy', acc]);
-    if (typeof p.altitudeM === 'number') {
-      const aa = (typeof p.altitudeAccuracyM === 'number') ? ' ± ' + Math.round(p.altitudeAccuracyM) + ' m' : '';
-      rows.push(['Altitude', Math.round(p.altitudeM) + ' m' + aa]);
+    const DASH = '—';
+    const has = v => v !== undefined && v !== null && !(typeof v === 'number' && isNaN(v));
+    // string value with escape + dash fallback
+    const sv = v => has(v) ? esc(String(v)) : DASH;
+    // numeric value with optional suffix + dash fallback (0 is valid)
+    const nv = (v, suffix) => (typeof v === 'number' && !isNaN(v)) ? esc(Math.round(v) + (suffix || '')) : DASH;
+    const rawNv = v => (typeof v === 'number' && !isNaN(v)) ? esc(String(v)) : DASH;
+
+    // capturedAt / gpsTimestamp
+    let capturedTxt = DASH;
+    if (has(p.capturedAt)) {
+      const ago = Utils.fmtAgo(p.capturedAt);
+      capturedTxt = esc(ago || String(p.capturedAt));
     }
-    const hd = num(p.headingDeg, '°');
-    if (hd != null) rows.push(['Heading', hd + (p.headingSource ? ' · ' + esc(p.headingSource) : '')]);
-    else if (p.headingSource) rows.push(['Heading', '— · ' + esc(p.headingSource)]);
-    if (p.directionQuality) rows.push(['Direction quality', esc(p.directionQuality)]);
-    if (p.captureQuality) rows.push(['Capture quality', esc(p.captureQuality)]);
-    if (typeof p.repetitionCount === 'number') rows.push(['Repetitions', String(p.repetitionCount)]);
-    if (typeof p.previousSimilarCount === 'number') rows.push(['Previous similar', String(p.previousSimilarCount)]);
-    if (p.sideOfRoadEstimate) {
-      const conf = (typeof p.sideOfRoadConfidence === 'number') ? ' (conf ' + p.sideOfRoadConfidence + ')' : '';
-      rows.push(['Side of road', esc(p.sideOfRoadEstimate) + conf]);
+    let gpsTsTxt = DASH;
+    if (typeof p.gpsTimestamp === 'number' && !isNaN(p.gpsTimestamp)) {
+      try { gpsTsTxt = esc(new Date(p.gpsTimestamp).toLocaleTimeString()); }
+      catch (e) { gpsTsTxt = rawNv(p.gpsTimestamp); }
     }
-    if (!rows.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+
+    // altitude ± accuracy
+    let altTxt = DASH;
+    if (typeof p.altitudeM === 'number' && !isNaN(p.altitudeM)) {
+      const aa = (typeof p.altitudeAccuracyM === 'number' && !isNaN(p.altitudeAccuracyM))
+        ? ' ± ' + Math.round(p.altitudeAccuracyM) + ' m' : '';
+      altTxt = esc(Math.round(p.altitudeM) + ' m' + aa);
+    }
+
+    // previousSimilar: count + short ids
+    let prevTxt = rawNv(p.previousSimilarCount);
+    if (Array.isArray(p.previousSimilarAlertIds) && p.previousSimilarAlertIds.length) {
+      const ids = p.previousSimilarAlertIds.slice(0, 3).map(id => esc(String(id).slice(0, 6))).join(', ');
+      prevTxt = `${rawNv(p.previousSimilarCount)} (${ids})`;
+    }
+
+    // heartbeat summary
+    let hbTxt = DASH;
+    const hb = p.heartbeatAtCapture;
+    if (hb && typeof hb === 'object') {
+      const yn = b => (b === true ? 'yes' : b === false ? 'no' : '—');
+      const age = (typeof hb.gpsAgeMs === 'number' && !isNaN(hb.gpsAgeMs)) ? Math.round(hb.gpsAgeMs) + 'ms' : '—';
+      hbTxt = esc(`gps:${yn(hb.gpsFresh)} online:${yn(hb.appOnline)} map:${yn(hb.mapReady)} storage:${yn(hb.storageOk)} age:${age}`);
+    }
+
+    const lines = [
+      [['Captured', capturedTxt], ['GPS time', gpsTsTxt]],
+      [['Accuracy', nv(p.accuracyM, ' m')], ['Altitude', altTxt]],
+      [['Heading', nv(p.headingDeg, '°')], ['Source', sv(p.headingSource)]],
+      [['Dir quality', sv(p.directionQuality)], ['Motion', sv(p.captureMotionState)], ['Quality', sv(p.captureQuality)]],
+      [['Reps', rawNv(p.repetitionCount)], ['Prev similar', prevTxt]],
+      [['Confirmed', rawNv(p.confirmedCount)], ['False+', rawNv(p.falsePositiveCount)]],
+      [['Sound', sv(p.alertSoundId)], ['Alert dist', nv(p.configuredAlertDistanceM, ' m')]],
+      [['Side', sv(p.sideOfRoadEstimate)], ['Side conf', rawNv(p.sideOfRoadConfidence)]],
+      [['Heartbeat', hbTxt]],
+    ];
     el.innerHTML = '<strong>Capture metadata</strong><br>' +
-      rows.map(r => `${esc(r[0])}: <strong>${r[1]}</strong>`).join(' · ');
+      lines.map(line =>
+        line.map(pair => `${esc(pair[0])}: <strong>${pair[1]}</strong>`).join(' · ')
+      ).join('<br>');
     el.style.display = 'block';
   },
 

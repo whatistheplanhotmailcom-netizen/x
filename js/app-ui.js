@@ -292,7 +292,11 @@ const MapView = {
    *  green = mostly yes, red = mostly no, amber = tied, grey = no votes. */
   _buildPointEl(p, classes) {
     const el = document.createElement('div');
-    const sideHtml = p.side ? `<span class="side">${p.side === 'left' ? 'L' : 'R'}</span>` : '';
+    // v23.13.0: side badge carries a directional arrow pointing to the
+    // side of the road — left side → "←L", right side → "R→".
+    const sideHtml = p.side
+      ? `<span class="side side-${p.side === 'left' ? 'l' : 'r'}">${p.side === 'left' ? '←L' : 'R→'}</span>`
+      : '';
     let yes = 0, no = 0;
     if (Array.isArray(p.confirmations)) {
       for (const c of p.confirmations) {

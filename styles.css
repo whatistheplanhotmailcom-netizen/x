@@ -1298,14 +1298,17 @@ body {
 .ra-marker .side {
   position: absolute;
   bottom: -6px; right: -6px;
-  width: 16px; height: 16px;
+  min-width: 16px; height: 16px;
+  padding: 0 3px;
   background: #1c1917;
   color: #fff;
   font-size: 9px;
   font-weight: 800;
-  border-radius: 3px;
+  border-radius: 8px;
   border: 2px solid var(--surface);
   display: grid; place-items: center;
+  line-height: 1;
+  white-space: nowrap;
 }
 /* v22.87: feedback-count badge at top-right of each marker. Color shows
    the user's net feedback for that point:

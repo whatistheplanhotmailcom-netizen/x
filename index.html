@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.9.9">
+<link rel="stylesheet" href="styles.css?v=23.10.0">
 </head>
 <body data-theme="light">
 
@@ -117,6 +117,12 @@
 
   <!-- MAP ROW — map + actions on the left, tools rail on the right (spans both rows) -->
   <div class="map-row">
+    <!-- v23.10.0: LEFT rail — opposite-direction captures (other side of
+         the road). 30% narrower than the right rail. Content rendered
+         by UI.renderTimeline into #rail-list-left. -->
+    <aside class="tools-rail tools-rail-left" id="tools-rail-left" aria-label="Opposite-direction captures">
+      <div class="rail-list" id="rail-list-left"></div>
+    </aside>
     <!-- MAP -->
     <div class="map-wrap">
       <div id="map"></div>
@@ -880,8 +886,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.9.9"></script>
-<script defer src="js/app-ui.js?v=23.9.9"></script>
+<script defer src="js/app-core.js?v=23.10.0"></script>
+<script defer src="js/app-ui.js?v=23.10.0"></script>
 
 </body>
 </html>

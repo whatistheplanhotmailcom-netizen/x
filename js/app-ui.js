@@ -1749,13 +1749,11 @@ const UI = {
     // v23.5.3: the rail now hosts the speed-limit sign + this list. Write
     // into the dedicated child #rail-list so the sign survives every render.
     // Fall back to the old #tools-rail target on legacy markup just in case.
-    const rail = document.getElementById('rail-list') || document.getElementById('tools-rail');
-    if (!rail) return;
+    const railR = document.getElementById('rail-list') || document.getElementById('tools-rail');
+    // v23.10.0: optional left rail showing opposite-direction captures.
+    const railL = document.getElementById('rail-list-left');
+    if (!railR && !railL) return;
 
-    // v22.66: simple distance sort — order ALL active points by how far
-    // they are from the current GPS position, nearest first. No direction
-    // filtering, no destination-based "ahead" check — just raw distance.
-    // Falls back to chronological order when GPS is off.
     const myPos = State.pos;
     // v23.8.0: timeline rail surfaces the global observation pool —
     // every captured point is alertable on every trip, so the
@@ -1766,30 +1764,65 @@ const UI = {
         .filter(p => p && p.status !== 'no' && typeof p.lat === 'number' && typeof p.lng === 'number')
         .map(p => ({ ...p, dist: Utils.distKm(myPos, p) }))
         .sort((a, b) => a.dist - b.dist)
-        .slice(0, 50);
+        .slice(0, 100);
     } else {
       pts = State.data.points
         .filter(p => p && p.status !== 'no' && typeof p.lat === 'number' && typeof p.lng === 'number')
         .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''))
-        .slice(0, 50);
+        .slice(0, 100);
     }
 
-    if (!pts.length) {
-      rail.innerHTML = '<div class="timeline-empty">No captures yet</div>';
-      this._lastFocusedTimelineId = null;
-      return;
+    // v23.10.0: split by direction. A point whose captureBearing is
+    // roughly opposite (>135°) to the driver's current heading belongs
+    // to the OTHER side of the road → left rail. Everything else (same
+    // direction, no bearing, or no reliable heading) → right rail.
+    const heading = State.heading;
+    const speedKmh = (State.speedMps || 0) * 3.6;
+    const headingReliable = (typeof Speed !== 'undefined' && Speed.isHeadingReliable)
+      ? Speed.isHeadingReliable(speedKmh) : (heading != null);
+    const isOpposite = (p) => {
+      if (!headingReliable || heading == null) return false;
+      const pb = (typeof p.captureBearing === 'number') ? p.captureBearing
+               : (typeof p.heading === 'number') ? p.heading : null;
+      if (pb == null) return false;
+      return Speed.angleDiff(heading, pb) > 135;
+    };
+    const rightPts = [];
+    const leftPts = [];
+    for (const p of pts) {
+      if (railL && isOpposite(p)) leftPts.push(p);
+      else rightPts.push(p);
     }
 
-    // v22.60: bake ahead-rank class so the sidebar mirrors the map markers'
-    // flash/pulse. MapView.updateAheadRanks also patches these every tick.
     const aheadList = (typeof Alerts !== 'undefined') ? Alerts.ahead() : [];
     const aheadIds = new globalThis.Map();
     aheadList.slice(0, 3).forEach((a, idx) => aheadIds.set(a.id, idx + 1));
-
-    // v22.65: distance tier thresholds align with proximity ping bands.
     const startM = +State.settings.proximityStartM || 1000;
     const finalM = startM * 0.2;
 
+    if (railR) this._renderRailList(railR, rightPts.slice(0, 50), aheadIds, startM, finalM, myPos, 'No captures yet');
+    if (railL) this._renderRailList(railL, leftPts.slice(0, 50), aheadIds, startM, finalM, myPos,
+      headingReliable ? 'No opposite-side captures' : 'Drive to split by direction');
+
+    // v22.65: auto-scroll the right rail back to top when the focused
+    // (closest) point changes.
+    const focusedId = rightPts[0] && rightPts[0].id;
+    if (railR && focusedId && this._lastFocusedTimelineId !== focusedId) {
+      this._lastFocusedTimelineId = focusedId;
+      try { railR.scrollTo({ top: 0, behavior: 'smooth' }); }
+      catch (e) { railR.scrollTop = 0; }
+    }
+  },
+
+  /** v23.10.0: render a list of points into a rail element. Extracted
+   *  from renderTimeline so the left + right rails share one template
+   *  and one set of handlers (delete + two-tap locate/edit). */
+  _renderRailList(rail, pts, aheadIds, startM, finalM, myPos, emptyText) {
+    if (!rail) return;
+    if (!pts.length) {
+      rail.innerHTML = `<div class="timeline-empty">${Utils.escapeHtml(emptyText || 'No captures')}</div>`;
+      return;
+    }
     rail.innerHTML = pts.map(p => {
       const short = (Utils.typeLabel(p.type) || '').split(' ')[0].slice(0, 4);
       let distText, distCls = '', tierCls = '';
@@ -1799,7 +1832,6 @@ const UI = {
         if (km < 1) distText = Math.round(distM) + 'm';
         else if (km < 10) distText = km.toFixed(1) + 'km';
         else distText = Math.round(km) + 'km';
-        // Tier color: green far, orange mid, red near
         if (distM < finalM) tierCls = ' tier-near';
         else if (distM < startM) tierCls = ' tier-mid';
         else tierCls = ' tier-far';
@@ -1816,8 +1848,6 @@ const UI = {
         <span class="dist${distCls}">${Utils.escapeHtml(distText)}</span>
       </div>`;
     }).join('');
-    // v22.74: separate handlers for edit-tap vs delete-tap, with the
-    // delete button stopping propagation so it doesn't open the editor.
     rail.querySelectorAll('.tl-x').forEach(el => {
       el.onclick = async (ev) => {
         ev.stopPropagation();
@@ -1839,11 +1869,8 @@ const UI = {
     });
     rail.querySelectorAll('[data-tl-edit]').forEach(el => {
       el.onclick = (ev) => {
-        // Skip if the user actually tapped the × delete button
         if (ev.target.classList && ev.target.classList.contains('tl-x')) return;
         const id = el.dataset.tlEdit;
-        // v23.9.1 — two-tap behavior: first tap pans the map to the
-        // point, second tap (same row within 2.5s) opens the editor.
         const now = Date.now();
         const sameRow = (UI._tlLastTapId === id);
         const withinWindow = (now - (UI._tlLastTapAt || 0)) < 2500;
@@ -1860,28 +1887,12 @@ const UI = {
           try {
             MapView.m.easeTo({ center: [p.lng, p.lat], duration: 400, essential: true });
           } catch (e) {}
-          // Brief visual feedback on the row so the user knows the tap
-          // registered as "locate" rather than "edit".
           el.classList.add('tl-locating');
           setTimeout(() => el.classList.remove('tl-locating'), 600);
           Utils.toast('Tap again to edit', 'good');
         }
       };
     });
-
-    // v22.65: auto-scroll the rail back to top whenever the focused
-    // (closest) point shifts to a new one. Only fires on focus CHANGE
-    // so manual scrolling to peek at further entries isn't snapped back
-    // every tick.
-    const focusedId = pts[0] && pts[0].id;
-    if (focusedId && this._lastFocusedTimelineId !== focusedId) {
-      this._lastFocusedTimelineId = focusedId;
-      try {
-        rail.scrollTo({ top: 0, behavior: 'smooth' });
-      } catch (e) {
-        rail.scrollTop = 0;
-      }
-    }
   },
 
   /** v22.37: GPS health indicator — multi-state strip.

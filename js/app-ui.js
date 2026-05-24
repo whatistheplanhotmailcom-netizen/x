@@ -4936,12 +4936,23 @@ function importJson(e) {
     const existingDestIds = new Set(State.data.destinations.map(d => d.id));
     const existingPtIds = new Set(State.data.points.map(p => p.id));
     let dAdded = 0, pAdded = 0;
+    const addedPoints = [];
     (val.sanitized.data.destinations || []).forEach(d => {
       if (d.id && !existingDestIds.has(d.id)) { State.data.destinations.push(d); dAdded++; }
     });
     (val.sanitized.data.points || []).forEach(p => {
-      if (!existingPtIds.has(p.id)) { State.data.points.push(p); pAdded++; }
+      if (!existingPtIds.has(p.id)) { State.data.points.push(p); addedPoints.push(p); pAdded++; }
     });
+    // v23.11.0: give freshly imported (possibly old-backup) points the same
+    // additive capture-metadata defaults the one-time boot migration applies
+    // to local data. Additive only — never deletes legacy fields. Defensive:
+    // import must never fail on this.
+    try {
+      if (addedPoints.length && typeof CaptureMeta !== 'undefined' && CaptureMeta.normalize) {
+        const n = CaptureMeta.normalize(addedPoints);
+        if (n > 0) logEvent('CAPTURE-META', `[CAPTURE-META] normalized ${n} points`, 'ok');
+      }
+    } catch (e) {}
     if (val.sanitized.settings) State.settings = { ...State.settings, ...val.sanitized.settings };
     if (Array.isArray(val.sanitized.trips)) State.trips = val.sanitized.trips;
     State.saveData();

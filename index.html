@@ -416,6 +416,10 @@
     <div class="row-hint" style="font-size:10px;color:var(--ink-3);margin-bottom:4px;">
       Per-type override for the continuous proximity ping (the beeping cadence that speeds up as you approach). When OFF, this type stays silent on approach even if the global ping is on. Threshold alerts (2000/1000/500 m) still fire.
     </div>
+    <!-- v23.11.0: read-only capture-metadata summary. Populated by
+         UI.openPointEditor from the stored capture record. Display only —
+         no inputs, no effect on alerts. Hidden when no metadata exists. -->
+    <div class="row-hint" id="e-capmeta" style="display:none;font-size:10px;color:var(--ink-3);margin-bottom:4px;line-height:1.5;"></div>
     <div class="row"><span class="label">Lat</span><input type="number" id="e-lat" step="0.00001"></div>
     <div class="row"><span class="label">Lng</span><input type="number" id="e-lng" step="0.00001"></div>
     <div style="display:flex;gap:6px;">

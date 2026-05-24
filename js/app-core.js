@@ -1238,6 +1238,447 @@ const Observations = {
 };
 
 /* ============================================================
+   0e-bis. CAPTURE METADATA — v23.11.0
+   Production capture-record enrichment. Pure (or near-pure) helpers
+   that read State + the memory-only GPS fix buffer and produce a
+   clean per-capture metadata record.
+
+   HARD CONSTRAINT: none of this changes alert triggering, scoring,
+   route logic, map markers, or the existing captureBearing / heading
+   / directional behavior. The helpers only ADD fields to a freshly
+   captured point. In particular captureBearing and heading are NEVER
+   written here — they stay exactly as finalizeCapture's existing
+   avgHeading() path produced them, so the direction scoring in
+   Speed.scoreSpeedPoint / Observations.headingCompatible / Alerts is
+   byte-for-byte unchanged. headingDeg is a NEW read-only summary that
+   mirrors captureBearing when a valid bearing exists and otherwise
+   carries a best-effort resolved direction; no scoring path reads it.
+   ============================================================ */
+const CaptureMetaConfig = {
+  MAX_GPS_FIX_BUFFER: 3,
+  FRESH_GPS_MS: 8000,                 // a fix older than this is "stale"
+  SIMILAR_WINDOW_MS: 20 * 60 * 1000,  // previous-similar lookback (20 min)
+  SIMILAR_MAX_DIST_M: 500,
+  SIMILAR_MAX_BEARING_DEG: 60,
+  SIMILAR_MAX_RESULTS: 3,
+  COMPUTED_MIN_MOVE_M: 8,             // min fix-to-fix move to trust a computed bearing
+  GPS_USABLE_MPS: 1,                  // GPS heading is jittery below this
+  MOVING_MPS: 5,
+  SLOW_MPS: 2,
+  ACC_GOOD_M: 10,
+  ACC_USABLE_M: 25,
+  ACC_WEAK_M: 50,
+};
+
+const CaptureMeta = {
+  /* -- internal pure utilities -- */
+  _timeMs(iso) {
+    if (!iso) return null;
+    const t = Date.parse(iso);
+    return isNaN(t) ? null : t;
+  },
+  /** Best available stored bearing for a point: captureBearing → heading
+   *  → headingDeg. Read-only; never mutates. */
+  _bearingOf(p) {
+    if (!p) return null;
+    if (typeof p.captureBearing === 'number' && !isNaN(p.captureBearing)) return p.captureBearing;
+    if (typeof p.heading === 'number' && !isNaN(p.heading)) return p.heading;
+    if (typeof p.headingDeg === 'number' && !isNaN(p.headingDeg)) return p.headingDeg;
+    return null;
+  },
+  /** captureQuality rollup from stored accuracy + a direction-quality
+   *  label, with no live snapshot (used by normalization). */
+  _qualityFromStored(acc, dq) {
+    if (acc == null) return 'weak';            // present point, accuracy unknown
+    if (acc > CaptureMetaConfig.ACC_WEAK_M) return 'bad';
+    if (acc <= CaptureMetaConfig.ACC_GOOD_M && (dq === 'good' || dq === 'usable')) return 'good';
+    if (acc <= CaptureMetaConfig.ACC_USABLE_M && (dq === 'good' || dq === 'usable' || dq === 'weak')) return 'usable';
+    return 'weak';
+  },
+
+  /** Snapshot of the current GPS situation, combining live State fields
+   *  with the memory-only fix buffer. Read-only; one allocation. */
+  getCurrentGpsCaptureSnapshot() {
+    const buf = (typeof State !== 'undefined' && Array.isArray(State.gpsFixBuffer)) ? State.gpsFixBuffer : [];
+    const last = buf.length ? buf[buf.length - 1] : null;
+    const prev = buf.length > 1 ? buf[buf.length - 2] : null;
+    const nowMs = Date.now();
+    const S = (typeof State !== 'undefined') ? State : null;
+    const gpsTs = (last && last.gpsTimestamp != null) ? last.gpsTimestamp
+      : (S && S.gpsTimestamp != null ? S.gpsTimestamp : null);
+    const lat = (S && S.pos) ? S.pos.lat : (last ? last.lat : null);
+    const lng = (S && S.pos) ? S.pos.lng : (last ? last.lng : null);
+    const accuracyM = (S && S.accuracy != null) ? S.accuracy
+      : (last && last.accuracyM != null ? last.accuracyM : null);
+    const speedMps = (S && typeof S.speedMps === 'number') ? S.speedMps
+      : (last && last.rawSpeedMps != null ? last.rawSpeedMps : null);
+    return {
+      lat, lng,
+      accuracyM,
+      altitudeM: (S && S.altitude != null) ? S.altitude : (last ? last.altitudeM : null),
+      altitudeAccuracyM: (S && S.altitudeAccuracy != null) ? S.altitudeAccuracy : (last ? last.altitudeAccuracyM : null),
+      gpsTimestamp: gpsTs,
+      gpsAgeMs: (gpsTs != null) ? Math.max(0, nowMs - gpsTs) : null,
+      rawGpsHeadingDeg: last ? last.rawGpsHeadingDeg : null,
+      rawSpeedMps: last ? last.rawSpeedMps : null,
+      speedMps,
+      avgHeading: (S && typeof S.avgHeading === 'function') ? S.avgHeading() : null,
+      headingSource: S ? S.headingSource : null,
+      deviceHeading: (S && S.deviceHeading != null) ? S.deviceHeading : null,
+      prevFix: prev,
+      lastFix: last,
+    };
+  },
+
+  /** Resolve a road-travel heading with a safe priority order:
+   *    A averaged heading (the existing captureBearing source)
+   *    B raw GPS heading when speed is usable
+   *    C computed bearing across the last two fixes (>= 8 m apart)
+   *    D compass / device heading (fallback ONLY — phone orientation,
+   *      not vehicle travel, so it must never outrank GPS/computed)
+   *    E none
+   *  Returns { headingDeg, headingSource }. Pure. */
+  resolveCaptureHeading(snap) {
+    if (!snap) return { headingDeg: null, headingSource: 'none' };
+    if (snap.avgHeading != null && !isNaN(snap.avgHeading)) {
+      return { headingDeg: snap.avgHeading, headingSource: 'average' };
+    }
+    const speed = (snap.speedMps != null) ? snap.speedMps : snap.rawSpeedMps;
+    if (snap.rawGpsHeadingDeg != null && !isNaN(snap.rawGpsHeadingDeg)
+        && speed != null && speed > CaptureMetaConfig.GPS_USABLE_MPS) {
+      return { headingDeg: snap.rawGpsHeadingDeg, headingSource: 'gps' };
+    }
+    if (snap.prevFix && snap.lastFix
+        && typeof snap.prevFix.lat === 'number' && typeof snap.lastFix.lat === 'number') {
+      const a = { lat: snap.prevFix.lat, lng: snap.prevFix.lng };
+      const b = { lat: snap.lastFix.lat, lng: snap.lastFix.lng };
+      const movedM = Utils.distKm(a, b) * 1000;
+      if (movedM >= CaptureMetaConfig.COMPUTED_MIN_MOVE_M) {
+        const brg = Utils.bearing(a, b);
+        if (brg != null && !isNaN(brg)) return { headingDeg: brg, headingSource: 'computed' };
+      }
+    }
+    if (snap.deviceHeading != null && !isNaN(snap.deviceHeading)) {
+      return { headingDeg: snap.deviceHeading, headingSource: 'compass' };
+    }
+    return { headingDeg: null, headingSource: 'none' };
+  },
+
+  /** good | usable | weak | none — trust in the resolved heading for
+   *  same/opposite-direction filtering. Pure. */
+  deriveDirectionQuality(snap, resolved) {
+    if (!resolved || resolved.headingDeg == null || resolved.headingSource === 'none') return 'none';
+    const src = resolved.headingSource;
+    const speed = snap ? ((snap.speedMps != null) ? snap.speedMps : snap.rawSpeedMps) : null;
+    if (src === 'gps' || src === 'average') {
+      return (speed != null && speed >= CaptureMetaConfig.SLOW_MPS) ? 'good' : 'usable';
+    }
+    if (src === 'computed') return 'usable';
+    if (src === 'compass') return 'weak';
+    return 'none';
+  },
+
+  /** moving | slow | stationary | unknown from the smoothed speed. Pure. */
+  deriveCaptureMotionState(snap) {
+    const speed = snap ? ((snap.speedMps != null) ? snap.speedMps : snap.rawSpeedMps) : null;
+    if (speed == null || isNaN(speed)) return 'unknown';
+    if (speed >= CaptureMetaConfig.MOVING_MPS) return 'moving';
+    if (speed >= CaptureMetaConfig.SLOW_MPS) return 'slow';
+    return 'stationary';
+  },
+
+  /** good | usable | weak | bad — single rollup of accuracy + freshness
+   *  + direction quality. gpsAgeMs is read ONLY here for the staleness
+   *  test; it is never stored as a main alert field. Pure. */
+  deriveCaptureQuality(snap, directionQuality) {
+    if (!snap || snap.lat == null || snap.lng == null) return 'bad';
+    const acc = snap.accuracyM;
+    const stale = (snap.gpsAgeMs != null) && (snap.gpsAgeMs > CaptureMetaConfig.FRESH_GPS_MS);
+    if (acc == null || acc > CaptureMetaConfig.ACC_WEAK_M || stale) return 'bad';
+    const dq = directionQuality || 'none';
+    if (acc <= CaptureMetaConfig.ACC_GOOD_M && (dq === 'good' || dq === 'usable')) return 'good';
+    if (acc <= CaptureMetaConfig.ACC_USABLE_M && (dq === 'good' || dq === 'usable' || dq === 'weak')) return 'usable';
+    return 'weak';
+  },
+
+  /** Up to 3 most-recent existing points that look like the same alert
+   *  captured again within 20 min / 500 m / 60° of the new point.
+   *  Metadata only — NEVER blocks saving or changes alert firing.
+   *  Returns { ids:[...], count }. Pure (reads State.data.points). */
+  getPreviousSimilarCaptures(newPoint) {
+    const empty = { ids: [], count: 0 };
+    if (!newPoint || typeof newPoint.lat !== 'number' || typeof newPoint.lng !== 'number') return empty;
+    const points = (typeof State !== 'undefined' && State.data && Array.isArray(State.data.points)) ? State.data.points : [];
+    const nowMs = this._timeMs(newPoint.capturedAt || newPoint.createdAt) || Date.now();
+    const newBearing = this._bearingOf(newPoint);
+    const newHasDir = (newBearing != null);
+    const matches = [];
+    for (const p of points) {
+      if (!p || p.id === newPoint.id) continue;
+      if (p.type !== newPoint.type) continue;
+      const t = this._timeMs(p.capturedAt || p.createdAt || p.updatedAt);
+      if (t == null) continue;
+      const dtMs = nowMs - t;
+      if (dtMs < 0 || dtMs > CaptureMetaConfig.SIMILAR_WINDOW_MS) continue;
+      const distM = Utils.distKm({ lat: p.lat, lng: p.lng }, { lat: newPoint.lat, lng: newPoint.lng }) * 1000;
+      if (distM > CaptureMetaConfig.SIMILAR_MAX_DIST_M) continue;
+      const pBearing = this._bearingOf(p);
+      const pHasDir = (pBearing != null);
+      if (newHasDir && pHasDir) {
+        if (Speed.angleDiff(newBearing, pBearing) > CaptureMetaConfig.SIMILAR_MAX_BEARING_DEG) continue;
+      } else if (newHasDir !== pHasDir) {
+        // ignore points with no usable direction unless the new point
+        // also has no usable direction.
+        continue;
+      }
+      matches.push({ id: p.id, t });
+    }
+    matches.sort((a, b) => b.t - a.t); // most recent first
+    const top = matches.slice(0, CaptureMetaConfig.SIMILAR_MAX_RESULTS);
+    return { ids: top.map(m => m.id), count: top.length };
+  },
+
+  /** Small health summary for the capture moment — NOT a debug dump and
+   *  never read by alert scoring. gpsAgeMs is included only as debug
+   *  context. */
+  buildHeartbeatAtCapture(snap) {
+    const gpsFresh = !!(snap && snap.gpsAgeMs != null && snap.gpsAgeMs <= CaptureMetaConfig.FRESH_GPS_MS);
+    let appOnline = true;
+    try {
+      if (typeof NetworkMonitor !== 'undefined' && NetworkMonitor.getStatus) {
+        appOnline = NetworkMonitor.getStatus().state === 'online';
+      } else if (typeof navigator !== 'undefined' && 'onLine' in navigator) {
+        appOnline = !!navigator.onLine;
+      }
+    } catch (e) {}
+    let mapReady = false;
+    try { mapReady = !!(typeof MapView !== 'undefined' && MapView && MapView.m); } catch (e) {}
+    let storageOk = false;
+    try {
+      const k = '__capmeta_probe__';
+      localStorage.setItem(k, '1');
+      localStorage.removeItem(k);
+      storageOk = true;
+    } catch (e) { storageOk = false; }
+    return {
+      gpsFresh,
+      appOnline,
+      mapReady,
+      storageOk,
+      gpsAgeMs: (snap && snap.gpsAgeMs != null) ? snap.gpsAgeMs : null, // debug context only
+    };
+  },
+
+  /** The alert distance configured for this point. The app has no single
+   *  "alert distance" preference, so we fall back to the live engine
+   *  radius (Speed.getAlertRadius: highway 400 / city 200 / unknown 300).
+   *  A future explicit settings.alertDistanceM would take precedence. */
+  getConfiguredAlertDistanceM(point) {
+    try {
+      const s = (typeof State !== 'undefined' && State.settings) ? State.settings : null;
+      if (s && typeof s.alertDistanceM === 'number') return s.alertDistanceM;
+    } catch (e) {}
+    try {
+      if (typeof Speed !== 'undefined' && Speed.getAlertRadius) return Speed.getAlertRadius(point || {});
+    } catch (e) {}
+    return 300; // documented engine default
+  },
+
+  /** Stamp the full capture-metadata record onto a fresh point `c`.
+   *  Mutates `c` but does NOT persist. captureBearing / heading are
+   *  deliberately left untouched (owned by finalizeCapture's existing
+   *  avgHeading path) so alert behavior is unchanged. */
+  applyCaptureMetadata(c) {
+    if (!c) return null;
+    const snap = this.getCurrentGpsCaptureSnapshot();
+    const resolved = this.resolveCaptureHeading(snap);
+
+    // Timestamps / location / accuracy / altitude (additive).
+    c.capturedAt = c.capturedAt || c.createdAt || new Date().toISOString();
+    if (c.gpsTimestamp == null) c.gpsTimestamp = (snap.gpsTimestamp != null) ? snap.gpsTimestamp : null;
+    if (typeof c.accuracyM !== 'number') c.accuracyM = (snap.accuracyM != null) ? snap.accuracyM : null;
+    // Preserve legacy gpsAccuracy alias for any existing consumers; prefer
+    // accuracyM going forward.
+    if (c.gpsAccuracy === undefined && snap.accuracyM != null) c.gpsAccuracy = snap.accuracyM;
+    if (typeof c.altitudeM !== 'number') c.altitudeM = (snap.altitudeM != null) ? snap.altitudeM : null;
+    if (typeof c.altitudeAccuracyM !== 'number') c.altitudeAccuracyM = (snap.altitudeAccuracyM != null) ? snap.altitudeAccuracyM : null;
+
+    // Heading SUMMARY only. When the existing finalizeCapture path already
+    // produced a captureBearing (from State.avgHeading()), headingDeg
+    // mirrors it exactly (headingDeg === captureBearing) and the source is
+    // the averaged heading. Otherwise headingDeg carries the best-effort
+    // resolved direction purely for review. captureBearing / heading are
+    // never written here.
+    const existingBearing = (typeof c.captureBearing === 'number' && !isNaN(c.captureBearing)) ? c.captureBearing : null;
+    let headingDeg, headingSource, directionQuality;
+    if (existingBearing != null) {
+      headingDeg = existingBearing;
+      headingSource = 'average';
+      directionQuality = this.deriveDirectionQuality(snap, { headingDeg, headingSource });
+    } else if (resolved.headingDeg != null) {
+      headingDeg = resolved.headingDeg;
+      headingSource = resolved.headingSource;
+      directionQuality = this.deriveDirectionQuality(snap, resolved);
+    } else {
+      headingDeg = null;
+      headingSource = 'none';
+      directionQuality = 'none';
+    }
+    c.headingDeg = headingDeg;
+    c.headingSource = headingSource;
+    c.directionQuality = directionQuality;
+    c.captureMotionState = this.deriveCaptureMotionState(snap);
+    c.captureQuality = this.deriveCaptureQuality(snap, directionQuality);
+    if (c.directional === undefined) c.directional = false;
+
+    // Previous-similar metadata + long-term learning counters.
+    const sim = this.getPreviousSimilarCaptures(c);
+    c.previousSimilarAlertIds = sim.ids;
+    c.previousSimilarCount = sim.count;
+    if (typeof c.repetitionCount !== 'number') c.repetitionCount = sim.count + 1;
+    if (typeof c.confirmedCount !== 'number') c.confirmedCount = 0;
+    if (typeof c.falsePositiveCount !== 'number') c.falsePositiveCount = 0;
+
+    // Alert sound + configured distance.
+    if (c.alertSoundId === undefined) {
+      let sid = null;
+      try { sid = (typeof Audio !== 'undefined' && Audio.findMappedSoundId) ? Audio.findMappedSoundId(c.type) : null; } catch (e) {}
+      c.alertSoundId = sid || null;
+    }
+    if (typeof c.configuredAlertDistanceM !== 'number') {
+      c.configuredAlertDistanceM = this.getConfiguredAlertDistanceM(c);
+    }
+
+    // Side of road — ESTIMATE only. Default unknown / confidence 0 unless
+    // the user explicitly selected a side.
+    const hasUserSide = (c.side === 'left' || c.side === 'right');
+    if (c.sideOfRoadEstimate === undefined) c.sideOfRoadEstimate = hasUserSide ? c.side : 'unknown';
+    if (typeof c.sideOfRoadConfidence !== 'number') c.sideOfRoadConfidence = hasUserSide ? 1 : 0;
+
+    // Small health summary.
+    c.heartbeatAtCapture = this.buildHeartbeatAtCapture(snap);
+
+    return { snap, headingDeg, headingSource, directionQuality, quality: c.captureQuality };
+  },
+
+  /** Merge the new capture's metadata into a nearby existing point.
+   *  Owns ONLY the new schema fields — confidence / confirmedCount /
+   *  location averaging stay with finalizeCapture's existing code. Never
+   *  overwrites a valid existing captureBearing with a weaker one. */
+  mergeCaptureMetadata(nearby, c) {
+    if (!nearby || !c) return;
+    const now = new Date().toISOString();
+
+    // repetitionCount: increment existing (seed from confidence when the
+    // counter has not been initialized yet).
+    const base = (typeof nearby.repetitionCount === 'number') ? nearby.repetitionCount
+      : (typeof nearby.confidence === 'number' ? nearby.confidence : 1);
+    nearby.repetitionCount = base + 1;
+
+    nearby.lastSeenAt = now;
+
+    // Adopt heading SUMMARY fields only when the existing record has NO
+    // usable direction at all. Never weaken an existing bearing.
+    const existingBearing = this._bearingOf(nearby);
+    if (existingBearing == null && typeof c.headingDeg === 'number') {
+      nearby.headingDeg = c.headingDeg;
+      nearby.headingSource = c.headingSource || 'none';
+      nearby.directionQuality = c.directionQuality || 'none';
+      // mirror into captureBearing/heading too (matches the existing
+      // "nearby.heading == null && c.captureBearing != null" adoption rule)
+      // so direction filtering can start working — only when there was
+      // nothing there before.
+      if (nearby.captureBearing == null && typeof c.captureBearing === 'number') nearby.captureBearing = c.captureBearing;
+      if (nearby.heading == null && typeof c.captureBearing === 'number') nearby.heading = c.captureBearing;
+    } else {
+      // Keep existing direction; just make sure the new summary fields exist.
+      if (nearby.headingDeg === undefined) nearby.headingDeg = existingBearing;
+      if (nearby.headingSource === undefined) nearby.headingSource = (existingBearing != null) ? 'average' : 'none';
+      if (nearby.directionQuality === undefined) nearby.directionQuality = (existingBearing != null) ? 'usable' : 'none';
+    }
+
+    // Preserve sideOfRoadEstimate unless the new capture has an explicit
+    // user side selection.
+    if (c.side === 'left' || c.side === 'right') {
+      nearby.sideOfRoadEstimate = c.side;
+      nearby.sideOfRoadConfidence = 1;
+    } else {
+      if (nearby.sideOfRoadEstimate === undefined) {
+        nearby.sideOfRoadEstimate = (nearby.side === 'left' || nearby.side === 'right') ? nearby.side : 'unknown';
+      }
+      if (typeof nearby.sideOfRoadConfidence !== 'number') {
+        nearby.sideOfRoadConfidence = (nearby.side === 'left' || nearby.side === 'right') ? 1 : 0;
+      }
+    }
+
+    // Ensure the additive learning counters exist on the merge target
+    // (confirmedCount is bumped by the existing merge code — do not double-count).
+    if (typeof nearby.confirmedCount !== 'number') nearby.confirmedCount = 0;
+    if (typeof nearby.falsePositiveCount !== 'number') nearby.falsePositiveCount = 0;
+    if (nearby.capturedAt === undefined) nearby.capturedAt = nearby.createdAt || null;
+
+    try {
+      logEvent('CAPTURE-META', `[CAPTURE-META] merged into existing id=${nearby.id} repetition=${nearby.repetitionCount}`, 'ok');
+    } catch (e) {}
+  },
+
+  /** Backward-compatible normalization of existing points. Additive ONLY:
+   *  never deletes legacy fields (captureBearing / heading / confidence /
+   *  gpsAccuracy / side / createdAt). Returns count touched. */
+  normalize(points) {
+    if (!Array.isArray(points)) return 0;
+    const cams = ['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera'];
+    let touched = 0;
+    for (const p of points) {
+      if (!p || typeof p !== 'object') continue;
+      let changed = false;
+      const bearing = (typeof p.captureBearing === 'number' && !isNaN(p.captureBearing)) ? p.captureBearing
+        : (typeof p.heading === 'number' && !isNaN(p.heading) ? p.heading : null);
+
+      if (p.capturedAt === undefined) { p.capturedAt = p.createdAt || null; changed = true; }
+      if (p.accuracyM === undefined && typeof p.gpsAccuracy === 'number') { p.accuracyM = p.gpsAccuracy; changed = true; }
+      if (p.headingDeg === undefined && bearing != null) { p.headingDeg = bearing; changed = true; }
+      if (p.heading === undefined && typeof p.captureBearing === 'number') { p.heading = p.captureBearing; changed = true; }
+      if (p.headingSource === undefined) { p.headingSource = (bearing != null) ? 'average' : 'none'; changed = true; }
+      if (p.directionQuality === undefined) { p.directionQuality = (bearing != null) ? 'usable' : 'none'; changed = true; }
+      if (p.captureMotionState === undefined) { p.captureMotionState = 'unknown'; changed = true; }
+      if (p.previousSimilarAlertIds === undefined) { p.previousSimilarAlertIds = []; changed = true; }
+      if (p.previousSimilarCount === undefined) { p.previousSimilarCount = 0; changed = true; }
+      if (p.repetitionCount === undefined) {
+        p.repetitionCount = (typeof p.confidence === 'number') ? p.confidence : 1;
+        changed = true;
+      }
+      if (p.confirmedCount === undefined) { p.confirmedCount = 0; changed = true; }
+      if (p.falsePositiveCount === undefined) { p.falsePositiveCount = 0; changed = true; }
+      if (p.sideOfRoadEstimate === undefined) {
+        p.sideOfRoadEstimate = (p.side === 'left' || p.side === 'right') ? p.side : 'unknown';
+        changed = true;
+      }
+      if (p.sideOfRoadConfidence === undefined) {
+        p.sideOfRoadConfidence = (p.side === 'left' || p.side === 'right') ? 1 : 0;
+        changed = true;
+      }
+      if (p.captureQuality === undefined) {
+        const acc = (typeof p.accuracyM === 'number') ? p.accuracyM
+          : (typeof p.gpsAccuracy === 'number' ? p.gpsAccuracy : null);
+        const dq = p.directionQuality || ((bearing != null) ? 'usable' : 'none');
+        p.captureQuality = this._qualityFromStored(acc, dq);
+        changed = true;
+      }
+      // directional: only set when missing, matching existing app behavior
+      // (cameras directional, everything else non-directional). Never
+      // override a value an earlier migration already set.
+      if (p.directional === undefined) {
+        p.directional = cams.indexOf(p.type) !== -1;
+        changed = true;
+      }
+      if (changed) touched++;
+    }
+    return touched;
+  },
+};
+
+/* ============================================================
    0f. ROUTE MEMORY — v22.98
    Learn successful OSRM routes per destination + restore them
    instantly on re-selection if the origin matches roughly. The
@@ -2534,6 +2975,26 @@ const Storage = {
           localStorage.setItem('roadAlert.v23.8.0.observationFields', '1');
         } catch (e) { console.warn('observation-field migration', e); }
       }
+      // v23.11.0: capture-metadata normalization. ADDITIVE ONLY — never
+      // deletes legacy fields (captureBearing / heading / confidence /
+      // gpsAccuracy / side / createdAt). Backfills capturedAt, accuracyM,
+      // headingDeg, headingSource, directionQuality, captureMotionState,
+      // previous-similar + learning counters, side-of-road estimate, and
+      // captureQuality. One-time per device.
+      if (!localStorage.getItem('roadAlert.v23.11.0.captureMeta')) {
+        try {
+          const d = this.load(this.KEYS.data);
+          if (d && Array.isArray(d.points) && typeof CaptureMeta !== 'undefined') {
+            const n = CaptureMeta.normalize(d.points);
+            if (n > 0) {
+              this.save(this.KEYS.data, d);
+              try { logEvent('CAPTURE-META', `[CAPTURE-META] normalized ${n} points`, 'ok'); } catch (e) {}
+              console.log('v23.11.0: normalized', n, 'points with capture metadata');
+            }
+          }
+          localStorage.setItem('roadAlert.v23.11.0.captureMeta', '1');
+        } catch (e) { console.warn('capture-meta normalization', e); }
+      }
       return;
     }
     // Try v17 first, then v8
@@ -2816,6 +3277,12 @@ const State = {
   // auto-fill (captureBearing). Not persisted.
   speedHistory: [],
   headingHistory: [],
+  // v23.11.0: memory-only ring of the last 3 raw GPS fixes, used ONLY to
+  // enrich capture metadata (accuracy / direction / motion). Never
+  // persisted to State.data, never feeds alert triggering or scoring.
+  // Each entry: { lat, lng, accuracyM, altitudeM, altitudeAccuracyM,
+  // gpsTimestamp, rawGpsHeadingDeg, rawSpeedMps }.
+  gpsFixBuffer: [],
   manualLimit: null, // user override via tap on sign
   // v22: threshold-crossing alerts
   // Map: pointId -> Set of marker meters already fired
@@ -3820,6 +4287,25 @@ const GPS = {
     State.altitudeAccuracy = (pos.coords && pos.coords.altitudeAccuracy != null && !isNaN(pos.coords.altitudeAccuracy))
       ? pos.coords.altitudeAccuracy : null;
     State.gpsTimestamp = pos.timestamp || null;
+
+    // v23.11.0: push a normalized raw fix into the memory-only capture
+    // buffer (last 3 only). This NEVER feeds alert triggering — it exists
+    // solely to enrich the capture-metadata record. Not persisted.
+    {
+      const _h = (pos.coords.heading != null && !isNaN(pos.coords.heading)) ? pos.coords.heading : null;
+      const _s = (pos.coords.speed != null && !isNaN(pos.coords.speed) && pos.coords.speed >= 0) ? pos.coords.speed : null;
+      State.gpsFixBuffer.push({
+        lat: pos.coords.latitude,
+        lng: pos.coords.longitude,
+        accuracyM: (pos.coords.accuracy != null && !isNaN(pos.coords.accuracy)) ? pos.coords.accuracy : null,
+        altitudeM: State.altitude,
+        altitudeAccuracyM: State.altitudeAccuracy,
+        gpsTimestamp: State.gpsTimestamp,
+        rawGpsHeadingDeg: _h,
+        rawSpeedMps: _s,
+      });
+      while (State.gpsFixBuffer.length > CaptureMetaConfig.MAX_GPS_FIX_BUFFER) State.gpsFixBuffer.shift();
+    }
 
     // v22.79: rate-limited GPS log — every 10s, not every tick.
     // v23.5.8: append altitude when present so the existing log doubles

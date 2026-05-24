@@ -2774,6 +2774,14 @@ const UI = {
         c.confidenceStatus = Speed.deriveConfidenceStatus(c);
       }
     }
+    // v23.11.0: stamp the production capture-metadata record onto the
+    // fresh point. Runs for ALL types and BEFORE the dedup search so the
+    // merge path can read c's resolved heading / side. Does NOT touch
+    // captureBearing / heading (owned by the avgHeading path above), so
+    // alert direction behavior is unchanged.
+    try { CaptureMeta.applyCaptureMetadata(c); } catch (e) {
+      try { logEvent('CAPTURE-META', '[CAPTURE-META] apply threw: ' + (e && e.message || e), 'err'); } catch (err) {}
+    }
     // v23.5.1 fix 3: speed_change uses bearing-aware dedup matching the
     // MigrationConfig rules (25m / 25°). Opposite-direction signs and
     // parallel-road signs no longer merge. Other types keep the legacy
@@ -2863,6 +2871,7 @@ const UI = {
           nearby.lastRejectedAt    = nearby.updatedAt;
           delete nearby.pendingSpeedLimitChange;
           nearby.confidenceStatus  = Speed.deriveConfidenceStatus(nearby);
+          try { CaptureMeta.mergeCaptureMetadata(nearby, c); } catch (e) {}
           Utils.toast(`Speed limit updated ${existingLimit}→${incomingLimit}`, 'good');
           announce = `Speed limit updated to ${incomingLimit}`;
           trackedId = nearby.id;
@@ -2937,6 +2946,7 @@ const UI = {
             && nearby.pendingSpeedLimitChange.newLimit !== existingLimit) {
           delete nearby.pendingSpeedLimitChange;
         }
+        try { CaptureMeta.mergeCaptureMetadata(nearby, c); } catch (e) {}
         Utils.toast(`${Utils.typeLabel(c.type)} merged (×${n})`, 'good');
         announce = Utils.typeLabel(c.type) + ' updated';
         trackedId = nearby.id;
@@ -2969,6 +2979,13 @@ const UI = {
       announce = Utils.typeLabel(c.type) + ' captured';
       trackedId = c.id;
       logEvent('CAPTURE', `${Utils.typeLabel(c.type)} @ ${c.lat.toFixed(4)},${c.lng.toFixed(4)}`, 'ok');
+      try {
+        logEvent('CAPTURE-META',
+          `[CAPTURE-META] saved type=${c.type} acc=${c.accuracyM != null ? Math.round(c.accuracyM) + 'm' : '—'}` +
+          ` heading=${typeof c.headingDeg === 'number' ? Math.round(c.headingDeg) + '°' : '—'}` +
+          ` source=${c.headingSource || 'none'} quality=${c.captureQuality || '—'}`,
+          'ok');
+      } catch (e) {}
       if (isSpeedChange) {
         const ll = (typeof c.limit === 'number') ? c.limit
           : (typeof c.speedLimit === 'number' ? c.speedLimit : null);
@@ -3033,8 +3050,43 @@ const UI = {
     this.refreshHeartbeatToggle(p.type);
     // v23.7.1: paint the missed-feedback count chip.
     this.refreshMissedFeedbackCount(p.id);
+    // v23.11.0: paint the read-only capture-metadata summary.
+    this.renderCaptureMetaSummary(p);
     this.togglePEFields();
     this.openModal('m-edit');
+  },
+
+  /** v23.11.0 — compact read-only capture-metadata readout in the Edit
+   *  Point modal. Display only; never edits stored data. Hidden when the
+   *  point predates the capture-metadata schema and has nothing to show. */
+  renderCaptureMetaSummary(p) {
+    const el = document.getElementById('e-capmeta');
+    if (!el) return;
+    if (!p) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    const esc = Utils.escapeHtml;
+    const num = (v, suffix) => (typeof v === 'number' && !isNaN(v)) ? (Math.round(v) + (suffix || '')) : null;
+    const rows = [];
+    const acc = num(p.accuracyM, ' m');
+    if (acc != null) rows.push(['GPS accuracy', acc]);
+    if (typeof p.altitudeM === 'number') {
+      const aa = (typeof p.altitudeAccuracyM === 'number') ? ' ± ' + Math.round(p.altitudeAccuracyM) + ' m' : '';
+      rows.push(['Altitude', Math.round(p.altitudeM) + ' m' + aa]);
+    }
+    const hd = num(p.headingDeg, '°');
+    if (hd != null) rows.push(['Heading', hd + (p.headingSource ? ' · ' + esc(p.headingSource) : '')]);
+    else if (p.headingSource) rows.push(['Heading', '— · ' + esc(p.headingSource)]);
+    if (p.directionQuality) rows.push(['Direction quality', esc(p.directionQuality)]);
+    if (p.captureQuality) rows.push(['Capture quality', esc(p.captureQuality)]);
+    if (typeof p.repetitionCount === 'number') rows.push(['Repetitions', String(p.repetitionCount)]);
+    if (typeof p.previousSimilarCount === 'number') rows.push(['Previous similar', String(p.previousSimilarCount)]);
+    if (p.sideOfRoadEstimate) {
+      const conf = (typeof p.sideOfRoadConfidence === 'number') ? ' (conf ' + p.sideOfRoadConfidence + ')' : '';
+      rows.push(['Side of road', esc(p.sideOfRoadEstimate) + conf]);
+    }
+    if (!rows.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
+    el.innerHTML = '<strong>Capture metadata</strong><br>' +
+      rows.map(r => `${esc(r[0])}: <strong>${r[1]}</strong>`).join(' · ');
+    el.style.display = 'block';
   },
 
   /** v23.7.3 — paint the heartbeat toggle for a given point type.

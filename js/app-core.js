@@ -4939,7 +4939,17 @@ const Alerts = {
     // Throttle window for [DIRECTION-FILTER] log lines, per point, so the
     // per-tick scan can't flood the 500-entry debug log.
     LOG_THROTTLE_MS: 30000,
-    // pointId -> { kind, t } of the last logged decision (throttling).
+    // v23.16 capture-sequence validation: only previous camera captures
+    // whose timestamp is within this window of the evaluated point's
+    // capture time count as the "same driving session". Configurable —
+    // not hardcoded inside the inference logic.
+    CAPTURE_SEQUENCE_WINDOW_MINUTES: 20,
+    // Use at most the latest N relevant captures (newest first).
+    CAPTURE_SEQUENCE_MAX: 3,
+    // Need at least this many usable captures before the sequence is
+    // allowed to influence the decision at all (spec 5 / scenario F).
+    CAPTURE_SEQUENCE_MIN_USABLE: 2,
+    // pointId -> { reason, t } of the last logged decision (throttling).
     _lastLog: new Map(),
   },
 
@@ -4954,104 +4964,277 @@ const Alerts = {
     return null;
   },
 
-  /** Decide whether a directional camera may be ANNOUNCED right now given
-   *  the driver's current travel direction. Returns true (allow) for:
-   *    - non-camera / non-directional / bidirectional points (untouched)
-   *    - cameras with no recorded bearing            (fallback, logged)
-   *    - unknown driver heading                      (fallback, logged)
-   *    - low speed with no reliable heading          (no strict call)
-   *    - same-direction cameras (diff <= tolerance)
-   *    - oblique angles (neither same nor opposite)  (not aggressive)
-   *  Returns false ONLY when the camera clearly faces the opposite way
-   *  (diff >= 180 - tolerance). Never mutates the point or its state. */
+  /** Boolean announcement gate (back-compat wrapper used by tick(),
+   *  checkAutoAnnounce(), and the proximity ping). Delegates to the rich
+   *  decision so callers that only need yes/no are unchanged. */
   cameraDirectionAllows(p, meters) {
+    return this.cameraDirectionDecision(p, meters).allowed;
+  },
+
+  /** Parse the best-available capture timestamp (ms epoch) from a point.
+   *  Precedence: capturedAt → createdAt → updatedAt → timestamp. Returns
+   *  null when none parse — callers then skip sequence validation (spec 2:
+   *  missing time metadata must NOT fail closed). */
+  _pointTimeMs(p) {
+    if (!p) return null;
+    for (const c of [p.capturedAt, p.createdAt, p.updatedAt, p.timestamp]) {
+      if (c == null) continue;
+      const t = (typeof c === 'number') ? c : Date.parse(c);
+      if (typeof t === 'number' && !isNaN(t)) return t;
+    }
+    return null;
+  },
+
+  /** Circular mean of a list of bearings (deg), or null. */
+  _circularMean(arr) {
+    if (!Array.isArray(arr) || !arr.length) return null;
+    let sx = 0, sy = 0, n = 0;
+    for (const a of arr) {
+      if (typeof a !== 'number' || isNaN(a)) continue;
+      const r = a * Math.PI / 180; sx += Math.cos(r); sy += Math.sin(r); n++;
+    }
+    if (!n || (sx === 0 && sy === 0)) return null;
+    return Math.round(((Math.atan2(sy, sx) * 180 / Math.PI) % 360 + 360) % 360);
+  },
+
+  /** v23.16 — capture-sequence direction inference. Inspects the latest
+   *  CAPTURE_SEQUENCE_MAX directional-camera captures recorded within
+   *  CAPTURE_SEQUENCE_WINDOW_MINUTES of the evaluated point's own capture
+   *  time, and infers whether that "driving session" agrees (same) or
+   *  disagrees (opposite) with the evaluated camera's stored bearing.
+   *
+   *  Two independent signals, combined by majority vote:
+   *    (A) stored capture-bearing consistency — each prior capture's
+   *        bearing vs the evaluated camera bearing, and
+   *    (B) movement bearing — bearing from the OLDEST → NEWEST capture
+   *        coordinate (the session's travel direction) vs the camera.
+   *  Candidates are sorted by timestamp DESCENDING and the newest 3 used;
+   *  the movement-bearing subset is re-sorted ascending so oldest→newest
+   *  is well defined.
+   *
+   *  Returns { support:'same'|'opposite'|'mixed'|'unavailable',
+   *            sequenceBearing, count, ids, times, bearings, sameVotes,
+   *            oppVotes, windowMinutes, note }. 'same'/'opposite' are only
+   *            reported when at least 2 votes are unanimous (clear
+   *            evidence); any conflict yields 'mixed'. Never mutates points
+   *            and never throws on missing metadata. */
+  captureSequenceDirection(point, camB) {
     const DF = this.DirectionFilter;
-    if (!p || !DF.CAMERA_TYPES.has(p.type)) return true;     // not a directional camera type
-    if (p.bidirectional === true) return true;               // catches both ways
-    if (p.directional === false) return true;                // explicitly non-directional
+    const tol = DF.TOLERANCE_DEG;
+    const out = {
+      support: 'unavailable', sequenceBearing: null, count: 0,
+      ids: [], times: [], bearings: [], sameVotes: 0, oppVotes: 0,
+      windowMinutes: DF.CAPTURE_SEQUENCE_WINDOW_MINUTES, note: '',
+    };
+    if (camB == null) { out.note = 'no-eval-bearing'; return out; }
+    const refT = this._pointTimeMs(point);
+    if (refT == null) { out.note = 'no-eval-timestamp'; return out; }
+    const winMs = DF.CAPTURE_SEQUENCE_WINDOW_MINUTES * 60 * 1000;
+    const pool = (State && State.data && Array.isArray(State.data.points)) ? State.data.points : [];
+
+    const collect = (sameTypeOnly) => {
+      const arr = [];
+      for (const q of pool) {
+        if (!q || q === point || q.id === point.id) continue;
+        if (q.status === 'no') continue;
+        if (!DF.CAMERA_TYPES.has(q.type)) continue;       // directional camera group only
+        if (q.directional === false) continue;
+        if (sameTypeOnly && q.type !== point.type) continue;
+        if (typeof q.lat !== 'number' && typeof q.lng !== 'number'
+            && this.cameraBearing(q) == null) continue;   // nothing usable to contribute
+        const t = this._pointTimeMs(q);
+        if (t == null) continue;                          // missing timestamp → skip
+        if (Math.abs(t - refT) > winMs) continue;         // outside 20-min window → skip
+        arr.push({ q, t });
+      }
+      return arr;
+    };
+
+    // Prefer type-specific history; broaden to all directional camera
+    // types only if the type-specific set is too narrow (spec 1).
+    let cands = collect(true);
+    if (cands.length < DF.CAPTURE_SEQUENCE_MIN_USABLE) cands = collect(false);
+    if (cands.length < DF.CAPTURE_SEQUENCE_MIN_USABLE) {
+      out.note = 'fewer-than-min'; out.count = cands.length; return out;
+    }
+
+    cands.sort((a, b) => b.t - a.t);                      // newest first
+    const used = cands.slice(0, DF.CAPTURE_SEQUENCE_MAX);
+    out.count = used.length;
+    out.ids = used.map(x => x.q.id);
+    out.times = used.map(x => new Date(x.t).toISOString());
+    out.bearings = used.map(x => this.cameraBearing(x.q));
+
+    let sameVotes = 0, oppVotes = 0;
+    // (A) stored capture-bearing consistency.
+    for (const b2 of out.bearings) {
+      if (typeof b2 !== 'number' || isNaN(b2)) continue;
+      const d = Speed.angleDiff(b2, camB);
+      if (d <= tol) sameVotes++;
+      else if (d >= 180 - tol) oppVotes++;
+    }
+    // (B) movement bearing from oldest → newest capture coordinate.
+    let moveB = null;
+    const geo = used.filter(x => typeof x.q.lat === 'number' && typeof x.q.lng === 'number')
+                    .sort((a, b) => a.t - b.t);
+    if (geo.length >= 2) {
+      const a = geo[0].q, z = geo[geo.length - 1].q;
+      if (a.lat !== z.lat || a.lng !== z.lng) {
+        moveB = Speed.bearingBetween(a.lat, a.lng, z.lat, z.lng);
+        const d = Speed.angleDiff(moveB, camB);
+        if (d <= tol) sameVotes++;
+        else if (d >= 180 - tol) oppVotes++;
+      }
+    }
+
+    out.sequenceBearing = (moveB != null)
+      ? Math.round(((moveB % 360) + 360) % 360)
+      : this._circularMean(out.bearings);
+    out.sameVotes = sameVotes; out.oppVotes = oppVotes;
+
+    const total = sameVotes + oppVotes;
+    if (total === 0) { out.support = 'unavailable'; out.note = 'no-directional-signal'; }
+    else if (sameVotes >= 2 && oppVotes === 0) out.support = 'same';
+    else if (oppVotes >= 2 && sameVotes === 0) out.support = 'opposite';
+    else out.support = 'mixed';
+    return out;
+  },
+
+  /** Rich direction decision. Live current-heading validation first; when
+   *  the heading is unknown or clearly opposite, the capture sequence is
+   *  consulted. Policy (spec 5): the sequence may RESCUE an alert the live
+   *  heading would suppress (clear contradicting evidence), and — only when
+   *  the live heading is unavailable — may itself suppress on CLEAR opposite
+   *  evidence. The sequence never overrides a same-direction heading, never
+   *  suppresses at low speed, and never suppresses on weak/mixed evidence.
+   *  Returns the decision object (spec 6); never mutates the point. */
+  cameraDirectionDecision(p, meters) {
+    const DF = this.DirectionFilter;
+    const tol = DF.TOLERANCE_DEG;
+    const res = {
+      allowed: true, reason: 'not-camera',
+      userBearing: null, cameraBearing: null, sequenceBearing: null,
+      sequenceCount: 0, angularDifference: null,
+      sequenceWindowMinutes: DF.CAPTURE_SEQUENCE_WINDOW_MINUTES,
+    };
+    if (!p || !DF.CAMERA_TYPES.has(p.type)) return res;          // not a directional camera type
+    if (p.bidirectional === true) { res.reason = 'bidirectional'; return res; }
+    if (p.directional === false)  { res.reason = 'non-directional'; return res; }
 
     const camB = this.cameraBearing(p);
     const userB = Observations.effectiveHeading();
     const speedKmh = (State.speedMps || 0) * 3.6;
     const dist = (meters != null) ? meters
                : (State.pos ? Utils.distKm(State.pos, p) * 1000 : null);
+    res.userBearing = userB;
+    res.cameraBearing = camB;
 
-    // Fallback 1 (spec 5): camera direction metadata missing → keep
-    // existing behavior, just record that the metadata was absent.
+    // Fallback (spec 8): camera direction metadata missing → preserve
+    // existing behavior; do not run the sequence against a null bearing.
     if (camB == null) {
-      this._logDirection('missing-bearing', p, userB, camB, null, dist);
-      return true;
+      res.reason = 'missing-bearing';
+      this._logDecision(res, p, dist, null);
+      return res;
     }
-    // Fallback 2 (spec 5): driver heading unknown → keep existing
-    // behavior (do not aggressively suppress — may miss valid alerts).
-    if (userB == null) {
-      this._logDirection('unknown-heading', p, userB, camB, null, dist);
-      return true;
-    }
-    // Spec 1 + 7 + scenario H: too slow for a trustworthy heading and no
-    // reliable route bearing available → never make a strict opposite
-    // call. effectiveHeading() only returns a (noisy) value here anyway.
+    // Spec 1 + 7 + scenario H/K: too slow for a trustworthy heading →
+    // never make a strict opposite call (sequence cannot suppress here).
     if (!Speed.isHeadingReliable(speedKmh) && speedKmh < DF.LOW_SPEED_KMH) {
-      this._logDirection('low-speed', p, userB, camB, Speed.angleDiff(userB, camB), dist);
-      return true;
+      res.reason = 'low-speed-fallback';
+      if (userB != null) res.angularDifference = Math.round(Speed.angleDiff(userB, camB));
+      this._logDecision(res, p, dist, null);
+      return res;
+    }
+
+    // Heading unknown (spec 5 / scenarios C, D): lean on capture sequence.
+    if (userB == null) {
+      const seq = this.captureSequenceDirection(p, camB);
+      res.sequenceBearing = seq.sequenceBearing;
+      res.sequenceCount = seq.count;
+      if (seq.support === 'same') { res.allowed = true; res.reason = 'sequence-supported'; }
+      else if (seq.support === 'opposite') { res.allowed = false; res.reason = 'sequence-conflict'; }
+      else { res.allowed = true; res.reason = 'unknown-heading'; }   // missing/mixed → preserve behavior
+      this._logDecision(res, p, dist, seq);
+      return res;
     }
 
     const diff = Speed.angleDiff(userB, camB);
-    const tol = DF.TOLERANCE_DEG;
+    res.angularDifference = Math.round(diff);
+
+    // Live heading says same direction → always allow (sequence may not
+    // override a same-direction heading — safety).
     if (Speed.isSameDirection(userB, camB, tol)) {
-      this._logDirection('allowed', p, userB, camB, diff, dist);
-      return true;
+      res.reason = 'same-direction';
+      this._logDecision(res, p, dist, null);
+      return res;
     }
+    // Live heading clearly opposite → suppress UNLESS a clear capture
+    // sequence contradicts it (rescue, reduces false negatives).
     if (diff >= 180 - tol) {
-      this._logDirection('suppressed', p, userB, camB, diff, dist);
-      return false;
+      const seq = this.captureSequenceDirection(p, camB);
+      res.sequenceBearing = seq.sequenceBearing;
+      res.sequenceCount = seq.count;
+      if (seq.support === 'same') { res.allowed = true; res.reason = 'sequence-supported'; }
+      else { res.allowed = false; res.reason = 'opposite-direction'; }
+      this._logDecision(res, p, dist, seq);
+      return res;
     }
-    // Oblique / ambiguous middle band — not clearly opposite. Per spec 5
-    // ("do not aggressively suppress"), allow it through.
-    this._logDirection('ambiguous', p, userB, camB, diff, dist);
-    return true;
+    // Oblique middle band — not clearly opposite. Allow (spec 5).
+    res.reason = 'oblique';
+    this._logDecision(res, p, dist, null);
+    return res;
   },
 
   /** Throttled [DIRECTION-FILTER] diagnostic logger. Logs at most once per
-   *  point per `LOG_THROTTLE_MS` unless the decision KIND changes. */
-  _logDirection(kind, p, userB, camB, diff, dist) {
+   *  point per `LOG_THROTTLE_MS` unless the decision REASON changes. When a
+   *  capture sequence was evaluated, its evidence (ids / timestamps /
+   *  bearings / inferred bearing / support) is appended. */
+  _logDecision(res, p, dist, seq) {
     const DF = this.DirectionFilter;
     const prev = DF._lastLog.get(p.id);
     const now = Date.now();
-    if (prev && prev.kind === kind && (now - prev.t) < DF.LOG_THROTTLE_MS) return;
-    DF._lastLog.set(p.id, { kind, t: now });
+    if (prev && prev.reason === res.reason && (now - prev.t) < DF.LOG_THROTTLE_MS) return;
+    DF._lastLog.set(p.id, { reason: res.reason, t: now });
 
-    const ub = (userB == null) ? 'n/a' : Math.round(userB) + '°';
-    const cb = (camB == null) ? 'n/a' : Math.round(camB) + '°';
-    const ad = (diff == null) ? 'n/a' : Math.round(diff) + '°';
+    const ub = (res.userBearing == null) ? 'n/a' : Math.round(res.userBearing) + '°';
+    const cb = (res.cameraBearing == null) ? 'n/a' : Math.round(res.cameraBearing) + '°';
+    const ad = (res.angularDifference == null) ? 'n/a' : res.angularDifference + '°';
     const dm = (dist == null) ? 'n/a' : Math.round(dist) + 'm';
     const tol = DF.TOLERANCE_DEG + '°';
-    const id = p.id, ty = p.type;
-    if (kind === 'suppressed') {
-      logEvent('DIRECTION-FILTER',
-        `[DIRECTION-FILTER] suppressed opposite-direction camera · id=${id} type=${ty}` +
-        ` userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} tolerance=${tol} dist=${dm}`);
-    } else if (kind === 'allowed') {
-      logEvent('DIRECTION-FILTER',
-        `[DIRECTION-FILTER] allowed same-direction camera · id=${id} type=${ty}` +
-        ` userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} tolerance=${tol} dist=${dm}`, 'ok');
-    } else if (kind === 'ambiguous') {
-      logEvent('DIRECTION-FILTER',
-        `[DIRECTION-FILTER] oblique angle — not suppressing · id=${id} type=${ty}` +
-        ` userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} tolerance=${tol} dist=${dm}`);
-    } else if (kind === 'missing-bearing') {
-      logEvent('DIRECTION-FILTER',
-        `[DIRECTION-FILTER] camera direction metadata missing — keeping existing behavior · ` +
-        `id=${id} type=${ty} userBearing=${ub} dist=${dm}`);
-    } else if (kind === 'unknown-heading') {
-      logEvent('DIRECTION-FILTER',
-        `[DIRECTION-FILTER] user heading unknown — keeping existing behavior · ` +
-        `id=${id} type=${ty} cameraBearing=${cb} dist=${dm}`);
-    } else if (kind === 'low-speed') {
-      logEvent('DIRECTION-FILTER',
-        `[DIRECTION-FILTER] low speed — no strict opposite-direction suppression · ` +
-        `id=${id} type=${ty} userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} dist=${dm}`);
+    const base = `id=${p.id} type=${p.type} cameraBearing=${cb} userBearing=${ub}` +
+                 ` angularDiff=${ad} tolerance=${tol} dist=${dm}`;
+    let line, level = '';
+    switch (res.reason) {
+      case 'same-direction':
+        line = `[DIRECTION-FILTER] allowed same-direction camera · ${base}`; level = 'ok'; break;
+      case 'opposite-direction':
+        line = `[DIRECTION-FILTER] suppressed opposite-direction camera · ${base}`; break;
+      case 'oblique':
+        line = `[DIRECTION-FILTER] oblique angle — not suppressing · ${base}`; break;
+      case 'missing-bearing':
+        line = `[DIRECTION-FILTER] camera direction metadata missing — keeping existing behavior · ` +
+               `id=${p.id} type=${p.type} userBearing=${ub} dist=${dm}`; break;
+      case 'unknown-heading':
+        line = `[DIRECTION-FILTER] user heading unknown — keeping existing behavior · ` +
+               `id=${p.id} type=${p.type} cameraBearing=${cb} dist=${dm}`; break;
+      case 'low-speed-fallback':
+        line = `[DIRECTION-FILTER] low speed — no strict opposite-direction suppression · ${base}`; break;
+      case 'sequence-supported':
+        line = `[DIRECTION-FILTER] capture sequence evaluated — allowed (same direction) · ${base}`; level = 'ok'; break;
+      case 'sequence-conflict':
+        line = `[DIRECTION-FILTER] capture sequence evaluated — suppressed (opposite direction) · ${base}`; break;
+      default:
+        line = `[DIRECTION-FILTER] ${res.reason} · ${base}`;
     }
+    if (seq) {
+      const sb = (seq.sequenceBearing == null) ? 'n/a' : seq.sequenceBearing + '°';
+      const bl = (seq.bearings || []).map(b => (typeof b === 'number' && !isNaN(b)) ? Math.round(b) + '°' : 'n/a');
+      line += ` · seqCount=${seq.count} seqWindow=${seq.windowMinutes}min seqSupport=${seq.support}` +
+              ` seqBearing=${sb} seqVotes=same:${seq.sameVotes}/opp:${seq.oppVotes}` +
+              ` seqIds=[${(seq.ids || []).join(',')}] seqTimes=[${(seq.times || []).join(',')}]` +
+              ` seqBearings=[${bl.join(',')}]`;
+      if (seq.note) line += ` seqNote=${seq.note}`;
+    }
+    logEvent('DIRECTION-FILTER', line, level);
   },
 
   /** Points relevant for the "Next ahead" display + alert checking.

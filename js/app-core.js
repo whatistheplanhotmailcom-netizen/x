@@ -183,6 +183,21 @@ const Speed = {
     return Speed.angleDiff(userHeading, pointBearing) <= (tolerance == null ? 45 : tolerance);
   },
 
+  /** v23.10 — direction-aware camera filter helper. True when two compass
+   *  bearings point the SAME way within `toleranceDeg` (default 45°). Both
+   *  bearings are normalized to [0,360) and compared on the shortest arc,
+   *  so isSameDirection(355, 5) is true (20° apart) and (90, 270) is false
+   *  (180° apart). Null / NaN inputs return false (caller treats as
+   *  "direction unknown" and falls back to existing behavior). */
+  isSameDirection(userBearingDeg, cameraBearingDeg, toleranceDeg) {
+    if (userBearingDeg == null || cameraBearingDeg == null) return false;
+    if (isNaN(userBearingDeg) || isNaN(cameraBearingDeg)) return false;
+    const tol = (typeof toleranceDeg === 'number') ? toleranceDeg : 45;
+    const u = ((userBearingDeg % 360) + 360) % 360;
+    const c = ((cameraBearingDeg % 360) + 360) % 360;
+    return Speed.angleDiff(u, c) <= tol;
+  },
+
   /** Returns true if the point is roughly in front of the user (≤90° off
    *  the user's heading vector). Returns null if heading is unavailable. */
   isPointAhead(userLat, userLng, userHeading, pointLat, pointLng) {
@@ -4900,6 +4915,145 @@ const Alerts = {
    *  the existing distance announcements. */
   PROXIMITY_PING_EXCLUDED_TYPES: new Set(['mobile_camera']),
 
+  /* ============================================================
+     v23.10 — DIRECTION-AWARE CAMERA ALERT FILTERING
+     Announce a directional camera only when it faces the driver's
+     current travel direction. Opposite-facing cameras stay on the map
+     (markers, score, passed-state untouched) but their audio + "is here"
+     announcements are suppressed. Pure announcement gate — never deletes,
+     hides, re-scores, or marks a point passed. Reuses the existing
+     captureBearing metadata, Observations.effectiveHeading() heading
+     source, and Speed.isSameDirection()/angleDiff() math.
+     ============================================================ */
+  DirectionFilter: {
+    // Only these directional camera types are filtered. All other alert
+    // types (and non-camera points) keep their existing behavior.
+    CAMERA_TYPES: new Set(['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera']),
+    // Same-direction tolerance (deg). A camera "faces our way" when the
+    // angular difference between travel heading and camera bearing is
+    // within this. Configurable constant — not a hardcoded magic number.
+    TOLERANCE_DEG: 45,
+    // Below this speed (km/h) GPS heading is unreliable; never make a
+    // strict opposite-direction call (spec 1 + 7 + scenario H).
+    LOW_SPEED_KMH: 5,
+    // Throttle window for [DIRECTION-FILTER] log lines, per point, so the
+    // per-tick scan can't flood the 500-entry debug log.
+    LOG_THROTTLE_MS: 30000,
+    // pointId -> { kind, t } of the last logged decision (throttling).
+    _lastLog: new Map(),
+  },
+
+  /** Camera direction source of truth. Mirrors the field precedence used
+   *  by the radar / directional-camera / heading-compatibility logic
+   *  (Observations.headingCompatible): captureBearing first, then the
+   *  legacy `heading` field. Returns null when neither is a usable number. */
+  cameraBearing(p) {
+    if (!p) return null;
+    if (typeof p.captureBearing === 'number' && !isNaN(p.captureBearing)) return p.captureBearing;
+    if (typeof p.heading === 'number' && !isNaN(p.heading)) return p.heading;
+    return null;
+  },
+
+  /** Decide whether a directional camera may be ANNOUNCED right now given
+   *  the driver's current travel direction. Returns true (allow) for:
+   *    - non-camera / non-directional / bidirectional points (untouched)
+   *    - cameras with no recorded bearing            (fallback, logged)
+   *    - unknown driver heading                      (fallback, logged)
+   *    - low speed with no reliable heading          (no strict call)
+   *    - same-direction cameras (diff <= tolerance)
+   *    - oblique angles (neither same nor opposite)  (not aggressive)
+   *  Returns false ONLY when the camera clearly faces the opposite way
+   *  (diff >= 180 - tolerance). Never mutates the point or its state. */
+  cameraDirectionAllows(p, meters) {
+    const DF = this.DirectionFilter;
+    if (!p || !DF.CAMERA_TYPES.has(p.type)) return true;     // not a directional camera type
+    if (p.bidirectional === true) return true;               // catches both ways
+    if (p.directional === false) return true;                // explicitly non-directional
+
+    const camB = this.cameraBearing(p);
+    const userB = Observations.effectiveHeading();
+    const speedKmh = (State.speedMps || 0) * 3.6;
+    const dist = (meters != null) ? meters
+               : (State.pos ? Utils.distKm(State.pos, p) * 1000 : null);
+
+    // Fallback 1 (spec 5): camera direction metadata missing → keep
+    // existing behavior, just record that the metadata was absent.
+    if (camB == null) {
+      this._logDirection('missing-bearing', p, userB, camB, null, dist);
+      return true;
+    }
+    // Fallback 2 (spec 5): driver heading unknown → keep existing
+    // behavior (do not aggressively suppress — may miss valid alerts).
+    if (userB == null) {
+      this._logDirection('unknown-heading', p, userB, camB, null, dist);
+      return true;
+    }
+    // Spec 1 + 7 + scenario H: too slow for a trustworthy heading and no
+    // reliable route bearing available → never make a strict opposite
+    // call. effectiveHeading() only returns a (noisy) value here anyway.
+    if (!Speed.isHeadingReliable(speedKmh) && speedKmh < DF.LOW_SPEED_KMH) {
+      this._logDirection('low-speed', p, userB, camB, Speed.angleDiff(userB, camB), dist);
+      return true;
+    }
+
+    const diff = Speed.angleDiff(userB, camB);
+    const tol = DF.TOLERANCE_DEG;
+    if (Speed.isSameDirection(userB, camB, tol)) {
+      this._logDirection('allowed', p, userB, camB, diff, dist);
+      return true;
+    }
+    if (diff >= 180 - tol) {
+      this._logDirection('suppressed', p, userB, camB, diff, dist);
+      return false;
+    }
+    // Oblique / ambiguous middle band — not clearly opposite. Per spec 5
+    // ("do not aggressively suppress"), allow it through.
+    this._logDirection('ambiguous', p, userB, camB, diff, dist);
+    return true;
+  },
+
+  /** Throttled [DIRECTION-FILTER] diagnostic logger. Logs at most once per
+   *  point per `LOG_THROTTLE_MS` unless the decision KIND changes. */
+  _logDirection(kind, p, userB, camB, diff, dist) {
+    const DF = this.DirectionFilter;
+    const prev = DF._lastLog.get(p.id);
+    const now = Date.now();
+    if (prev && prev.kind === kind && (now - prev.t) < DF.LOG_THROTTLE_MS) return;
+    DF._lastLog.set(p.id, { kind, t: now });
+
+    const ub = (userB == null) ? 'n/a' : Math.round(userB) + '°';
+    const cb = (camB == null) ? 'n/a' : Math.round(camB) + '°';
+    const ad = (diff == null) ? 'n/a' : Math.round(diff) + '°';
+    const dm = (dist == null) ? 'n/a' : Math.round(dist) + 'm';
+    const tol = DF.TOLERANCE_DEG + '°';
+    const id = p.id, ty = p.type;
+    if (kind === 'suppressed') {
+      logEvent('DIRECTION-FILTER',
+        `[DIRECTION-FILTER] suppressed opposite-direction camera · id=${id} type=${ty}` +
+        ` userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} tolerance=${tol} dist=${dm}`);
+    } else if (kind === 'allowed') {
+      logEvent('DIRECTION-FILTER',
+        `[DIRECTION-FILTER] allowed same-direction camera · id=${id} type=${ty}` +
+        ` userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} tolerance=${tol} dist=${dm}`, 'ok');
+    } else if (kind === 'ambiguous') {
+      logEvent('DIRECTION-FILTER',
+        `[DIRECTION-FILTER] oblique angle — not suppressing · id=${id} type=${ty}` +
+        ` userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} tolerance=${tol} dist=${dm}`);
+    } else if (kind === 'missing-bearing') {
+      logEvent('DIRECTION-FILTER',
+        `[DIRECTION-FILTER] camera direction metadata missing — keeping existing behavior · ` +
+        `id=${id} type=${ty} userBearing=${ub} dist=${dm}`);
+    } else if (kind === 'unknown-heading') {
+      logEvent('DIRECTION-FILTER',
+        `[DIRECTION-FILTER] user heading unknown — keeping existing behavior · ` +
+        `id=${id} type=${ty} cameraBearing=${cb} dist=${dm}`);
+    } else if (kind === 'low-speed') {
+      logEvent('DIRECTION-FILTER',
+        `[DIRECTION-FILTER] low speed — no strict opposite-direction suppression · ` +
+        `id=${id} type=${ty} userBearing=${ub} cameraBearing=${cb} angularDiff=${ad} dist=${dm}`);
+    }
+  },
+
   /** Points relevant for the "Next ahead" display + alert checking.
    *  v23.8.0: pulls from the global observation pool (not just the
    *  active destination's route-pair points) and runs them through
@@ -5030,6 +5184,14 @@ const Alerts = {
       }
       const meters = distKm * 1000;
 
+      // v23.10: direction-aware camera gate. Evaluated once per point per
+      // tick and reused by the here-now + threshold-cross announcements.
+      // Only computed within announce range (≤ 2.5 km) so distant cameras
+      // don't churn the diagnostic log — nothing announces beyond that
+      // anyway. For non-camera / non-directional points this is always
+      // true, so their behavior is untouched.
+      const _camDirAllows = (meters <= 2500) ? this.cameraDirectionAllows(p, meters) : true;
+
       // v22.76: "Name is here" voice announcement. Fires once per (point, trip)
       // when the user is within a speed-dependent distance ring:
       //   speed >= hereSpeedThreshold -> 100m
@@ -5045,7 +5207,7 @@ const Alerts = {
       const _hereSpeedT = +State.settings.hereSpeedThreshold || 100;
       const _hereRingM = _speedKmh >= _hereSpeedT ? 100 : 50;
       const _silent = this.SILENT_ALERT_TYPES.has(p.type);
-      if (!_silent && meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
+      if (!_silent && _camDirAllows && meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
         State.hereAnnouncedPoints.add(p.id);
         // v22.87: suppress the distance-marker announcements ("in 500m",
         // "in 1km") for this point now that we're at it. They were
@@ -5211,15 +5373,22 @@ const Alerts = {
             // v23.3.x: in ACTIVE mode, intelligence has veto. In shadow / legacy
             // modes, legacy decision wins unconditionally — Audio.alert always fires.
             // v23.4.1: feed the runaway counter on both branches.
+            // v23.10: opposite-direction directional cameras skip the audio +
+            // vibration but still consume the marker (fired.add) so the point
+            // isn't re-evaluated every tick. Tracking state is left intact —
+            // the point is NOT marked passed, hidden, or re-scored.
+            const suppressedByDirection = !_camDirAllows;
             const suppressedByIntel = (intelMode === 'active' && intelEval && !intelEval.intelligenceWouldAlert);
-            if (suppressedByIntel) {
+            if (suppressedByDirection) {
+              // opposite-facing camera — no announcement this crossing.
+            } else if (suppressedByIntel) {
               IntelligenceEngine.noteSuppression(p, intelEval, meters, m);
             } else {
               Audio.alert(p, m);
               if (intelMode === 'active') IntelligenceEngine.noteAlertFired();
             }
             fired.add(m);
-            if (navigator.vibrate && !suppressedByIntel) navigator.vibrate(60);
+            if (navigator.vibrate && !suppressedByIntel && !suppressedByDirection) navigator.vibrate(60);
           }
         }
         // Disagreement on the OTHER direction: legacy didn't fire this tick
@@ -5251,7 +5420,10 @@ const Alerts = {
     // doesn't carry over from a previous focused point either.
     if (focusedId != null) {
       const focusedPoint = aheadList.find(p => p.id === focusedId);
-      if (focusedPoint && !this.PROXIMITY_PING_EXCLUDED_TYPES.has(focusedPoint.type)) {
+      // v23.10: silence the continuous heartbeat for opposite-facing
+      // directional cameras too (same announcement gate as voice/peeps).
+      if (focusedPoint && !this.PROXIMITY_PING_EXCLUDED_TYPES.has(focusedPoint.type)
+          && this.cameraDirectionAllows(focusedPoint, focusedPoint.dist * 1000)) {
         const focusedMeters = focusedPoint.dist * 1000;
         Audio.updateProximityPing(focusedId, focusedMeters, focusedPoint.type);
       } else {
@@ -5331,6 +5503,11 @@ const Alerts = {
     if (!ahead.length) return;
     const top = ahead[0];
     if (State.autoAnnouncedAhead.has(top.id)) return;
+    // v23.10: don't auto-announce an opposite-facing directional camera.
+    // Return WITHOUT marking it announced so it can still announce later
+    // if the driver turns onto the matching direction (re-approach also
+    // clears this set). The marker stays visible / unpassed / unscored.
+    if (!this.cameraDirectionAllows(top, top.dist * 1000)) return;
     State.autoAnnouncedAhead.add(top.id);
 
     const s = State.settings.sound;

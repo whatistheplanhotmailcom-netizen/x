@@ -575,20 +575,21 @@ body {
   appearance: none;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 5px 12px;
+  border-radius: 8px;
+  padding: 3px 10px;
   text-align: left;
   cursor: pointer;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   font: inherit;
   color: var(--amber-2);
   font-weight: 700;
-  font-size: 13px;
+  font-size: 11px;
+  line-height: 1.3;
 }
 .route-current:active { background: var(--surface-2); }
-.route-current .arrow { color: var(--amber); }
+.route-current .arrow { color: var(--amber); font-size: 12px; }
 
 /* STATS ROW */
 .stats {
@@ -2083,8 +2084,9 @@ body[data-hide-hints="true"] .row-hint { display: none; }
   .brand { font-size: 12px; gap: 4px; }
   .brand .dot { width: 10px; height: 10px; }
   .brand .version { font-size: 9px; }
-  /* Destination + diag strips compact */
-  .route-current { padding: 3px 10px; font-size: 12px; }
+  /* v23.18.3: destination card extra-compact on narrow screens. */
+  .route-current { padding: 2px 8px; font-size: 10px; gap: 4px; }
+  .route-current .arrow { font-size: 11px; }
   .diag-strip { font-size: 9px; padding: 2px 5px; line-height: 1.2; }
   /* Speed + Next-ahead cards much smaller */
   .stat-card { padding: 4px 6px; }

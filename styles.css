@@ -1368,33 +1368,38 @@ body {
    Refreshed by MapView._updateMarkerDistances on every GPS tick.
    v23.18.6 — transparent background; text-shadow keeps the number
    legible against light or dark map tiles.
-   v23.18.7 — moved to BOTTOM-center and tiered color (far/mid/near)
-   driven by .ra-dist-far / .ra-dist-mid / .ra-dist-near classes. */
+   v23.18.7 — moved to BOTTOM-center and tiered color (far/mid/near).
+   v23.18.8 — wider color bands, real text stroke + heavier shadow for
+   clarity on busy map tiles, brighter saturated greens/oranges so
+   tiers are visually distinct (the shared --green is olive and reads
+   muddy on top of map textures). */
 .ra-marker .ra-dist-label {
   position: absolute;
   left: 50%;
   top: auto;
-  bottom: -20px;
+  bottom: -22px;
   transform: translateX(-50%);
   background: transparent;
-  color: var(--green);
+  color: #22c55e;
   font-family: ui-monospace, monospace;
-  font-size: 10px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 800;
   line-height: 1;
-  padding: 2px 5px;
-  border-radius: 6px;
+  padding: 0 3px;
+  border-radius: 4px;
   white-space: nowrap;
   pointer-events: none;
+  -webkit-text-stroke: 0.6px #000;
   text-shadow:
-    0 0 2px rgba(0,0,0,0.95),
-    0 1px 3px rgba(0,0,0,0.9),
-    0 0 6px rgba(0,0,0,0.55);
+    -1px  0 0 #000,  1px  0 0 #000,
+     0 -1px 0 #000,  0  1px 0 #000,
+     0 0 4px rgba(0,0,0,0.85),
+     0 1px 3px rgba(0,0,0,0.9);
   z-index: 4;
 }
-.ra-marker .ra-dist-label.ra-dist-far  { color: var(--green); }
-.ra-marker .ra-dist-label.ra-dist-mid  { color: var(--amber); }
-.ra-marker .ra-dist-label.ra-dist-near { color: var(--red); }
+.ra-marker .ra-dist-label.ra-dist-far  { color: #22c55e; }
+.ra-marker .ra-dist-label.ra-dist-mid  { color: #fb923c; }
+.ra-marker .ra-dist-label.ra-dist-near { color: #f87171; }
 .ra-marker.passed .ra-dist-label,
 .ra-marker.disabled .ra-dist-label { display: none; }
 /* v22.82: Google Maps-style directional triangle marker.

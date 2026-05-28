@@ -412,12 +412,13 @@ const MapView = {
    *  every GPS tick from MapView.update(). Pure presentational — never
    *  affects alert scoring or scan. Hides the label when GPS isn't
    *  ready or the point is too far to be useful (>5 km).
-   *  v23.18.7 — colors the text by distance tier (near/mid/far) using
-   *  the same thresholds the Next-ahead progress bar already uses
-   *  (red < 200m, amber < 500m, else green). */
+   *  v23.18.7 — colors the text by distance tier (near/mid/far).
+   *  v23.18.8 — wider bands so the tier visibly changes during a
+   *  normal approach instead of staying green until the last 500 m:
+   *  near < 300 m, mid < 1500 m, far ≥ 1500 m. */
   DIST_LABEL_MAX_KM: 5,
-  DIST_LABEL_NEAR_M: 200,
-  DIST_LABEL_MID_M: 500,
+  DIST_LABEL_NEAR_M: 300,
+  DIST_LABEL_MID_M: 1500,
   _updateMarkerDistances() {
     if (!this._pointMarkers || !State.pos) return;
     const pointsById = new globalThis.Map();

@@ -58,20 +58,11 @@
   </div>
 
   <!-- ROUTE BAR -->
-  <!-- v23.5.8: road-name + destination share one row.
-       Road = 75% (left), Destination = 25% (right).
-       Both ellipsis-truncate; neither wraps to a second line. -->
-  <div class="topinfo-row">
-    <div class="road-bar" id="road-bar">
-      <span class="road-label">ROAD</span>
-      <span class="road-name" id="road-name">Unknown</span>
-    </div>
-    <div class="route-bar">
-      <button class="route-current" id="btn-route">
-        <span class="arrow">→</span>
-        <span id="route-name">Pick a destination</span>
-      </button>
-    </div>
+  <div class="route-bar">
+    <button class="route-current" id="btn-route">
+      <span class="arrow">→</span>
+      <span id="route-name">Pick a destination</span>
+    </button>
   </div>
 
   <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->

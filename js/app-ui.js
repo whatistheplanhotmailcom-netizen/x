@@ -2077,18 +2077,6 @@ const UI = {
     el.textContent = (State.mode === 'gps') ? 'Auto Route' : 'Pick a destination';
   },
 
-  /** v23.5.4: display-only setter for the ROAD row under the destination
-   *  bar. A future commit can call UI.setCurrentRoad('M-1 Riyadh→Jeddah')
-   *  whenever a real road-name source becomes available. Falls back to
-   *  "Unknown" on empty/null. The value is NEVER used by alert scoring,
-   *  speed-limit matching, capture, or route deviation. */
-  setCurrentRoad(name) {
-    const el = document.getElementById('road-name');
-    if (!el) return;
-    const v = (name == null || String(name).trim() === '') ? 'Unknown' : String(name).trim();
-    if (el.textContent !== v) el.textContent = v;
-  },
-
   /** v23.8.2 — UI-ONLY speed-status derivation. Pure function. Takes
    *  the already-resolved limit (km/h or null) and current speed
    *  (km/h, rounded) and returns one of the speed-status-* CSS class
@@ -3017,7 +3005,6 @@ const UI = {
       if (c.bidirectional   === undefined) c.bidirectional   = (c.heading == null);
       if (c.source          === undefined) c.source          = 'capture';
       if (c.routeTags       === undefined) c.routeTags       = c.destId ? [c.destId] : [];
-      if (c.roadName        === undefined) c.roadName        = null;
       // v22.101: route via State.addPointToActiveDest so the new id is
       // appended to dest.routePointRefs[] post-migration. Direct
       // State.data.points.push left captures invisible to activePoints().

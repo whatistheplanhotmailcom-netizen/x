@@ -388,6 +388,10 @@ const MapView = {
     // road-sign markers with a red border + black number, not as a
     // generic emoji marker. Falls back to a generic sign emoji if the
     // value is missing (does NOT hide the marker, per spec).
+    // v23.18.5 — live distance label rendered above every marker. Text
+    // is set by MapView._updateMarkerDistances on every GPS tick (and
+    // is hidden by default until the first tick produces a value).
+    const distHtml = '<span class="ra-dist-label" hidden></span>';
     if (p.type === 'speed_change') {
       const lim = (typeof p.speedLimit === 'number') ? p.speedLimit
         : (typeof p.limit === 'number' ? p.limit : null);
@@ -396,11 +400,40 @@ const MapView = {
         : '?';
       const conf = p.confidenceStatus || '';
       el.innerHTML = `<div class="${classes.join(' ')} sign-style conf-${Utils.escapeHtml(conf)}">` +
-        `<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}${missedHtml}${depHtml}</div>`;
+        `${distHtml}<span class="sign-num">${valHtml}</span>${sideHtml}${confHtml}${missedHtml}${depHtml}</div>`;
       return el;
     }
-    el.innerHTML = `<div class="${classes.join(' ')}">${radarHtml}${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}${depHtml}</div>`;
+    el.innerHTML = `<div class="${classes.join(' ')}">${distHtml}${radarHtml}${Utils.emoji(p.type, p.subtype)}${sideHtml}${confHtml}${missedHtml}${depHtml}</div>`;
     return el;
+  },
+
+  /** v23.18.5 — refresh the live distance label rendered above every
+   *  point marker. Cheap iteration over this._pointMarkers; runs on
+   *  every GPS tick from MapView.update(). Pure presentational — never
+   *  affects alert scoring or scan. Hides the label when GPS isn't
+   *  ready or the point is too far to be useful (>5 km). */
+  DIST_LABEL_MAX_KM: 5,
+  _updateMarkerDistances() {
+    if (!this._pointMarkers || !State.pos) return;
+    const pointsById = new globalThis.Map();
+    State.data.points.forEach(p => { if (p && p.id) pointsById.set(p.id, p); });
+    const maxKm = this.DIST_LABEL_MAX_KM;
+    this._pointMarkers.forEach((mk, pid) => {
+      const el = mk.getElement();
+      const label = el && el.querySelector('.ra-dist-label');
+      if (!label) return;
+      const p = pointsById.get(pid);
+      if (!p || typeof p.lat !== 'number' || typeof p.lng !== 'number') {
+        label.hidden = true; return;
+      }
+      const km = Utils.distKm(State.pos, p);
+      if (!(km <= maxKm)) { label.hidden = true; return; }
+      const text = (km < 1)
+        ? Math.round(km * 1000) + ' m'
+        : km.toFixed(km < 10 ? 1 : 0) + ' km';
+      if (label.textContent !== text) label.textContent = text;
+      if (label.hidden) label.hidden = false;
+    });
   },
 
   /** v22.51 (was v22.50): update ahead-rank class on existing point markers
@@ -652,6 +685,8 @@ const MapView = {
     // produced no rotation. Triangle worked because it listens to map
     // events; map didn't rotate because update() never ran.
     this._applyNavRotation();
+    // v23.18.5 — keep the per-marker distance label live every tick.
+    this._updateMarkerDistances();
 
     // Throttled diagnostic — every ~3 seconds.
     try {

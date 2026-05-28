@@ -118,7 +118,15 @@ body {
   align-items: center;
   gap: 8px;
   padding: 4px 4px 0;
+  /* v23.18.5 — allow the action row to break onto a second line when
+     the buttons can no longer fit beside the brand. The spacer takes
+     full width to force the wrap; the actions then justify to the end
+     of the new row. */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
+.topbar-spacer { flex: 1 1 100%; height: 0; }
+.topbar-actions { flex-wrap: wrap; justify-content: flex-end; row-gap: 4px; }
 .brand {
   display: flex;
   align-items: center;
@@ -1355,6 +1363,29 @@ body {
 }
 .ra-marker .dep-badge.dep-one { background: var(--red);   color: #fff; }
 .ra-marker .dep-badge.dep-ok  { background: var(--green); color: #fff; }
+/* v23.18.5 — live distance countdown rendered on top-center of every
+   alertable marker. Sits above the marker, never moves stored coords.
+   Refreshed by MapView._updateMarkerDistances on every GPS tick. */
+.ra-marker .ra-dist-label {
+  position: absolute;
+  left: 50%;
+  top: -22px;
+  transform: translateX(-50%);
+  background: rgba(15, 17, 21, 0.86);
+  color: #fff;
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  z-index: 4;
+}
+.ra-marker.passed .ra-dist-label,
+.ra-marker.disabled .ra-dist-label { display: none; }
 /* v22.82: Google Maps-style directional triangle marker.
    .ra-current is now a wrapper holding two children:
      .ra-current-halo  - small blue dot + pulsing accuracy halo (always shown)

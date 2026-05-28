@@ -1692,6 +1692,84 @@ const UI = {
     });
   },
 
+  /** v23.18.2 — Alert audit panel. Pure diagnostic view: shows the top
+   *  candidates returned by Alerts.ahead() with the geometry that
+   *  AutoRoute.isPointAheadOfTravel computes for them, plus a filtered
+   *  slice of the rolling Logger limited to alert-related events. Does
+   *  NOT score, dedupe, suppress, or fire anything. */
+  _ALERT_AUDIT_PREFIXES: ['ALERT', 'AUTO-ROUT', 'INTEL-', 'FEEDBACK', 'CAPTURE'],
+  _isAlertAuditType(type) {
+    if (!type) return false;
+    return this._ALERT_AUDIT_PREFIXES.some(p => type.indexOf(p) === 0);
+  },
+  renderAlertAudit() {
+    const modal = document.getElementById('m-alert-audit');
+    if (!modal) return;
+
+    // --- Next ahead ---
+    const aheadEl = document.getElementById('alert-audit-ahead');
+    if (aheadEl) {
+      let html = '';
+      if (!State.pos) {
+        html = '<div style="color:var(--ink-3);">No GPS fix yet.</div>';
+      } else if (typeof Alerts === 'undefined' || typeof Alerts.ahead !== 'function') {
+        html = '<div style="color:var(--ink-3);">Alerts engine not ready.</div>';
+      } else {
+        let list = [];
+        try { list = (Alerts.ahead() || []).slice(0, 5); } catch (e) { list = []; }
+        if (!list.length) {
+          html = '<div style="color:var(--ink-3);">No candidates ahead.</div>';
+        } else {
+          const heading = (typeof Observations !== 'undefined' && Observations.effectiveHeading)
+            ? Observations.effectiveHeading() : null;
+          html = list.map((p, i) => {
+            let geo = null;
+            try {
+              if (typeof AutoRoute !== 'undefined' && AutoRoute.isPointAheadOfTravel) {
+                geo = AutoRoute.isPointAheadOfTravel(State.pos, p, heading);
+              }
+            } catch (e) { geo = null; }
+            const distM = (geo && geo.distanceM != null)
+              ? Math.round(geo.distanceM)
+              : Math.round((p.dist || 0) * 1000);
+            const bd = (geo && geo.bearingDiff != null) ? Math.round(geo.bearingDiff) + '°' : 'n/a';
+            const side = !geo ? '—'
+              : geo.ahead ? 'ahead'
+              : geo.behind ? 'behind'
+              : 'lateral';
+            const name = Utils.escapeHtml(p.name || Utils.typeLabel(p.type) || p.type || 'point');
+            const tail = []
+              .concat(p._onRoute ? ['onRoute'] : [])
+              .concat(p.distToDest != null ? ['dest ' + Utils.fmtDist(p.distToDest)] : [])
+              .concat(p._confidence != null ? ['conf ' + p._confidence] : []);
+            const tailStr = tail.length ? ' · ' + tail.join(' · ') : '';
+            return `<div>${i + 1}. ${name} · ${distM}m · Δ${bd} ${side}${tailStr}</div>`;
+          }).join('');
+        }
+      }
+      aheadEl.innerHTML = html;
+    }
+
+    // --- Recent alert activity ---
+    const list = document.getElementById('alert-audit-log');
+    const count = document.getElementById('alert-audit-count');
+    if (!list) return;
+    const matches = Logger.logs.filter(L => UI._isAlertAuditType(L.type));
+    if (count) count.textContent = `(${matches.length})`;
+    if (!matches.length) {
+      list.innerHTML = '<div class="empty">No alert activity yet</div>';
+      return;
+    }
+    list.innerHTML = matches.map(L =>
+      `<div class="debug-row ${Utils.escapeHtml(L.level)}">
+        <span class="ts">${Utils.escapeHtml(L.t)}</span>
+        <span class="ty">${Utils.escapeHtml(L.type)}</span>
+        <span class="msg">${Utils.escapeHtml(L.msg)}</span>
+      </div>`
+    ).join('');
+    list.scrollTop = 0;
+  },
+
   renderDebugLog() {
     const list = document.getElementById('debug-log');
     const count = document.getElementById('debug-count');
@@ -2075,18 +2153,6 @@ const UI = {
     // v23.18.0 — driving without a destination shows "Auto Route";
     // idle keeps the "Pick a destination" call to action.
     el.textContent = (State.mode === 'gps') ? 'Auto Route' : 'Pick a destination';
-  },
-
-  /** v23.5.4: display-only setter for the ROAD row under the destination
-   *  bar. A future commit can call UI.setCurrentRoad('M-1 Riyadh→Jeddah')
-   *  whenever a real road-name source becomes available. Falls back to
-   *  "Unknown" on empty/null. The value is NEVER used by alert scoring,
-   *  speed-limit matching, capture, or route deviation. */
-  setCurrentRoad(name) {
-    const el = document.getElementById('road-name');
-    if (!el) return;
-    const v = (name == null || String(name).trim() === '') ? 'Unknown' : String(name).trim();
-    if (el.textContent !== v) el.textContent = v;
   },
 
   /** v23.8.2 — UI-ONLY speed-status derivation. Pure function. Takes
@@ -3017,7 +3083,6 @@ const UI = {
       if (c.bidirectional   === undefined) c.bidirectional   = (c.heading == null);
       if (c.source          === undefined) c.source          = 'capture';
       if (c.routeTags       === undefined) c.routeTags       = c.destId ? [c.destId] : [];
-      if (c.roadName        === undefined) c.roadName        = null;
       // v22.101: route via State.addPointToActiveDest so the new id is
       // appended to dest.routePointRefs[] post-migration. Direct
       // State.data.points.push left captures invisible to activePoints().
@@ -4039,6 +4104,58 @@ function wire() {
   document.getElementById('btn-debug').onclick = () => {
     UI.renderDebugLog();
     UI.openModal('m-debug');
+  };
+  // v23.18.2: alert audit panel — live "next ahead" + filtered alert log.
+  // Polls once per second while the modal is open so the ahead list and
+  // log stay current; the interval self-clears on close.
+  const btnAlertAudit = document.getElementById('btn-alert-audit');
+  if (btnAlertAudit) {
+    btnAlertAudit.onclick = () => {
+      UI.renderAlertAudit();
+      UI.openModal('m-alert-audit');
+      if (UI._alertAuditTimer) {
+        clearInterval(UI._alertAuditTimer);
+        UI._alertAuditTimer = null;
+      }
+      UI._alertAuditTimer = setInterval(() => {
+        const m = document.getElementById('m-alert-audit');
+        if (!m || !m.classList.contains('open')) {
+          clearInterval(UI._alertAuditTimer);
+          UI._alertAuditTimer = null;
+          return;
+        }
+        UI.renderAlertAudit();
+      }, 1000);
+    };
+  }
+  const alertAuditRefresh = document.getElementById('alert-audit-refresh');
+  if (alertAuditRefresh) alertAuditRefresh.onclick = () => UI.renderAlertAudit();
+  const alertAuditCopy = document.getElementById('alert-audit-copy');
+  if (alertAuditCopy) alertAuditCopy.onclick = async () => {
+    const aheadEl = document.getElementById('alert-audit-ahead');
+    const aheadText = aheadEl ? aheadEl.innerText.trim() : '';
+    const logText = Logger.logs
+      .filter(L => UI._isAlertAuditType(L.type))
+      .map(L => `[${L.t}] ${L.type}: ${L.msg}`)
+      .join('\n');
+    const full = `=== Next ahead ===\n${aheadText || '(none)'}\n\n=== Alert activity ===\n${logText || '(none)'}`;
+    try {
+      await navigator.clipboard.writeText(full);
+      Utils.toast('Copied alert audit', 'good');
+    } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = full;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+        Utils.toast('Copied alert audit', 'good');
+      } catch (e2) {
+        Utils.toast('Copy failed', 'bad');
+      }
+    }
   };
   document.getElementById('debug-clear').onclick = () => {
     Logger.clear();

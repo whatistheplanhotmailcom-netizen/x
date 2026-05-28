@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.0';
+const APP_VERSION = 'v23.18.2';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -235,7 +235,6 @@ const Speed = {
    *    +25  point is ahead of user (or low-speed/no-heading neutral grant)
    *    +25  heading matches captureBearing (or non-directional / neutral)
    *    +10  road-type match (or unknown-on-either-side neutral)
-   *    + 5  road-name match (TODO — no geocoder yet)
    *
    *  Hard fails: outside radius (return 0) OR point clearly behind user
    *  when speed >= 10 and heading is known (return 0). */
@@ -302,8 +301,6 @@ const Speed = {
     } else {
       reasons.push('roadType mismatch (user=' + userRT + ', point=' + p.roadType + ')');
     }
-
-    // ROAD NAME (+5) — needs reverse geocoding, not implemented in this pass.
 
     return { score, distance: distM, reasons };
   },
@@ -711,8 +708,6 @@ const Migration = {
     target.mergedFromIds.push(src.id);
     if (Array.isArray(src.mergedFromIds)) target.mergedFromIds.push(...src.mergedFromIds);
     target.mergedFromIds = Array.from(new Set(target.mergedFromIds)).sort();
-    // prefer non-null roadName
-    if (!target.roadName && src.roadName) target.roadName = src.roadName;
     // prefer known roadType
     if ((!target.roadType || target.roadType === 'unknown') && src.roadType && src.roadType !== 'unknown') {
       target.roadType = src.roadType;
@@ -940,7 +935,7 @@ const AutoRoute = {
 
    Backward compatibility: every existing State.data.points entry is
    alertable. migrateAdditive() adds {confirmedCount, firstSeenAt,
-   lastSeenAt, heading, bidirectional, source, routeTags, roadName,
+   lastSeenAt, heading, bidirectional, source, routeTags,
    lastConfirmedAt} as NEW fields when missing — no rename, no
    delete, no silent suppression. Legacy points (no captureBearing /
    no observationCount) inherit a baseline confidence that keeps
@@ -1303,10 +1298,6 @@ const Observations = {
         p.routeTags = Array.isArray(p.sourceDestinationIds)
           ? p.sourceDestinationIds.slice()
           : (p.destId ? [p.destId] : []);
-        changed = true;
-      }
-      if (p.roadName === undefined) {
-        p.roadName = null;
         changed = true;
       }
       if (changed) touched++;
@@ -2625,7 +2616,7 @@ const Storage = {
       }
       // v23.8.0: additive observation schema for the global pool —
       // confirmedCount, firstSeenAt, lastSeenAt, heading,
-      // bidirectional, source, routeTags, roadName, lastConfirmedAt.
+      // bidirectional, source, routeTags, lastConfirmedAt.
       // ADDITIVE ONLY — never overwrites existing fields, never
       // deletes, never suppresses. Legacy points stay alertable.
       if (!localStorage.getItem('roadAlert.v23.8.0.observationFields')) {

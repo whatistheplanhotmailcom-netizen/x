@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.18.0">
+<link rel="stylesheet" href="styles.css?v=23.18.2">
 </head>
 <body data-theme="light">
 
@@ -45,6 +45,10 @@
       <button class="icon-btn" id="btn-longpress" title="Long-press capture">🔒</button>
       <!-- v22.98: debug log panel — tap to see timestamped event history -->
       <button class="icon-btn" id="btn-debug" title="Debug log">🐛</button>
+      <!-- v23.18.2: alert audit panel — top candidates ahead + recent
+           alert-related events. Read-only diagnostic; never alters
+           scoring, candidate selection, or sound. -->
+      <button class="icon-btn" id="btn-alert-audit" title="Alert audit (next ahead + recent activity)">🎯</button>
       <!-- v23.9.2: Drive view toggle — snaps the map to a fixed
            driving configuration (zoom 18, 3D pitch, heading-up,
            follow ON). Tap again to exit the preset. -->
@@ -58,20 +62,11 @@
   </div>
 
   <!-- ROUTE BAR -->
-  <!-- v23.5.8: road-name + destination share one row.
-       Road = 75% (left), Destination = 25% (right).
-       Both ellipsis-truncate; neither wraps to a second line. -->
-  <div class="topinfo-row">
-    <div class="road-bar" id="road-bar">
-      <span class="road-label">ROAD</span>
-      <span class="road-name" id="road-name">Unknown</span>
-    </div>
-    <div class="route-bar">
-      <button class="route-current" id="btn-route">
-        <span class="arrow">→</span>
-        <span id="route-name">Pick a destination</span>
-      </button>
-    </div>
+  <div class="route-bar">
+    <button class="route-current" id="btn-route">
+      <span class="arrow">→</span>
+      <span id="route-name">Pick a destination</span>
+    </button>
   </div>
 
   <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->
@@ -799,6 +794,28 @@
 
 <!-- v22.104: debug log panel — newest entries at top, in-memory only,
      capped at 500 rows by the Logger module in app-core.js. -->
+<!-- v23.18.2: alert audit modal — live view of the focused candidate list
+     plus a filtered slice of the rolling Logger limited to alert-related
+     event types. Read-only; meant for in-car troubleshooting. -->
+<div class="modal" id="m-alert-audit">
+  <div class="modal-card">
+    <div class="modal-head">
+      <div class="modal-title">🎯 Alert audit <span id="alert-audit-count" style="color:var(--ink-3);font-weight:400;">(0)</span></div>
+      <button class="modal-close" data-close>×</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+      <button class="btn" id="alert-audit-refresh" style="flex:1;">↻ Refresh</button>
+      <button class="btn" id="alert-audit-copy" style="flex:1;">📋 Copy</button>
+    </div>
+    <div style="margin-top:8px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:11px ui-monospace,monospace;line-height:1.55;color:var(--ink);">
+      <div style="font-weight:700;color:var(--ink-2);margin-bottom:4px;">Next ahead</div>
+      <div id="alert-audit-ahead">—</div>
+    </div>
+    <div style="margin-top:6px;font-weight:700;color:var(--ink-2);font-size:11px;">Recent alert activity</div>
+    <div id="alert-audit-log" style="max-height:48vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
+  </div>
+</div>
+
 <div class="modal" id="m-debug">
   <div class="modal-card">
     <div class="modal-head">
@@ -892,8 +909,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.18.0"></script>
-<script defer src="js/app-ui.js?v=23.18.0"></script>
+<script defer src="js/app-core.js?v=23.18.2"></script>
+<script defer src="js/app-ui.js?v=23.18.2"></script>
 
 </body>
 </html>

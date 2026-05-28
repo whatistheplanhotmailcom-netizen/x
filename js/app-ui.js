@@ -411,13 +411,20 @@ const MapView = {
    *  point marker. Cheap iteration over this._pointMarkers; runs on
    *  every GPS tick from MapView.update(). Pure presentational — never
    *  affects alert scoring or scan. Hides the label when GPS isn't
-   *  ready or the point is too far to be useful (>5 km). */
+   *  ready or the point is too far to be useful (>5 km).
+   *  v23.18.7 — colors the text by distance tier (near/mid/far) using
+   *  the same thresholds the Next-ahead progress bar already uses
+   *  (red < 200m, amber < 500m, else green). */
   DIST_LABEL_MAX_KM: 5,
+  DIST_LABEL_NEAR_M: 200,
+  DIST_LABEL_MID_M: 500,
   _updateMarkerDistances() {
     if (!this._pointMarkers || !State.pos) return;
     const pointsById = new globalThis.Map();
     State.data.points.forEach(p => { if (p && p.id) pointsById.set(p.id, p); });
     const maxKm = this.DIST_LABEL_MAX_KM;
+    const nearM = this.DIST_LABEL_NEAR_M;
+    const midM  = this.DIST_LABEL_MID_M;
     this._pointMarkers.forEach((mk, pid) => {
       const el = mk.getElement();
       const label = el && el.querySelector('.ra-dist-label');
@@ -428,10 +435,18 @@ const MapView = {
       }
       const km = Utils.distKm(State.pos, p);
       if (!(km <= maxKm)) { label.hidden = true; return; }
+      const distM = km * 1000;
       const text = (km < 1)
-        ? Math.round(km * 1000) + ' m'
+        ? Math.round(distM) + ' m'
         : km.toFixed(km < 10 ? 1 : 0) + ' km';
       if (label.textContent !== text) label.textContent = text;
+      const tier = (distM < nearM) ? 'ra-dist-near'
+                : (distM < midM)  ? 'ra-dist-mid'
+                : 'ra-dist-far';
+      if (!label.classList.contains(tier)) {
+        label.classList.remove('ra-dist-near', 'ra-dist-mid', 'ra-dist-far');
+        label.classList.add(tier);
+      }
       if (label.hidden) label.hidden = false;
     });
   },

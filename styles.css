@@ -1367,14 +1367,17 @@ body {
    alertable marker. Sits above the marker, never moves stored coords.
    Refreshed by MapView._updateMarkerDistances on every GPS tick.
    v23.18.6 — transparent background; text-shadow keeps the number
-   legible against light or dark map tiles. */
+   legible against light or dark map tiles.
+   v23.18.7 — moved to BOTTOM-center and tiered color (far/mid/near)
+   driven by .ra-dist-far / .ra-dist-mid / .ra-dist-near classes. */
 .ra-marker .ra-dist-label {
   position: absolute;
   left: 50%;
-  top: -22px;
+  top: auto;
+  bottom: -20px;
   transform: translateX(-50%);
   background: transparent;
-  color: #fff;
+  color: var(--green);
   font-family: ui-monospace, monospace;
   font-size: 10px;
   font-weight: 700;
@@ -1389,6 +1392,9 @@ body {
     0 0 6px rgba(0,0,0,0.55);
   z-index: 4;
 }
+.ra-marker .ra-dist-label.ra-dist-far  { color: var(--green); }
+.ra-marker .ra-dist-label.ra-dist-mid  { color: var(--amber); }
+.ra-marker .ra-dist-label.ra-dist-near { color: var(--red); }
 .ra-marker.passed .ra-dist-label,
 .ra-marker.disabled .ra-dist-label { display: none; }
 /* v22.82: Google Maps-style directional triangle marker.

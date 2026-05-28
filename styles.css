@@ -1365,13 +1365,15 @@ body {
 .ra-marker .dep-badge.dep-ok  { background: var(--green); color: #fff; }
 /* v23.18.5 — live distance countdown rendered on top-center of every
    alertable marker. Sits above the marker, never moves stored coords.
-   Refreshed by MapView._updateMarkerDistances on every GPS tick. */
+   Refreshed by MapView._updateMarkerDistances on every GPS tick.
+   v23.18.6 — transparent background; text-shadow keeps the number
+   legible against light or dark map tiles. */
 .ra-marker .ra-dist-label {
   position: absolute;
   left: 50%;
   top: -22px;
   transform: translateX(-50%);
-  background: rgba(15, 17, 21, 0.86);
+  background: transparent;
   color: #fff;
   font-family: ui-monospace, monospace;
   font-size: 10px;
@@ -1381,7 +1383,10 @@ body {
   border-radius: 6px;
   white-space: nowrap;
   pointer-events: none;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.4);
+  text-shadow:
+    0 0 2px rgba(0,0,0,0.95),
+    0 1px 3px rgba(0,0,0,0.9),
+    0 0 6px rgba(0,0,0,0.55);
   z-index: 4;
 }
 .ra-marker.passed .ra-dist-label,

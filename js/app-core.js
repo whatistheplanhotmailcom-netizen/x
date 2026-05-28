@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.14.0';
+const APP_VERSION = 'v23.17.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -412,11 +412,17 @@ const Speed = {
 
   /** v23.7.2: derive confidenceStatus from observation counts + age.
    *  Returns one of: possible | probable | trusted | disputed | stale.
-   *  Always safe to call; returns 'possible' for empty inputs. */
+   *  Always safe to call; returns 'possible' for empty inputs.
+   *  v23.17.0: prefer p.validConfirmationCount (gate-passed confirmations)
+   *  when present so opposite-direction / far / poor-GPS samples don't
+   *  inflate trust. Falls back to the raw historical confirmationCount for
+   *  un-audited points; raw count is preserved as audit history. */
   deriveConfidenceStatus(p) {
     if (!p) return 'possible';
     const obs  = p.observationCount   || p.confidence || 1;
-    const conf = p.confirmationCount  || 0;
+    const conf = (typeof p.validConfirmationCount === 'number')
+               ? p.validConfirmationCount
+               : (p.confirmationCount || 0);
     const rej  = p.rejectionCount     || 0;
     const lastSeen = p.lastObservedAt || p.updatedAt || p.createdAt;
     if (lastSeen) {
@@ -2452,6 +2458,24 @@ const Storage = {
       // Toggle is on the Edit Point modal; applies to ALL points of
       // that type. Global proximityPing remains the master switch.
       heartbeatByType: {},
+      // v23.17.0 — feedback-geometry gating. Distance/heading/GPS gates
+      // applied to every feedback/revalidation sample so opposite-direction
+      // or far-away samples never inflate trust. Backward-compatible: when
+      // any field is missing the FeedbackGate.DEFAULTS apply.
+      feedbackGeometryGates: {
+        enabled: true,
+        alignedHeadingMaxDeg: 45,
+        oppositeHeadingMinDeg: 135,
+        minReliableHeadingSpeedKmh: 15,
+        acceptedDistanceM: 100,
+        quarantineDistanceM: 200,
+        hardRejectDistanceM: 500,
+        headingGateAppliesToTypes: [
+          'speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera', 'speed_change',
+        ],
+        exemptBidirectionalFromHeadingGate: true,
+        poorGpsAccuracyM: 50,
+      },
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest
@@ -2912,15 +2936,20 @@ const State = {
   },
 
   /** v22.101: keep dest.routePointRefs in sync when a new point is captured
-   *  for the active destination. Pre-migration data (no routePointRefs[])
-   *  is left untouched and continues to use the legacy destId filter. */
+   *  for the active destination.
+   *  v23.17.0: previously this only updated routePointRefs when it was
+   *  already an Array — for destinations created after the v22.96 migration
+   *  whose routePointRefs field was never initialized, every captured point
+   *  vanished from the destination's reference list (visible in exports as
+   *  "N points by destId, 0 routePointRefs"). Always ensure the field is
+   *  an array and append exactly once. Treat the active destination the
+   *  same as any other. */
   addPointToActiveDest(point) {
     this.data.points.push(point);
     const dest = this.activeDest();
     if (!dest) return;
-    if (Array.isArray(dest.routePointRefs)) {
-      if (!dest.routePointRefs.includes(point.id)) dest.routePointRefs.push(point.id);
-    }
+    if (!Array.isArray(dest.routePointRefs)) dest.routePointRefs = [];
+    if (!dest.routePointRefs.includes(point.id)) dest.routePointRefs.push(point.id);
   },
 
   /** v22.101: remove a point and clean it out of every destination's
@@ -6289,6 +6318,11 @@ const Confirm = {
     const altAcc = (typeof State.altitudeAccuracy === 'number') ? State.altitudeAccuracy : null;
     const hdg = (typeof State.heading === 'number') ? State.heading : null;
     const spdKmh = (typeof State.speedMps === 'number') ? State.speedMps * 3.6 : null;
+    // v23.17.0 — read the live heading source and active destination so
+    // FeedbackGate can apply heading-reliability + destination gates.
+    const hdgSource = State.headingSource || null;
+    let activeDestId = null;
+    try { const ad = State.activeDest && State.activeDest(); if (ad && ad.id) activeDestId = ad.id; } catch (e) {}
     const sample = {
       ts: Date.now(),
       pointId: point.id,
@@ -6301,7 +6335,9 @@ const Confirm = {
       altitude: alt,
       altitudeAccuracy: altAcc,
       heading: hdg,
+      headingSource: hdgSource,
       speedKmh: spdKmh,
+      destId: activeDestId,
       // Snapshot of original point fields at time of feedback so the
       // audit trail is self-contained even if the point is later edited.
       originalLat: point.lat,
@@ -6377,7 +6413,28 @@ const Confirm = {
       return;
     }
 
-    // From here on, feedbackResult === 'positive'.
+    // v23.17.0 — feedback-geometry gate. Every positive sample is
+    // validated for distance / heading / GPS / destination compatibility
+    // BEFORE it can promote trust or feed evidence arrays. Opposite-direction
+    // or far samples land in quarantinedSamples / rejectedSamples (still
+    // preserved on the point), bump suspicious / rejected counters, and
+    // do NOT inflate validConfirmationCount, lastConfirmedAt, refinement
+    // suggestions, or position/altitude/heading evidence used for refits.
+    const gateEnabled = !State.settings || !State.settings.feedbackGeometryGates
+                      || State.settings.feedbackGeometryGates.enabled !== false;
+    const verdict = gateEnabled ? FeedbackGate.validateFeedbackGeometry(point, sample) : null;
+    sample._gate = verdict ? {
+      verdict: verdict.verdict, reasons: verdict.reasons.slice(),
+      headingDiffDeg: verdict.headingDiffDeg, distanceM: verdict.distanceM,
+      gateVersion: verdict.gateVersion,
+    } : null;
+    if (verdict && verdict.verdict !== 'accepted') {
+      FeedbackGate.recordNonAcceptedPositive(point, sample, verdict);
+      return; // Do NOT update lastConfirmedAt, evidence, or refinements.
+    }
+
+    // From here on, feedbackResult === 'positive' AND the gate accepted it.
+    FeedbackGate.recordAcceptedPositive(point);
     point.lastConfirmedAt = new Date(sample.ts).toISOString();
     point.lastObservedAt = point.lastConfirmedAt;
 
@@ -6659,8 +6716,37 @@ const Confirm = {
     const now = new Date().toISOString();
     point.observationCount = (point.observationCount || 1) + 1;
     if (value === 'yes') {
-      point.confirmationCount = (point.confirmationCount || 0) + 1;
-      point.lastConfirmedAt = now;
+      // v23.17.0 — gate the YES against feedback-geometry. speed_change
+      // is a heading-gated type: opposite-direction or far-distance YES
+      // taps must NOT bump confirmationCount / validConfirmationCount.
+      // The sample is preserved on the point as quarantined/rejected
+      // evidence so the audit trail stays intact.
+      const sample = Confirm._captureRevalidationSample(point, 'positive', 'speed_limit_revalidation');
+      const gateEnabled = !State.settings || !State.settings.feedbackGeometryGates
+                        || State.settings.feedbackGeometryGates.enabled !== false;
+      const verdict = (sample && gateEnabled) ? FeedbackGate.validateFeedbackGeometry(point, sample) : null;
+      if (verdict && verdict.verdict !== 'accepted') {
+        FeedbackGate._ensureGateFields(point);
+        point.revalidation.samples.push(Object.assign({}, sample, { _gate: {
+          verdict: verdict.verdict, reasons: verdict.reasons.slice(),
+          headingDiffDeg: verdict.headingDiffDeg, distanceM: verdict.distanceM,
+          gateVersion: verdict.gateVersion,
+        } }));
+        FeedbackGate.recordNonAcceptedPositive(point, sample, verdict);
+        // Skip the raw confirmationCount bump for non-accepted YES taps.
+      } else {
+        if (sample) {
+          FeedbackGate._ensureGateFields(point);
+          point.revalidation.samples.push(Object.assign({}, sample, { _gate: verdict ? {
+            verdict: 'accepted', reasons: verdict.reasons.slice(),
+            headingDiffDeg: verdict.headingDiffDeg, distanceM: verdict.distanceM,
+            gateVersion: verdict.gateVersion,
+          } : null }));
+        }
+        point.confirmationCount = (point.confirmationCount || 0) + 1;
+        FeedbackGate.recordAcceptedPositive(point);
+        point.lastConfirmedAt = now;
+      }
     } else {
       point.rejectionCount = (point.rejectionCount || 0) + 1;
       point.lastRejectedAt = now;
@@ -6696,6 +6782,505 @@ const Confirm = {
     this._cleanup();
   },
 };
+
+/* ============================================================
+   7d. FEEDBACK GEOMETRY GATE — v23.17.0
+   Validates every feedback / revalidation sample against distance,
+   heading, GPS-accuracy, and destination-compatibility gates BEFORE the
+   sample is allowed to inflate any trust counter, evidence array, or
+   suggested adjustment. Pure-validator + sample-router + one-time audit.
+   No alert engine, no new store — augments the existing
+   point.revalidation block. Live alert trigger logic is unchanged: the
+   only effect on alerts is that trust derives from
+   validConfirmationCount instead of the raw confirmationCount once
+   migration has run.
+   ============================================================ */
+const FeedbackGate = {
+  // Conservative defaults; overridden when State.settings.feedbackGeometryGates
+  // exposes a field. Mirrors the schema documented in Storage.defaultSettings.
+  DEFAULTS: {
+    enabled: true,
+    alignedHeadingMaxDeg: 45,
+    oppositeHeadingMinDeg: 135,
+    minReliableHeadingSpeedKmh: 15,
+    acceptedDistanceM: 100,
+    quarantineDistanceM: 200,
+    hardRejectDistanceM: 500,
+    headingGateAppliesToTypes: [
+      'speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera', 'speed_change',
+    ],
+    exemptBidirectionalFromHeadingGate: true,
+    poorGpsAccuracyM: 50,
+  },
+  GATE_VERSION: 'feedback-geometry-v1',
+
+  /** Resolve effective gate settings: explicit per-call options override
+   *  the user's State.settings.feedbackGeometryGates, which in turn
+   *  override DEFAULTS. Settings remain backward compatible — missing
+   *  fields fall through to DEFAULTS. */
+  _resolveOptions(options) {
+    const user = (typeof State !== 'undefined' && State && State.settings
+                  && State.settings.feedbackGeometryGates) || {};
+    return Object.assign({}, this.DEFAULTS, user, options || {});
+  },
+
+  /** Pure validator. Reads sample + point + options; mutates nothing.
+   *  Returns the verdict object documented in spec §1. */
+  validateFeedbackGeometry(point, sample, options) {
+    const opts = this._resolveOptions(options);
+    const out = {
+      accepted: false, verdict: 'rejected', reasons: [],
+      headingDiffDeg: null, distanceM: null,
+      headingReliable: false, distanceReliable: false,
+      gpsAccuracyM: null, destinationCompatible: null,
+      gateVersion: this.GATE_VERSION,
+    };
+    if (!point || !sample) { out.reasons.push('missing_point_or_sample'); return out; }
+
+    // pointId match — never pin a sample to the wrong point.
+    if (sample.pointId != null && sample.pointId !== point.id) {
+      out.reasons.push('pointId_mismatch'); return out;
+    }
+
+    // ---- Distance ----------------------------------------------------
+    let distanceM = (typeof sample.distanceM === 'number' && !isNaN(sample.distanceM))
+      ? sample.distanceM : null;
+    if (distanceM == null && typeof sample.lat === 'number' && typeof sample.lng === 'number'
+        && typeof point.lat === 'number' && typeof point.lng === 'number') {
+      try { distanceM = Utils.distKm(sample, point) * 1000; } catch (e) {}
+    }
+    out.distanceM = (distanceM == null) ? null : Math.round(distanceM);
+    out.distanceReliable = (distanceM != null);
+
+    // ---- GPS accuracy ----------------------------------------------
+    const gpsAcc = (typeof sample.gpsAccuracy === 'number' && !isNaN(sample.gpsAccuracy))
+      ? sample.gpsAccuracy : null;
+    out.gpsAccuracyM = (gpsAcc == null) ? null : Math.round(gpsAcc);
+    let gpsPoor = false;
+    if (gpsAcc == null) {
+      out.reasons.push('gps_accuracy_missing');
+    } else if (gpsAcc > opts.poorGpsAccuracyM) {
+      out.reasons.push('gps_accuracy_poor'); gpsPoor = true;
+    }
+
+    // ---- Destination compatibility ---------------------------------
+    if (sample.destId && point.destId) {
+      out.destinationCompatible = (sample.destId === point.destId);
+      if (!out.destinationCompatible) out.reasons.push('destination_mismatch');
+    } else {
+      out.destinationCompatible = null; // not enough info — do not gate.
+    }
+
+    // ---- Heading reliability + gate --------------------------------
+    const pointBearing = (typeof point.captureBearing === 'number' && !isNaN(point.captureBearing))
+      ? point.captureBearing
+      : (typeof point.heading === 'number' && !isNaN(point.heading) ? point.heading : null);
+    const sampleHeading = (typeof sample.heading === 'number' && !isNaN(sample.heading))
+      ? sample.heading : null;
+    const speedKmh = (typeof sample.speedKmh === 'number') ? sample.speedKmh : null;
+    const hSource = sample.headingSource || null;
+
+    let headingReliable = false;
+    if (hSource === 'capture-bearing') headingReliable = true;
+    else if (speedKmh != null && speedKmh >= opts.minReliableHeadingSpeedKmh) headingReliable = true;
+    else if (hSource === 'gps' && speedKmh != null && speedKmh >= opts.minReliableHeadingSpeedKmh) headingReliable = true;
+    if (sampleHeading == null) headingReliable = false;
+    out.headingReliable = headingReliable;
+
+    let headingDiffDeg = null;
+    if (pointBearing != null && sampleHeading != null) {
+      headingDiffDeg = Speed.angleDiff(pointBearing, sampleHeading);
+    }
+    out.headingDiffDeg = (headingDiffDeg == null) ? null : Math.round(headingDiffDeg);
+
+    // Does the heading gate apply at all?
+    const isBidirectional = point.bidirectional === true;
+    const isDirectionalCamera = (point.directional === true)
+      && (opts.headingGateAppliesToTypes || []).indexOf(point.type) >= 0
+      && point.type !== 'speed_change';
+    const isSpeedChange = point.type === 'speed_change';
+    let applyHeadingGate = false;
+    if (isBidirectional && opts.exemptBidirectionalFromHeadingGate) {
+      applyHeadingGate = false;
+    } else if (isSpeedChange) {
+      applyHeadingGate = true;
+    } else if (isDirectionalCamera) {
+      applyHeadingGate = true;
+    }
+    if (applyHeadingGate && (pointBearing == null || sampleHeading == null)) {
+      applyHeadingGate = false;
+      out.reasons.push('heading_metadata_missing');
+    }
+    if (applyHeadingGate && !headingReliable) {
+      applyHeadingGate = false;
+      out.reasons.push('heading_unreliable_low_speed_or_missing_source');
+    }
+
+    // ---- Distance verdict (always applied) -------------------------
+    let distanceVerdict = 'accepted';   // accepted | quarantine | rejected
+    if (distanceM == null) {
+      // Missing distance — be permissive, mirror existing fallback.
+      distanceVerdict = 'accepted';
+    } else if (distanceM > opts.hardRejectDistanceM) {
+      distanceVerdict = 'rejected'; out.reasons.push('distance_hard_reject');
+    } else if (distanceM > opts.quarantineDistanceM) {
+      distanceVerdict = 'rejected'; out.reasons.push('distance_far');
+    } else if (distanceM > opts.acceptedDistanceM) {
+      distanceVerdict = 'quarantine'; out.reasons.push('distance_marginal');
+    }
+
+    // ---- Heading verdict (only when gate applies) ------------------
+    let headingVerdict = 'accepted';
+    if (applyHeadingGate) {
+      if (headingDiffDeg >= opts.oppositeHeadingMinDeg) {
+        headingVerdict = 'rejected'; out.reasons.push('opposite_heading');
+      } else if (headingDiffDeg >= opts.alignedHeadingMaxDeg) {
+        headingVerdict = 'quarantine'; out.reasons.push('ambiguous_heading');
+      }
+    }
+
+    // ---- GPS verdict -----------------------------------------------
+    let gpsVerdict = 'accepted';
+    if (gpsPoor) {
+      // Tolerate poor GPS only when otherwise close + aligned.
+      const closeAndAligned = (distanceM != null && distanceM <= opts.acceptedDistanceM)
+        && headingVerdict === 'accepted';
+      gpsVerdict = closeAndAligned ? 'accepted' : 'quarantine';
+    }
+
+    // ---- Destination verdict ---------------------------------------
+    let destVerdict = 'accepted';
+    if (out.destinationCompatible === false) destVerdict = 'quarantine';
+
+    // ---- Combine ---------------------------------------------------
+    const verdicts = [distanceVerdict, headingVerdict, gpsVerdict, destVerdict];
+    let combined = 'accepted';
+    if (verdicts.includes('rejected')) combined = 'rejected';
+    else if (verdicts.includes('quarantine')) combined = 'quarantined';
+    out.verdict = combined;
+    out.accepted = (combined === 'accepted');
+    if (out.accepted && out.reasons.length === 0) out.reasons.push('all_gates_passed');
+    return out;
+  },
+
+  /** Build the quarantined/rejected sample snapshot recorded on the point. */
+  _snapshotForArchive(sample, verdict) {
+    return {
+      ts: sample.ts,
+      feedbackType: sample.feedbackType,
+      feedbackResult: sample.feedbackResult,
+      lat: sample.lat, lng: sample.lng,
+      heading: sample.heading, speedKmh: sample.speedKmh,
+      distanceM: verdict.distanceM,
+      headingDiffDeg: verdict.headingDiffDeg,
+      headingReliable: verdict.headingReliable,
+      gpsAccuracyM: verdict.gpsAccuracyM,
+      destinationCompatible: verdict.destinationCompatible,
+      reasons: verdict.reasons.slice(),
+      gateVersion: verdict.gateVersion,
+    };
+  },
+
+  /** Ensure the per-point gate fields exist as additive arrays/counters
+   *  without disturbing legacy data. */
+  _ensureGateFields(point) {
+    if (!point.revalidation) {
+      point.revalidation = {
+        count: 0, lastAt: null, samples: [], positionEvidence: [],
+        altitudeEvidence: [], headingEvidence: [], falsePositiveCount: 0,
+        lastFalsePositiveAt: null, qualitySummary: { good: 0, medium: 0, poor: 0 },
+        suggestedAdjustments: [],
+      };
+    }
+    const r = point.revalidation;
+    if (!Array.isArray(r.quarantinedSamples)) r.quarantinedSamples = [];
+    if (!Array.isArray(r.rejectedSamples))    r.rejectedSamples    = [];
+    if (typeof point.validConfirmationCount      !== 'number') point.validConfirmationCount      = 0;
+    if (typeof point.suspiciousConfirmationCount !== 'number') point.suspiciousConfirmationCount = 0;
+    if (typeof point.rejectedConfirmationCount   !== 'number') point.rejectedConfirmationCount   = 0;
+  },
+
+  /** Bump the suspicious/rejected counters and persist the archived
+   *  sample on the point. Logs a single [FEEDBACK-GATE] line per call. */
+  recordNonAcceptedPositive(point, sample, verdict) {
+    this._ensureGateFields(point);
+    const archived = this._snapshotForArchive(sample, verdict);
+    if (verdict.verdict === 'rejected') {
+      point.revalidation.rejectedSamples.push(archived);
+      point.rejectedConfirmationCount = (point.rejectedConfirmationCount || 0) + 1;
+    } else if (verdict.verdict === 'quarantined') {
+      point.revalidation.quarantinedSamples.push(archived);
+      point.suspiciousConfirmationCount = (point.suspiciousConfirmationCount || 0) + 1;
+    }
+    this._updateEvidenceHealth(point);
+    try {
+      logEvent('FEEDBACK-GATE',
+        `[FEEDBACK-GATE] ${verdict.verdict} point=${point.id} type=${point.type}` +
+        ` distanceM=${verdict.distanceM} headingDiffDeg=${verdict.headingDiffDeg}` +
+        ` headingReliable=${verdict.headingReliable} gpsAccuracyM=${verdict.gpsAccuracyM}` +
+        ` reasons=[${verdict.reasons.join(',')}]`);
+    } catch (e) {}
+  },
+
+  /** Bump validConfirmationCount and refresh evidence health when an
+   *  accepted positive sample lands. Raw confirmationCount is untouched
+   *  here — callers that historically bumped it (e.g. speed-limit
+   *  revalidation) continue to do so. */
+  recordAcceptedPositive(point) {
+    this._ensureGateFields(point);
+    point.validConfirmationCount = (point.validConfirmationCount || 0) + 1;
+    this._updateEvidenceHealth(point);
+  },
+
+  /** Derive evidenceHealth from the live counters. Tracks previous health
+   *  when it changes for the audit summary. */
+  _updateEvidenceHealth(point) {
+    const valid = point.validConfirmationCount      || 0;
+    const susp  = point.suspiciousConfirmationCount || 0;
+    const rej   = point.rejectedConfirmationCount   || 0;
+    const total = valid + susp + rej;
+    let next;
+    if (total === 0) next = 'unknown';
+    else if (rej > 0 && rej >= valid)             next = 'polluted';
+    else if (rej > 0 || susp > 0)                 next = 'mixed';
+    else                                           next = 'clean';
+    const prev = point.evidenceHealth;
+    if (next !== prev) {
+      if (prev) point.previousEvidenceHealth = prev;
+      point.evidenceHealth = next;
+    } else if (point.evidenceHealth === undefined) {
+      point.evidenceHealth = next;
+    }
+    point.lastEvidenceAuditAt = new Date().toISOString();
+  },
+
+  /** One-time audit migration. Walks every point's existing revalidation
+   *  samples, classifies each, projects derived counters from the raw
+   *  confirmationCount, and emits the spec §14 summary. Existing samples
+   *  are NEVER deleted — only annotated and (for non-accepted positives)
+   *  archived into quarantinedSamples / rejectedSamples. */
+  runAuditV1(data) {
+    const summary = {
+      pointsAudited: 0, samplesAudited: 0,
+      acceptedSamples: 0, quarantinedSamples: 0, rejectedSamples: 0,
+      oppositeHeadingSamples: 0, unreliableHeadingSamples: 0,
+      gpsPoorSamples: 0, destinationMismatchSamples: 0,
+      hardDistanceRejects: 0, maxDistanceM: 0,
+      evidenceHealthChanged: {
+        cleanToMixed: 0, cleanToPolluted: 0,
+        mixedToClean: 0, mixedToPolluted: 0, pollutedToMixed: 0,
+        unknownToClean: 0, unknownToMixed: 0, unknownToPolluted: 0,
+      },
+      pointsRecategorized: 0,
+    };
+    if (!data || !Array.isArray(data.points)) return summary;
+
+    for (const point of data.points) {
+      if (!point || !point.revalidation || !Array.isArray(point.revalidation.samples)) continue;
+      summary.pointsAudited++;
+      this._ensureGateFields(point);
+
+      const prevHealth = point.evidenceHealth || 'unknown';
+      let acceptedHere = 0, quarantineHere = 0, rejectedHere = 0;
+
+      for (const sample of point.revalidation.samples) {
+        if (!sample) continue;
+        // Only positive samples can promote trust — only those are gated
+        // for accept/quarantine/reject. Other feedback types are recorded
+        // as-is (negatives, false-positives have their own flow).
+        if (sample.feedbackResult !== 'positive') continue;
+        summary.samplesAudited++;
+
+        const verdict = this.validateFeedbackGeometry(point, sample);
+        // annotate the sample in place (additive metadata only).
+        sample._gate = {
+          verdict: verdict.verdict,
+          reasons: verdict.reasons.slice(),
+          headingDiffDeg: verdict.headingDiffDeg,
+          distanceM: verdict.distanceM,
+          gateVersion: verdict.gateVersion,
+          auditedAt: new Date().toISOString(),
+        };
+
+        if (verdict.reasons.indexOf('opposite_heading') >= 0) summary.oppositeHeadingSamples++;
+        if (verdict.reasons.indexOf('heading_unreliable_low_speed_or_missing_source') >= 0) summary.unreliableHeadingSamples++;
+        if (verdict.reasons.indexOf('gps_accuracy_poor') >= 0) summary.gpsPoorSamples++;
+        if (verdict.reasons.indexOf('destination_mismatch') >= 0) summary.destinationMismatchSamples++;
+        if (verdict.reasons.indexOf('distance_hard_reject') >= 0) summary.hardDistanceRejects++;
+        if (verdict.distanceM != null && verdict.distanceM > summary.maxDistanceM) summary.maxDistanceM = verdict.distanceM;
+
+        if (verdict.verdict === 'accepted') {
+          acceptedHere++; summary.acceptedSamples++;
+        } else if (verdict.verdict === 'quarantined') {
+          quarantineHere++; summary.quarantinedSamples++;
+          // Avoid duplicating an already-archived sample on re-runs.
+          const dup = point.revalidation.quarantinedSamples.some(s => s && s.ts === sample.ts);
+          if (!dup) point.revalidation.quarantinedSamples.push(this._snapshotForArchive(sample, verdict));
+        } else {
+          rejectedHere++; summary.rejectedSamples++;
+          const dup = point.revalidation.rejectedSamples.some(s => s && s.ts === sample.ts);
+          if (!dup) point.revalidation.rejectedSamples.push(this._snapshotForArchive(sample, verdict));
+        }
+      }
+
+      // Project the gated counters from the raw historical count without
+      // touching confirmationCount itself (spec §7: raw count preserved).
+      const raw = (typeof point.confirmationCount === 'number') ? point.confirmationCount : 0;
+      point.suspiciousConfirmationCount = quarantineHere;
+      point.rejectedConfirmationCount   = rejectedHere;
+      const polluted = quarantineHere + rejectedHere;
+      point.validConfirmationCount = Math.max(0, raw - polluted);
+
+      this._updateEvidenceHealth(point);
+      const nowHealth = point.evidenceHealth;
+      if (prevHealth !== nowHealth) {
+        summary.pointsRecategorized++;
+        const k = prevHealth + 'To' + nowHealth.charAt(0).toUpperCase() + nowHealth.slice(1);
+        if (summary.evidenceHealthChanged[k] != null) summary.evidenceHealthChanged[k]++;
+      }
+    }
+    return summary;
+  },
+
+  /** Repair routePointRefs to match the live points-by-destId grouping.
+   *  Adds missing refs, removes duplicates, flags refs that point to
+   *  retired/missing points. Returns the spec §10 summary. */
+  repairDestinationRoutePointRefs(data) {
+    const out = { destinationsChecked: 0, refsAdded: 0, duplicatesRemoved: 0, missingPointRefsFound: 0 };
+    if (!data || !Array.isArray(data.destinations) || !Array.isArray(data.points)) return out;
+    const byDest = new Map();
+    const pointIds = new Set();
+    for (const p of data.points) {
+      if (!p || !p.id) continue;
+      pointIds.add(p.id);
+      if (p.status === 'no') continue;          // retired — leave out of refs
+      if (!p.destId) continue;
+      if (!byDest.has(p.destId)) byDest.set(p.destId, []);
+      byDest.get(p.destId).push(p.id);
+    }
+    for (const dest of data.destinations) {
+      if (!dest || !dest.id) continue;
+      out.destinationsChecked++;
+      if (!Array.isArray(dest.routePointRefs)) dest.routePointRefs = [];
+      // Drop duplicates while preserving original order.
+      const seen = new Set(), deduped = [];
+      for (const ref of dest.routePointRefs) {
+        if (seen.has(ref)) { out.duplicatesRemoved++; continue; }
+        seen.add(ref); deduped.push(ref);
+      }
+      dest.routePointRefs = deduped;
+      // Append any active points-by-destId that aren't already listed.
+      const owned = byDest.get(dest.id) || [];
+      for (const id of owned) {
+        if (!seen.has(id)) { dest.routePointRefs.push(id); seen.add(id); out.refsAdded++; }
+      }
+      // Flag refs that point to deleted points (audit only; don't drop).
+      for (const ref of dest.routePointRefs) {
+        if (!pointIds.has(ref)) out.missingPointRefsFound++;
+      }
+    }
+    return out;
+  },
+
+  /** Mark trips whose destination no longer exists AND whose distance /
+   *  duration are essentially zero as orphans. Preserves the original
+   *  record; downstream stats can filter on trip.orphaned. */
+  auditOrphanTrips(trips, destinations) {
+    const out = { orphanTripsMarked: 0 };
+    if (!Array.isArray(trips)) return out;
+    const destIds = new Set((destinations || []).map(d => d && d.id).filter(Boolean));
+    for (const t of trips) {
+      if (!t || t.orphaned === true) continue;
+      const missingDest = t.destId && !destIds.has(t.destId);
+      const km   = (typeof t.distanceKm === 'number') ? t.distanceKm : 0;
+      const ms   = (t.endedAt && t.startedAt) ? (Date.parse(t.endedAt) - Date.parse(t.startedAt)) : 0;
+      const maxS = (typeof t.maxSpeed   === 'number') ? t.maxSpeed   : 0;
+      const nearZero = (km < 0.05) && (maxS < 1) && (ms < 10000);
+      if (missingDest && nearZero) {
+        t.orphaned = true;
+        t.invalidReason = 'missing_destination_near_zero_trip';
+        out.orphanTripsMarked++;
+      }
+    }
+    return out;
+  },
+};
+
+// v23.17.0 — one-time feedback-geometry audit, routePointRefs repair,
+// and orphan-trip audit. Mirrors the migrateCaptureMetadata pattern:
+// localStorage-flagged, runs after the relevant namespaces exist, never
+// repeats. Each migration is independently gated so they can be re-run
+// individually if a flag is cleared. Safe-guarded — any thrown error is
+// logged and the flag is set so the migration never loops on bad data.
+(function migrateFeedbackGeometryGateV1() {
+  try {
+    if (localStorage.getItem('roadAlert.v23.17.0.feedbackGeometryGateV1')) return;
+    if (!State || !State.data) return;
+    const summary = FeedbackGate.runAuditV1(State.data);
+    if (typeof State.data.migrations !== 'object' || State.data.migrations === null
+        || Array.isArray(State.data.migrations)) State.data.migrations = {};
+    State.data.migrations.feedbackGeometryGateV1 = true;
+    State.data.lastEvidenceAuditAt = new Date().toISOString();
+    Storage.save(Storage.KEYS.data, State.data);
+    localStorage.setItem('roadAlert.v23.17.0.feedbackGeometryGateV1', '1');
+    try { logEvent('FEEDBACK-GATE',
+      `[FEEDBACK-GATE-AUDIT] pointsAudited=${summary.pointsAudited} samples=${summary.samplesAudited}` +
+      ` accepted=${summary.acceptedSamples} quarantined=${summary.quarantinedSamples} rejected=${summary.rejectedSamples}` +
+      ` opposite=${summary.oppositeHeadingSamples} unreliable=${summary.unreliableHeadingSamples}` +
+      ` gpsPoor=${summary.gpsPoorSamples} destMismatch=${summary.destinationMismatchSamples}` +
+      ` hardDistance=${summary.hardDistanceRejects} maxDistanceM=${summary.maxDistanceM}` +
+      ` recategorized=${summary.pointsRecategorized}`); } catch (e) {}
+    console.log('v23.17.0: feedback-geometry audit', summary);
+  } catch (e) {
+    try { localStorage.setItem('roadAlert.v23.17.0.feedbackGeometryGateV1', '1'); } catch (e2) {}
+    console.warn('feedback-geometry audit', e);
+  }
+})();
+
+(function migrateRoutePointRefsRepairV1() {
+  try {
+    if (localStorage.getItem('roadAlert.v23.17.0.routePointRefsRepairV1')) return;
+    if (!State || !State.data) return;
+    const summary = FeedbackGate.repairDestinationRoutePointRefs(State.data);
+    if (typeof State.data.migrations !== 'object' || State.data.migrations === null
+        || Array.isArray(State.data.migrations)) State.data.migrations = {};
+    State.data.migrations.routePointRefsRepairV1 = true;
+    if (summary.refsAdded || summary.duplicatesRemoved || summary.missingPointRefsFound) {
+      Storage.save(Storage.KEYS.data, State.data);
+    }
+    localStorage.setItem('roadAlert.v23.17.0.routePointRefsRepairV1', '1');
+    try { logEvent('DATA-REPAIR',
+      `[ROUTE-POINT-REFS-REPAIR] destinationsChecked=${summary.destinationsChecked}` +
+      ` refsAdded=${summary.refsAdded} duplicatesRemoved=${summary.duplicatesRemoved}` +
+      ` missingPointRefsFound=${summary.missingPointRefsFound}`); } catch (e) {}
+    console.log('v23.17.0: routePointRefs repair', summary);
+  } catch (e) {
+    try { localStorage.setItem('roadAlert.v23.17.0.routePointRefsRepairV1', '1'); } catch (e2) {}
+    console.warn('routePointRefs repair', e);
+  }
+})();
+
+(function migrateOrphanTripsAuditV1() {
+  try {
+    if (localStorage.getItem('roadAlert.v23.17.0.orphanTripsAuditV1')) return;
+    if (!State) return;
+    const summary = FeedbackGate.auditOrphanTrips(State.trips,
+      (State.data && State.data.destinations) || []);
+    if (summary.orphanTripsMarked) Storage.save(Storage.KEYS.trips, State.trips);
+    if (State.data) {
+      if (typeof State.data.migrations !== 'object' || State.data.migrations === null
+        || Array.isArray(State.data.migrations)) State.data.migrations = {};
+      State.data.migrations.orphanTripsAuditV1 = true;
+      Storage.save(Storage.KEYS.data, State.data);
+    }
+    localStorage.setItem('roadAlert.v23.17.0.orphanTripsAuditV1', '1');
+    try { logEvent('DATA-REPAIR', `[ORPHAN-TRIPS-AUDIT] orphanTripsMarked=${summary.orphanTripsMarked}`); } catch (e) {}
+    console.log('v23.17.0: orphan trips audit', summary);
+  } catch (e) {
+    try { localStorage.setItem('roadAlert.v23.17.0.orphanTripsAuditV1', '1'); } catch (e2) {}
+    console.warn('orphan trips audit', e);
+  }
+})();
 
 /* ============================================================
    8. BACKUP

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.17.0';
+const APP_VERSION = 'v23.18.0';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -849,6 +849,63 @@ const Corridor = {
   getAlertCandidates(userState, activeRoute, globalPoints) {
     if (activeRoute) return Corridor.getRouteCandidatePoints(activeRoute, globalPoints);
     return Corridor.getGlobalCandidatePoints(userState, globalPoints);
+  },
+};
+
+/* ============================================================
+   0e1b. AUTO ROUTE — v23.18.0
+   Destinationless-trip support. Does NOT re-implement live candidate
+   selection — Observations.liveCandidates + Alerts.tick already scan the
+   GLOBAL pool, treat the destination as context-only, and never require
+   destId/routePointRefs. AutoRoute only (a) exposes the autoRouteMode
+   config with safe defaults and (b) provides a read-only geometry
+   classifier built on the same Utils/Speed math, for diagnostics.
+   ============================================================ */
+const AutoRoute = {
+  DEFAULTS: {
+    enabled: true,
+    startWithoutDestination: true,
+    scanRadiusM: 3000,
+    forwardConeDeg: 60,
+    behindRejectDeg: 120,
+    destinationMatchBonus: true,
+  },
+  config() {
+    const s = (typeof State !== 'undefined' && State.settings && State.settings.autoRouteMode) || {};
+    return Object.assign({}, this.DEFAULTS, s);
+  },
+  startWithoutDestinationAllowed() {
+    const c = this.config();
+    return c.enabled !== false && c.startWithoutDestination !== false;
+  },
+  isPointAheadOfTravel(userPosition, point, heading, options) {
+    const cfg = Object.assign({}, this.config(), options || {});
+    const headingKnown = Number.isFinite(heading);
+    const out = {
+      distanceM: null,
+      bearingToPoint: null,
+      bearingDiff: null,
+      ahead: false,
+      behind: false,
+      lateral: false,
+      headingKnown,
+    };
+    if (!userPosition || point == null ||
+        typeof point.lat !== 'number' || typeof point.lng !== 'number') {
+      return out;
+    }
+    out.distanceM = Utils.distKm(userPosition, point) * 1000;
+    if (!headingKnown) {
+      out.ahead = true;
+      out.lateral = true;
+      return out;
+    }
+    out.bearingToPoint = Speed.bearingBetween(userPosition.lat, userPosition.lng, point.lat, point.lng);
+    out.bearingDiff = Speed.angleDiff(heading, out.bearingToPoint);
+    if (out.bearingDiff <= cfg.forwardConeDeg) out.ahead = true;
+    else if (out.bearingDiff >= cfg.behindRejectDeg) out.behind = true;
+    else out.lateral = true;
+    return out;
   },
 };
 
@@ -2475,6 +2532,17 @@ const Storage = {
         ],
         exemptBidirectionalFromHeadingGate: true,
         poorGpsAccuracyM: 50,
+      },
+      // v23.18.0 — Auto Route Mode. Lets a drive start with NO destination.
+      // Live alerts still come from the existing Observations/Alerts engine
+      // (no parallel scanner). Backward-compatible via the shallow merge.
+      autoRouteMode: {
+        enabled: true,
+        startWithoutDestination: true,
+        scanRadiusM: 3000,
+        forwardConeDeg: 60,
+        behindRejectDeg: 120,
+        destinationMatchBonus: true,
       },
     };
   },
@@ -5327,6 +5395,23 @@ const Alerts = {
     // state (so passed-detection works) but don't fire any alerts.
     const aheadList = this.ahead();
     const focusedId = aheadList.length ? aheadList[0].id : null;
+
+    // v23.18.0 — Auto Route diagnostics: only with no destination, throttled
+    // to once / 5s, focused candidate only (no extra pool scan).
+    if (!State.activeDest() && focusedId) {
+      const now = Date.now();
+      if (now - (this._autoRouteLogAt || 0) >= 5000) {
+        const c = aheadList && aheadList[0];
+        if (c) {
+          this._autoRouteLogAt = now;
+          const geo = AutoRoute.isPointAheadOfTravel(State.pos, c, Observations.effectiveHeading());
+          logEvent('AUTO-ROUTE',
+            `candidate accepted point=${c.id} type=${c.type}` +
+            ` distanceM=${Math.round(geo.distanceM != null ? geo.distanceM : (c.dist || 0) * 1000)}` +
+            ` bearingDiff=${geo.bearingDiff != null ? Math.round(geo.bearingDiff) : 'n/a'}`);
+        }
+      }
+    }
 
     // v23.8.0: iterate the GLOBAL observation pool, not just the
     // active destination's route-pair points. Selecting Home no

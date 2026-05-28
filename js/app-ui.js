@@ -2065,8 +2065,16 @@ const UI = {
   },
 
   renderRouteBar() {
+    const el = document.getElementById('route-name');
+    if (!el) return;
     const d = State.activeDest();
-    document.getElementById('route-name').textContent = d ? d.name : 'Pick a destination';
+    if (d) {
+      el.textContent = d.name;
+      return;
+    }
+    // v23.18.0 — driving without a destination shows "Auto Route";
+    // idle keeps the "Pick a destination" call to action.
+    el.textContent = (State.mode === 'gps') ? 'Auto Route' : 'Pick a destination';
   },
 
   /** v23.5.4: display-only setter for the ROAD row under the destination
@@ -2603,20 +2611,34 @@ const UI = {
    *  - On Start → play tone + voice announcement + actually start GPS. */
   confirmStart() {
     const dest = State.activeDest();
-    if (!dest) {
-      Utils.toast('Pick a destination first', 'bad');
-      this.renderRoutesList();
-      this.openModal('m-routes');
-      return;
+    const nameEl  = document.getElementById('confirm-dest-name');
+    const metaEl  = document.getElementById('confirm-dest-meta');
+    const titleEl = document.querySelector('#m-confirm-start .modal-title');
+    const labelEl = document.querySelector('#m-confirm-start [data-confirm-label]');
+    if (dest) {
+      if (titleEl) titleEl.textContent = 'Confirm destination';
+      if (labelEl) labelEl.textContent = 'Drive to';
+      if (nameEl) nameEl.textContent = dest.name;
+      let meta = `${dest.lat.toFixed(4)}, ${dest.lng.toFixed(4)}`;
+      if (State.pos) {
+        const km = Utils.distKm(State.pos, dest);
+        meta += `  ·  ${Utils.fmtDist(km)} away`;
+      }
+      if (metaEl) metaEl.textContent = meta;
+    } else {
+      // v23.18.0 — Auto Route Mode. Destination optional; only prompt
+      // when Auto Route is disabled in settings.
+      if (!AutoRoute.startWithoutDestinationAllowed()) {
+        Utils.toast('Pick a destination first', 'bad');
+        this.renderRoutesList();
+        this.openModal('m-routes');
+        return;
+      }
+      if (titleEl) titleEl.textContent = 'Start drive';
+      if (labelEl) labelEl.textContent = 'Mode';
+      if (nameEl) nameEl.textContent = 'Auto Route';
+      if (metaEl) metaEl.textContent = 'No destination · detecting alerts ahead';
     }
-    // Populate confirm modal
-    document.getElementById('confirm-dest-name').textContent = dest.name;
-    let meta = `${dest.lat.toFixed(4)}, ${dest.lng.toFixed(4)}`;
-    if (State.pos) {
-      const km = Utils.distKm(State.pos, dest);
-      meta += `  ·  ${Utils.fmtDist(km)} away`;
-    }
-    document.getElementById('confirm-dest-meta').textContent = meta;
     this.openModal('m-confirm-start');
   },
 
@@ -2625,12 +2647,12 @@ const UI = {
     const dest = State.activeDest();
     this.closeAllModals();
     Audio.unlock();
-    // Tone confirmation (uses currently selected tone style)
     Audio.beep('checkpoint');
-    // Voice announcement (skipped if voice is off)
-    if (dest && State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
-      setTimeout(() => Audio.say('Heading to ' + dest.name), 250);
+    if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
+      if (dest) setTimeout(() => Audio.say('Heading to ' + dest.name), 250);
+      else setTimeout(() => Audio.say('Auto route. Detecting alerts ahead.'), 250);
     }
+    if (!dest) logEvent('AUTO-ROUTE', 'started without destination');
     GPS.start();
   },
 
@@ -3644,10 +3666,14 @@ const UI = {
       Utils.toast(`Trip saved · ${State.activeTrip.distanceKm.toFixed(1)} km`, 'good');
       State.activeTrip = null;
     } else {
+      const dest = State.activeDest();
       State.activeTrip = {
         id: Utils.uid(),
         startedAt: new Date().toISOString(),
-        destId: State.data.activeDestId,
+        // v23.18.0 — explicit mode; auto trips keep destId null (never
+        // fabricated), so the orphan audit (non-null missing only) skips them.
+        mode: dest ? 'destination' : 'auto',
+        destId: dest ? dest.id : null,
         distanceKm: 0,
         maxSpeed: 0,
       };

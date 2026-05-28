@@ -3350,15 +3350,16 @@ const UI = {
       }
       return Utils.escapeHtml(String(v));
     };
-    // v23.18.10 — render the capture chain (3 prev + 3 next) compactly.
-    // Each ref is a `{id, type, captureBearing}` object; we show the
-    // last 6 chars of the id, the type emoji, and the bearing in
-    // degrees so a glance tells you direction + identity.
+    // v23.18.10/12 — render the capture chain (3 prev + 3 next)
+    // compactly. Prefers the new shortId over the last 6 chars of
+    // the raw UUID id so the display matches the stored field.
     const fmtChain = (arr) => {
       if (!Array.isArray(arr) || !arr.length) return '—';
       return arr.map(ref => {
-        if (!ref || !ref.id) return '?';
-        const idShort = String(ref.id).slice(-6);
+        if (!ref || (!ref.id && !ref.shortId)) return '?';
+        const idShort = (typeof ref.shortId === 'string' && ref.shortId)
+          ? ref.shortId
+          : String(ref.id || '').slice(-6);
         const emoji = (typeof Utils !== 'undefined' && Utils.emoji && ref.type)
           ? Utils.emoji(ref.type) : '';
         const b = (ref.captureBearing != null && isFinite(ref.captureBearing))
@@ -3367,6 +3368,8 @@ const UI = {
       }).join(' → ');
     };
     const rows = [
+      ['Short ID', point.shortId],
+      ['Chain ID', point.chainId],
       ['Captured at', point.capturedAt],
       ['GPS timestamp', point.gpsTimestamp],
       ['Accuracy (m)', point.accuracyM],

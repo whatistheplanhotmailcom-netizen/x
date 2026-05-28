@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.11';
+const APP_VERSION = 'v23.18.12';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -4289,6 +4289,16 @@ const CaptureMetaConfig = {
   // directional types also within this bearing window.
   SIMILAR_RADIUS_M: 60,
   SIMILAR_BEARING_DEG: 45,
+  // v23.18.12 — Chain integrity. Sessions split when the time gap
+  // between consecutive captures exceeds this many ms (20 min default).
+  chainSessionGapMs: 20 * 60 * 1000,
+  // Length of the prev/next chain windows (single source of truth —
+  // CaptureMeta.CHAIN_LENGTH stays in sync via this constant).
+  CHAIN_LENGTH: 3,
+  // Short-ID alphabet (lowercase URL-safe alphanumeric, no look-alikes:
+  // l/1/o/0 removed to make IDs human-readable on paper).
+  SHORT_ID_ALPHABET: '23456789abcdefghjkmnpqrstuvwxyz',
+  SHORT_ID_LENGTH: 6,
 };
 
 const CaptureMeta = {
@@ -4454,45 +4464,221 @@ const CaptureMeta = {
   // v23.18.10 — capture-chain support. Each capture stores a backward
   // link to the 3 most recently captured points and (filled in later
   // as more captures arrive) a forward link to the next 3 points.
-  // Pure metadata; never read by the alert engine in this commit.
-  // Future filters can use it to confirm the user moved consistently
-  // along a captured path.
+  // v23.18.12 — chain integrity: every point now also carries
+  //   shortId (6-char, unique, stable)
+  //   chainId  (ch_YYYYMMDD_HHmm_<4-char>, session-grouped by 20 min gap)
+  // chain builders/refs use chainId + valid timestamps to reject
+  // cross-session, self-referencing, or out-of-order links. Pure
+  // metadata — alert engine never reads any of this.
   CHAIN_LENGTH: 3,
+
+  /* ---------- shortId ---------- */
+  /** Generate a SHORT_ID_LENGTH-char lowercase ID using SHORT_ID_ALPHABET.
+   *  `taken` is a Set<string> of every id/shortId already in use; the
+   *  function regenerates until a non-colliding value is produced. */
+  generateShortId(taken) {
+    const alpha = CaptureMetaConfig.SHORT_ID_ALPHABET;
+    const len = CaptureMetaConfig.SHORT_ID_LENGTH;
+    const max = 24; // bounded retry — alphabet^len is huge so this is safe
+    for (let attempt = 0; attempt < max; attempt++) {
+      let s = '';
+      for (let i = 0; i < len; i++) {
+        s += alpha.charAt(Math.floor(Math.random() * alpha.length));
+      }
+      if (!taken || !taken.has(s)) return s;
+    }
+    // Pathological fallback: extend length until unique.
+    let s = '';
+    for (let i = 0; i < len + 4; i++) {
+      s += alpha.charAt(Math.floor(Math.random() * alpha.length));
+    }
+    return s;
+  },
+  /** Build a Set of every shortId currently in use across `points`.
+   *  Also includes raw point.id values so a future shortId can't
+   *  accidentally collide with an existing UUID-style id. */
+  _collectTakenShortIds(points) {
+    const taken = new Set();
+    if (!Array.isArray(points)) return taken;
+    for (const p of points) {
+      if (!p) continue;
+      if (typeof p.shortId === 'string' && p.shortId) taken.add(p.shortId);
+      if (typeof p.id === 'string' && p.id) taken.add(p.id);
+    }
+    return taken;
+  },
+  /** Ensure `p` has a shortId. Returns the resolved shortId. Never
+   *  overwrites an existing valid value. */
+  ensureShortId(p, taken) {
+    if (!p) return null;
+    if (typeof p.shortId === 'string' && p.shortId && (!taken || !taken.has(p.shortId) || taken.has(p.shortId))) {
+      // Already valid — nothing to do (the Set is populated externally).
+      return p.shortId;
+    }
+    const s = this.generateShortId(taken);
+    p.shortId = s;
+    if (taken) taken.add(s);
+    return s;
+  },
+
+  /* ---------- capturedAt ---------- */
+  /** Return the capture timestamp in ms since epoch, or null if no
+   *  usable value is on the point. Tries capturedAt, then createdAt,
+   *  then numeric `timestamp`, then updatedAt. */
+  getCapturedAtMs(p) {
+    if (!p) return null;
+    const tryParse = (v) => {
+      if (v == null) return null;
+      if (typeof v === 'number' && isFinite(v)) {
+        // Heuristic: 10-digit values are seconds, otherwise ms
+        return v < 1e12 ? v * 1000 : v;
+      }
+      if (typeof v === 'string' && v) {
+        const ms = Date.parse(v);
+        return isFinite(ms) ? ms : null;
+      }
+      return null;
+    };
+    return tryParse(p.capturedAt) ||
+           tryParse(p.createdAt)  ||
+           tryParse(p.timestamp)  ||
+           tryParse(p.updatedAt)  ||
+           null;
+  },
+  /** Normalize p.capturedAt to an ISO string. Preserves a valid
+   *  existing value; falls through to createdAt / timestamp /
+   *  updatedAt; final fallback is `now`. Set additively — never
+   *  clobbers a valid historical timestamp. */
+  ensureCapturedAt(p) {
+    if (!p) return null;
+    const existing = (typeof p.capturedAt === 'string' && Date.parse(p.capturedAt))
+      ? p.capturedAt : null;
+    if (existing) return existing;
+    const ms = this.getCapturedAtMs(p);
+    const iso = (ms != null) ? new Date(ms).toISOString() : new Date().toISOString();
+    p.capturedAt = iso;
+    return iso;
+  },
+
+  /* ---------- chainId ---------- */
+  _pad2(n) { return (n < 10 ? '0' : '') + n; },
+  /** Format a session prefix from a Date. */
+  _chainIdPrefix(d) {
+    return 'ch_' +
+      d.getUTCFullYear() +
+      this._pad2(d.getUTCMonth() + 1) +
+      this._pad2(d.getUTCDate()) + '_' +
+      this._pad2(d.getUTCHours()) +
+      this._pad2(d.getUTCMinutes());
+  },
+  /** Generate a chainId based on `refMs` (defaults to now). The suffix
+   *  is 4 random alphabet chars so two sessions in the same minute
+   *  remain distinct. */
+  generateChainId(refMs) {
+    const ms = (typeof refMs === 'number' && isFinite(refMs)) ? refMs : Date.now();
+    const d = new Date(ms);
+    const alpha = CaptureMetaConfig.SHORT_ID_ALPHABET;
+    let suf = '';
+    for (let i = 0; i < 4; i++) {
+      suf += alpha.charAt(Math.floor(Math.random() * alpha.length));
+    }
+    return this._chainIdPrefix(d) + '_' + suf;
+  },
+  /** Return the chainId for a NEW capture `c`. If the most recent
+   *  point in `points` was captured within chainSessionGapMs of `c`,
+   *  reuse its chainId; otherwise mint a new one. */
+  resolveChainIdForNewCapture(c, points) {
+    const cMs = this.getCapturedAtMs(c) || Date.now();
+    if (typeof c.chainId === 'string' && c.chainId) return c.chainId;
+    let latest = null, latestMs = -Infinity;
+    if (Array.isArray(points)) {
+      for (const p of points) {
+        if (!p || p === c) continue;
+        if (typeof p.chainId !== 'string' || !p.chainId) continue;
+        const t = this.getCapturedAtMs(p);
+        if (t != null && t > latestMs) { latestMs = t; latest = p; }
+      }
+    }
+    if (latest && (cMs - latestMs) <= CaptureMetaConfig.chainSessionGapMs) {
+      return latest.chainId;
+    }
+    return this.generateChainId(cMs);
+  },
+
+  /* ---------- chain refs / link builders ---------- */
+  /** Compact reference object stored in chainPrev3 / chainNext3. */
   _chainRef(p) {
     if (!p || !p.id) return null;
     return {
       id: p.id,
+      shortId: (typeof p.shortId === 'string' && p.shortId) ? p.shortId : null,
+      chainId: (typeof p.chainId === 'string' && p.chainId) ? p.chainId : null,
       lat: (typeof p.lat === 'number') ? Math.round(p.lat * 1e6) / 1e6 : null,
       lng: (typeof p.lng === 'number') ? Math.round(p.lng * 1e6) / 1e6 : null,
       type: p.type || null,
-      capturedAt: p.capturedAt || p.createdAt || null,
+      capturedAt: (typeof p.capturedAt === 'string' && p.capturedAt) ? p.capturedAt : null,
       captureBearing: (typeof p.captureBearing === 'number') ? Math.round(p.captureBearing * 10) / 10 : null,
     };
   },
-  /** Build chainPrev3: the 3 most recent captures before `c` (oldest
-   *  first inside the array so reading the chain is left-to-right in
-   *  time). Read-only; never mutates `points`. */
+  /** Stable comparator: oldest first. Ties broken by shortId, then id. */
+  _byCapturedAt(a, b) {
+    const at = CaptureMeta.getCapturedAtMs(a) || 0;
+    const bt = CaptureMeta.getCapturedAtMs(b) || 0;
+    if (at !== bt) return at - bt;
+    const as = (a.shortId || a.id || '');
+    const bs = (b.shortId || b.id || '');
+    return as < bs ? -1 : as > bs ? 1 : 0;
+  },
+  /** True if `p` is a valid chain-link candidate (lat/lng numeric and
+   *  capturedAt parseable). */
+  _validChainCandidate(p) {
+    if (!p || !p.id) return false;
+    if (typeof p.lat !== 'number' || typeof p.lng !== 'number') return false;
+    if (CaptureMeta.getCapturedAtMs(p) == null) return false;
+    return true;
+  },
+  /** Build chainPrev3 for `c`. Only same-chainId, strictly-older,
+   *  geometry-valid, non-self points are eligible. Returns at most
+   *  CHAIN_LENGTH refs, oldest first. */
   buildChainPrev3(c, points) {
     if (!c || !Array.isArray(points)) return [];
-    const cAt = c.capturedAt || c.createdAt || new Date().toISOString();
-    const sorted = [];
+    const cMs = this.getCapturedAtMs(c);
+    if (cMs == null) return [];
+    const cChain = c.chainId || null;
+    const candidates = [];
     for (const p of points) {
-      if (!p || !p.id || p.id === c.id) continue;
-      const at = p.capturedAt || p.createdAt;
-      if (!at || at >= cAt) continue;
-      sorted.push(p);
+      if (!p || p === c || p.id === c.id) continue;
+      if (!this._validChainCandidate(p)) continue;
+      if (cChain && p.chainId && p.chainId !== cChain) continue;
+      const t = this.getCapturedAtMs(p);
+      if (t == null || t >= cMs) continue;
+      candidates.push(p);
     }
-    sorted.sort((a, b) => {
-      const at = a.capturedAt || a.createdAt;
-      const bt = b.capturedAt || b.createdAt;
-      return at < bt ? -1 : at > bt ? 1 : 0;
-    });
-    return sorted.slice(-this.CHAIN_LENGTH).map(p => this._chainRef(p)).filter(Boolean);
+    candidates.sort(this._byCapturedAt);
+    return candidates.slice(-this.CHAIN_LENGTH).map(p => this._chainRef(p)).filter(Boolean);
   },
-  /** After a NEW point has been pushed to State.data.points, prepend
-   *  its compact ref onto each prev-chain neighbor's chainNext3 (cap
-   *  CHAIN_LENGTH, newest first). Idempotent — duplicates are skipped.
-   *  Returns the count of neighbors that gained a forward link. */
+  /** Same constraints as buildChainPrev3 but going forward in time.
+   *  Used by the integrity migration when seeding chainNext3 on
+   *  existing points. */
+  buildChainNext3(c, points) {
+    if (!c || !Array.isArray(points)) return [];
+    const cMs = this.getCapturedAtMs(c);
+    if (cMs == null) return [];
+    const cChain = c.chainId || null;
+    const candidates = [];
+    for (const p of points) {
+      if (!p || p === c || p.id === c.id) continue;
+      if (!this._validChainCandidate(p)) continue;
+      if (cChain && p.chainId && p.chainId !== cChain) continue;
+      const t = this.getCapturedAtMs(p);
+      if (t == null || t <= cMs) continue;
+      candidates.push(p);
+    }
+    candidates.sort(this._byCapturedAt);
+    return candidates.slice(0, this.CHAIN_LENGTH).map(p => this._chainRef(p)).filter(Boolean);
+  },
+  /** Back-link a new point into the chainNext3 of every prev neighbor
+   *  that shares its chainId. Refuses cross-chain or self refs. */
   linkChainNeighbors(newPoint, points) {
     if (!newPoint || !Array.isArray(points)) return 0;
     const prev = Array.isArray(newPoint.chainPrev3) ? newPoint.chainPrev3 : [];
@@ -4505,7 +4691,9 @@ const CaptureMeta = {
     for (const ref of prev) {
       if (!ref || !ref.id) continue;
       const neighbor = byId.get(ref.id);
-      if (!neighbor) continue;
+      if (!neighbor || neighbor === newPoint) continue;
+      // Reject cross-chain back-links.
+      if (newPoint.chainId && neighbor.chainId && neighbor.chainId !== newPoint.chainId) continue;
       if (!Array.isArray(neighbor.chainNext3)) neighbor.chainNext3 = [];
       if (neighbor.chainNext3.some(x => x && x.id === newRef.id)) continue;
       neighbor.chainNext3.unshift(newRef);
@@ -4516,10 +4704,13 @@ const CaptureMeta = {
     }
     return touched;
   },
-  /** One-shot migration: fill chainPrev3/chainNext3 on every existing
-   *  point that's missing them. Walks all points sorted by capturedAt
-   *  and computes the chain links from time order. Additive only:
-   *  fields that already exist are left untouched. */
+
+  /* ---------- legacy v23.18.10 migration kept for back-compat ---------- */
+  /** Pre-integrity migration. Still used by the v23.18.10 flag path
+   *  for any environment that already ran it; the new integrity
+   *  migration below (migrateChainIntegrity) is the source of truth
+   *  from v23.18.12 onwards and rebuilds the chains under the
+   *  integrity rules. */
   migrateChain(points) {
     if (!Array.isArray(points) || !points.length) return 0;
     const sorted = [];
@@ -4527,11 +4718,7 @@ const CaptureMeta = {
       if (!p || !p.id || !(p.capturedAt || p.createdAt)) continue;
       sorted.push(p);
     }
-    sorted.sort((a, b) => {
-      const at = a.capturedAt || a.createdAt;
-      const bt = b.capturedAt || b.createdAt;
-      return at < bt ? -1 : at > bt ? 1 : 0;
-    });
+    sorted.sort(this._byCapturedAt);
     let touched = 0;
     for (let i = 0; i < sorted.length; i++) {
       const p = sorted[i];
@@ -4549,6 +4736,138 @@ const CaptureMeta = {
       if (changed) touched++;
     }
     return touched;
+  },
+
+  /* ---------- v23.18.12 chain integrity migration ---------- */
+  /** Walks every point and:
+   *    1) Ensures shortId (uniquely regenerates duplicates).
+   *    2) Ensures capturedAt (normalized to ISO).
+   *    3) Assigns chainId by 20-minute gap grouping.
+   *    4) Rebuilds chainPrev3 / chainNext3 under the integrity rules.
+   *  Returns a counts object suitable for diagnostics. */
+  migrateChainIntegrity(points) {
+    const counts = { points: 0, repaired: 0, duplicateShortIds: 0,
+                     invalidTimestamps: 0, crossChainLinks: 0, selfLinks: 0,
+                     chainsAssigned: 0 };
+    if (!Array.isArray(points) || !points.length) return counts;
+
+    // ── Pass 1: shortId uniqueness ───────────────────────────────
+    const seenShort = new Set();
+    const taken = this._collectTakenShortIds(points);
+    for (const p of points) {
+      if (!p) continue;
+      counts.points++;
+      let sid = (typeof p.shortId === 'string' && p.shortId) ? p.shortId : null;
+      if (sid && seenShort.has(sid)) {
+        const oldSid = sid;
+        // Duplicate — regenerate.
+        taken.delete(oldSid); // we'll reissue & re-add via ensureShortId
+        p.shortId = undefined;
+        sid = null;
+        counts.duplicateShortIds++;
+        try { logEvent('CHAIN-MIGRATION', `repaired duplicate shortId old=${oldSid} point=${p.id || '(no-id)'}`); } catch (e) {}
+      }
+      if (!sid) {
+        sid = this.ensureShortId(p, taken);
+        counts.repaired++;
+      }
+      seenShort.add(sid);
+    }
+
+    // ── Pass 2: capturedAt normalization ─────────────────────────
+    for (const p of points) {
+      if (!p) continue;
+      const had = typeof p.capturedAt === 'string' && Date.parse(p.capturedAt);
+      if (!had) {
+        const before = p.capturedAt;
+        this.ensureCapturedAt(p);
+        if (before !== p.capturedAt) counts.repaired++;
+        if (this.getCapturedAtMs(p) == null) counts.invalidTimestamps++;
+      }
+    }
+
+    // ── Pass 3: chainId via 20-min gap grouping ──────────────────
+    // Sort points by capturedAt for the walk. We never assign chainId
+    // to points that still lack a parseable timestamp.
+    const sortedAll = points.slice().sort(this._byCapturedAt);
+    let activeChainId = null;
+    let lastMs = null;
+    for (const p of sortedAll) {
+      if (!p) continue;
+      const t = this.getCapturedAtMs(p);
+      if (t == null) continue;
+      // Preserve an existing valid chainId so subsequent edits are
+      // stable; only mint a chainId when one is missing.
+      if (typeof p.chainId === 'string' && p.chainId) {
+        activeChainId = p.chainId; lastMs = t; continue;
+      }
+      if (activeChainId == null || lastMs == null ||
+          (t - lastMs) > CaptureMetaConfig.chainSessionGapMs) {
+        activeChainId = this.generateChainId(t);
+        counts.chainsAssigned++;
+      }
+      p.chainId = activeChainId;
+      lastMs = t;
+    }
+
+    // ── Pass 4: rebuild chainPrev3 / chainNext3 under integrity ──
+    // We always rebuild here: the v23.18.10 chains may include
+    // cross-chain or out-of-order links from before integrity rules.
+    for (const p of points) {
+      if (!p) continue;
+      const before = JSON.stringify([p.chainPrev3 || null, p.chainNext3 || null]);
+      p.chainPrev3 = this.buildChainPrev3(p, points);
+      p.chainNext3 = this.buildChainNext3(p, points);
+      if (JSON.stringify([p.chainPrev3, p.chainNext3]) !== before) counts.repaired++;
+    }
+
+    return counts;
+  },
+
+  /** Read-only integrity report. Emits a single compact diagnostic
+   *  line; never mutates `points`. Useful for confirming a clean
+   *  state after migration. */
+  validateChainIntegrity(points) {
+    const out = { points: 0, repaired: 0, duplicateShortIds: 0,
+                  invalidTimestamps: 0, crossChainLinks: 0, selfLinks: 0,
+                  missingShortIds: 0, missingChainIds: 0 };
+    if (!Array.isArray(points)) return out;
+    const seen = new Set();
+    for (const p of points) {
+      if (!p) continue;
+      out.points++;
+      if (typeof p.shortId !== 'string' || !p.shortId) out.missingShortIds++;
+      else if (seen.has(p.shortId)) out.duplicateShortIds++;
+      else seen.add(p.shortId);
+      if (typeof p.chainId !== 'string' || !p.chainId) out.missingChainIds++;
+      if (this.getCapturedAtMs(p) == null) out.invalidTimestamps++;
+      const pMs = this.getCapturedAtMs(p);
+      const lists = [
+        [Array.isArray(p.chainPrev3) ? p.chainPrev3 : [], 'prev'],
+        [Array.isArray(p.chainNext3) ? p.chainNext3 : [], 'next'],
+      ];
+      for (const [list, dir] of lists) {
+        for (const ref of list) {
+          if (!ref) continue;
+          if (ref.id === p.id) { out.selfLinks++; continue; }
+          if (p.chainId && ref.chainId && ref.chainId !== p.chainId) out.crossChainLinks++;
+          const rMs = Date.parse(ref.capturedAt || '');
+          if (isFinite(rMs) && pMs != null) {
+            if (dir === 'prev' && rMs >= pMs) out.invalidTimestamps++;
+            if (dir === 'next' && rMs <= pMs) out.invalidTimestamps++;
+          }
+        }
+      }
+    }
+    try {
+      logEvent('CHAIN-INTEGRI',
+        `points=${out.points} repaired=${out.repaired}` +
+        ` duplicateShortIds=${out.duplicateShortIds}` +
+        ` invalidTimestamps=${out.invalidTimestamps}` +
+        ` crossChainLinks=${out.crossChainLinks}` +
+        ` selfLinks=${out.selfLinks}`);
+    } catch (e) {}
+    return out;
   },
 
   /** Attach the full 20-field capture-metadata block to a capture object.
@@ -4584,10 +4903,18 @@ const CaptureMeta = {
     set('sideOfRoadConfidence', side.confidence);
     set('heartbeatAtCapture', this.buildHeartbeatAtCapture(c));
     set('captureQuality', this.deriveCaptureQuality(snap));
-    // v23.18.10 — chain metadata. chainPrev3 is read from the current
-    // points list; chainNext3 starts empty and is back-filled by
-    // CaptureMeta.linkChainNeighbors after the new point is pushed.
+    // v23.18.12 — chain integrity. Order matters: shortId →
+    // capturedAt → chainId → chainPrev3 → chainNext3. Each builder
+    // below depends on the fields the previous step normalized.
     const allPts = (State && State.data && Array.isArray(State.data.points)) ? State.data.points : [];
+    if (typeof c.shortId !== 'string' || !c.shortId) {
+      const taken = this._collectTakenShortIds(allPts);
+      this.ensureShortId(c, taken);
+    }
+    this.ensureCapturedAt(c);
+    if (typeof c.chainId !== 'string' || !c.chainId) {
+      c.chainId = this.resolveChainIdForNewCapture(c, allPts);
+    }
     set('chainPrev3', this.buildChainPrev3(c, allPts));
     set('chainNext3', []);
     return c;
@@ -4739,6 +5066,26 @@ const CaptureMeta = {
     }
     localStorage.setItem('roadAlert.v23.18.10.captureChain', '1');
   } catch (e) { console.warn('capture-chain migration', e); }
+})();
+// v23.18.12 — chain integrity migration. One-shot, flag-gated, runs
+// after CaptureMeta is defined. Ensures every point has a unique
+// shortId, a normalized capturedAt, and a chainId grouped by the
+// 20-min session-gap rule; rebuilds chainPrev3 / chainNext3 under
+// the integrity rules (same chainId, valid timestamp order, valid
+// geometry, no self refs). Idempotent: re-running is a no-op.
+(function migrateChainIntegrity() {
+  try {
+    if (localStorage.getItem('roadAlert.v23.18.11.captureChainIntegrity')) return;
+    if (State && State.data && Array.isArray(State.data.points)) {
+      const r = CaptureMeta.migrateChainIntegrity(State.data.points);
+      if (r && (r.repaired || r.chainsAssigned || r.duplicateShortIds)) {
+        Storage.save(Storage.KEYS.data, State.data);
+        console.log('v23.18.12: chain integrity', r);
+      }
+      try { CaptureMeta.validateChainIntegrity(State.data.points); } catch (e) {}
+    }
+    localStorage.setItem('roadAlert.v23.18.11.captureChainIntegrity', '1');
+  } catch (e) { console.warn('chain-integrity migration', e); }
 })();
 // v23.18.11 — backfill captureBearing on EVERY capture type. Older
 // non-camera / non-speed_change points were saved without a bearing.

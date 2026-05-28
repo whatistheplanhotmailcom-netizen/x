@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.3';
+const APP_VERSION = 'v23.18.4';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -900,6 +900,159 @@ const AutoRoute = {
     if (out.bearingDiff <= cfg.forwardConeDeg) out.ahead = true;
     else if (out.bearingDiff >= cfg.behindRejectDeg) out.behind = true;
     else out.lateral = true;
+    return out;
+  },
+
+  // v23.18.4 — AUTO ROUTE GATE STACK
+  // Tighter candidate filtering for DESTINATIONLESS trips. Runs as a
+  // POST-FILTER on Observations.liveCandidates(); never replaces the
+  // engine, never re-scans the global pool, never touches DirectionFilter
+  // or FeedbackGate. Each gate is additive and skippable per-config.
+  // Defaults below match the AutoRoute config (forwardConeDeg=60,
+  // behindRejectDeg=120) plus a few new constants kept local to this
+  // module.
+  LATERAL_CORRIDOR_M: 40,             // perpendicular distance from heading line
+  LATERAL_CORRIDOR_HIGHWAY_M: 80,
+  LATERAL_CORRIDOR_POOR_GPS_M: 90,
+  HIGHWAY_SPEED_KMH: 80,
+  POOR_GPS_ACCURACY_M: 35,
+  DIRECTIONAL_OPPOSITE_DEG: 135,      // captureBearing vs heading
+  DIRECTIONAL_ALIGNED_DEG: 45,
+  SAFETY_OVERRIDE_M: 80,              // never suppress this close
+  MOVE_AWAY_SLACK_M: 25,              // dist must increase by more than this to "move-away"
+  DIST_HISTORY_LEN: 3,
+  // Per-point rolling distance history used by the movement-sequence gate.
+  // Map<pointId, number[]> — newest sample appended; only the last
+  // DIST_HISTORY_LEN samples are kept. Lives on the module so it
+  // persists across ticks but is cleared at trip-start by GPS.startTrip
+  // (see app-core.js — added below).
+  _distHistory: new Map(),
+  _filterLogAt: 0,
+  recordDistance(pointId, distM) {
+    let buf = this._distHistory.get(pointId);
+    if (!buf) { buf = []; this._distHistory.set(pointId, buf); }
+    buf.push(distM);
+    if (buf.length > this.DIST_HISTORY_LEN) buf.shift();
+  },
+  clearDistanceHistory() { this._distHistory.clear(); },
+  /** True if the candidate is generally moving away across the last 3 samples.
+   *  Requires at least 2 samples; tolerates jitter via MOVE_AWAY_SLACK_M. */
+  isMovingAway(pointId, currentDistM) {
+    const buf = this._distHistory.get(pointId);
+    if (!buf || buf.length < 2) return false;
+    // last sample is the previous tick; current is fresh
+    const prev = buf[buf.length - 1];
+    if (currentDistM <= prev + this.MOVE_AWAY_SLACK_M) return false;
+    // and at least the prior step was also non-decreasing
+    if (buf.length >= 2) {
+      const older = buf[buf.length - 2];
+      if (prev < older - this.MOVE_AWAY_SLACK_M) return false; // recent approach
+    }
+    return true;
+  },
+  /** Perpendicular distance (m) from point to the line through userPosition
+   *  along `headingDeg`. Local-flat-earth approximation; matches the math
+   *  used by Corridor.distanceToRouteSegment. */
+  lateralOffsetM(userPosition, point, headingDeg) {
+    if (!userPosition || !point || !Number.isFinite(headingDeg)) return null;
+    const latToM = 111320;
+    const lngToM = 111320 * Math.cos(userPosition.lat * Math.PI / 180);
+    const dx = (point.lng - userPosition.lng) * lngToM;
+    const dy = (point.lat - userPosition.lat) * latToM;
+    // unit vector along heading (heading is compass deg from north, clockwise)
+    const hr = headingDeg * Math.PI / 180;
+    const hx = Math.sin(hr), hy = Math.cos(hr);
+    // perpendicular component magnitude
+    return Math.abs(dx * hy - dy * hx);
+  },
+  /** Filter a liveCandidates() output list. Pure: returns a NEW array.
+   *  Each rejection emits a single throttled [AUTO-ROUTE-FILTER] log
+   *  line (whole-tick throttle, not per-candidate, to avoid spam). */
+  applyGates(cands, userState) {
+    if (!Array.isArray(cands) || !cands.length) return cands || [];
+    if (!userState) return cands;
+    const cfg = this.config();
+    const heading = (userState.heading != null) ? userState.heading
+                  : (typeof Observations !== 'undefined' && Observations.effectiveHeading)
+                    ? Observations.effectiveHeading() : null;
+    const headingKnown = Number.isFinite(heading);
+    const speedKmh = userState.speedKmh || 0;
+    const accM = userState.accuracy || 0;
+    const corridorM = (speedKmh >= this.HIGHWAY_SPEED_KMH) ? this.LATERAL_CORRIDOR_HIGHWAY_M
+                    : (accM >= this.POOR_GPS_ACCURACY_M)   ? this.LATERAL_CORRIDOR_POOR_GPS_M
+                    : this.LATERAL_CORRIDOR_M;
+    const out = [];
+    let firstReject = null;
+    for (const c of cands) {
+      const p = c.point;
+      const distM = c.distM != null ? c.distM
+                  : (Utils.distKm(userState, p) * 1000);
+      // Update the per-point history regardless of whether we keep this
+      // tick's candidate — needed for the movement gate next tick.
+      this.recordDistance(p.id, distM);
+      // FeedbackGate-driven hard suppression: respect it.
+      if (p.suppressedPendingRevalidation === true) {
+        if (!firstReject) firstReject = { id: p.id, reason: 'feedback', distM, heading };
+        continue;
+      }
+      // Safety override: never suppress something this close.
+      const closeSafety = distM <= this.SAFETY_OVERRIDE_M;
+      // Geometry classifier — reuses isPointAheadOfTravel for the cone test.
+      const geo = this.isPointAheadOfTravel(userState, p, headingKnown ? heading : null);
+      // 1) Forward-cone gate (default 60°). headingKnown=false ⇒ allowed.
+      if (!closeSafety && headingKnown && geo.behind) {
+        if (!firstReject) firstReject = { id: p.id, reason: 'behind', distM, heading,
+          captureBearing: p.captureBearing, angleDiff: geo.bearingDiff };
+        continue;
+      }
+      if (!closeSafety && headingKnown && geo.bearingDiff != null &&
+          geo.bearingDiff > cfg.forwardConeDeg && geo.bearingDiff < cfg.behindRejectDeg) {
+        // Lateral band — fall through to lateral corridor gate which is stricter.
+      }
+      // 2) Lateral corridor gate.
+      if (!closeSafety && headingKnown) {
+        const lat = this.lateralOffsetM(userState, p, heading);
+        if (lat != null && lat > corridorM) {
+          if (!firstReject) firstReject = { id: p.id, reason: 'lateral', distM, heading,
+            captureBearing: p.captureBearing, angleDiff: geo.bearingDiff };
+          continue;
+        }
+      }
+      // 3) Directional-capture gate (non-camera or general directional).
+      //    DirectionFilter (v23.10/15) already handles camera audio
+      //    suppression; this gate covers ANY directional capture by
+      //    keeping it out of the AutoRoute focused list when the driver
+      //    is approaching from the opposite side.
+      if (!closeSafety && headingKnown && p.directional === true &&
+          typeof p.captureBearing === 'number') {
+        const diff = Speed.angleDiff(heading, p.captureBearing);
+        if (diff >= this.DIRECTIONAL_OPPOSITE_DEG) {
+          if (!firstReject) firstReject = { id: p.id, reason: 'direction', distM, heading,
+            captureBearing: p.captureBearing, angleDiff: Math.round(diff) };
+          continue;
+        }
+      }
+      // 4) Recent movement-sequence gate.
+      if (!closeSafety && this.isMovingAway(p.id, distM)) {
+        if (!firstReject) firstReject = { id: p.id, reason: 'moving-away', distM, heading,
+          captureBearing: p.captureBearing, angleDiff: geo.bearingDiff };
+        continue;
+      }
+      out.push(c);
+    }
+    // Whole-tick throttled diagnostic — log only the first rejection so
+    // the debug buffer doesn't flood. Drops below ~once per 1.5s.
+    const now = Date.now();
+    if (firstReject && now - this._filterLogAt >= 1500) {
+      this._filterLogAt = now;
+      const cb = (firstReject.captureBearing != null) ? Math.round(firstReject.captureBearing) : 'n/a';
+      const hd = (firstReject.heading != null) ? Math.round(firstReject.heading) : 'n/a';
+      const ad = (firstReject.angleDiff != null) ? Math.round(firstReject.angleDiff) : 'n/a';
+      logEvent('AUTO-ROUTE-FILTER',
+        `suppressed point=${firstReject.id} reason=${firstReject.reason}` +
+        ` dist=${Math.round(firstReject.distM)} heading=${hd}` +
+        ` captureBearing=${cb} angleDiff=${ad}`);
+    }
     return out;
   },
 };
@@ -3754,6 +3907,9 @@ const GPS = {
     State.passedDistByPoint.clear(); // v23.8.7: re-approach tracker
     State.autoAnnouncedAhead.clear(); // v22.16: clear auto-announce history
     State.hereAnnouncedPoints.clear(); // v22.76: clear here-now history
+    // v23.18.4 — AutoRoute movement-sequence gate uses a rolling
+    // per-point distance history; reset it for the new trip session.
+    try { if (typeof AutoRoute !== 'undefined' && AutoRoute.clearDistanceHistory) AutoRoute.clearDistanceHistory(); } catch (e) {}
     State.speedAlertWasOver = false;
     State.lastSpeedAlertZone = null;
     State.lastAnnouncedLimit = null; // v22.68: re-announce limit on new session
@@ -5341,7 +5497,16 @@ const Alerts = {
     if (!userState) return [];
     const routeCoords = (typeof MapView !== 'undefined' && MapView && MapView._routeCoords)
       ? MapView._routeCoords : null;
-    const cands = Observations.liveCandidates(userState, routeCoords);
+    let cands = Observations.liveCandidates(userState, routeCoords);
+    // v23.18.4 — Auto Route post-filter. Runs ONLY in destinationless
+    // trips; destination mode is untouched and follows the existing
+    // sort-only branch below. The filter tightens forward-cone /
+    // lateral / directional / movement-sequence gates on top of the
+    // already-applied liveCandidates filters — no new engine.
+    if (!State.activeDest() && typeof AutoRoute !== 'undefined' &&
+        AutoRoute.startWithoutDestinationAllowed && AutoRoute.startWithoutDestinationAllowed()) {
+      cands = AutoRoute.applyGates(cands, userState);
+    }
     const out = cands
       .filter(c => !State.passedPoints.has(c.point.id))
       .filter(c => !this.SILENT_ALERT_TYPES.has(c.point.type))

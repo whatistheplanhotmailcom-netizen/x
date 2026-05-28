@@ -259,6 +259,10 @@ const MapView = {
       this.m.on('rotateend', onMapMove);
       this.m.on('move', onMapMove);
       this.m.on('pitch', onMapMove);
+      // v23.18.4 — recompute marker de-overlap offsets whenever the zoom
+      // changes. Cheap pixel-bucket pass; only touches setOffset() on
+      // markers we already track in this._pointMarkers.
+      this.m.on('zoomend', () => MapView._deoverlapMarkers());
 
       // Wait for style+tiles to load before drawing points (otherwise markers
       // attach to a non-ready map and may not render).
@@ -555,6 +559,66 @@ const MapView = {
         this._showPointPopup(p, [p.lng, p.lat]);
       });
       this._pointMarkers.set(p.id, marker);
+    });
+    // v23.18.4 — visual-only de-overlap so densely captured areas stay
+    // readable. Pure pixel math via marker.setOffset(); stored lat/lng
+    // is untouched and tap/popup still resolves to the original point.
+    this._deoverlapMarkers();
+  },
+
+  /** v23.18.4 — Visual marker de-overlap. Buckets markers by current
+   *  screen-pixel position and applies a small radial setOffset() to
+   *  the 2nd…Nth marker in each bucket so they stop stacking on top of
+   *  each other. Disabled at high zoom (≥ DEOVERLAP_MIN_ZOOM) where
+   *  markers are already spread out, and on the destination marker.
+   *  Coordinates in storage are NEVER modified. */
+  DEOVERLAP_BUCKET_PX: 28,
+  DEOVERLAP_RADIUS_PX: 18,
+  DEOVERLAP_MAX_ZOOM: 17,
+  _deoverlapMarkers() {
+    if (!this.m || !this._mapLoaded || !this._pointMarkers) return;
+    const zoom = (typeof this.m.getZoom === 'function') ? this.m.getZoom() : 0;
+    // At close zoom, things are already spread; clear any prior offsets
+    // so we don't carry phantom shifts forward.
+    if (zoom >= this.DEOVERLAP_MAX_ZOOM) {
+      this._pointMarkers.forEach(mk => { try { mk.setOffset([0, 0]); } catch (e) {} });
+      return;
+    }
+    const bucket = this.DEOVERLAP_BUCKET_PX;
+    // Stable bucket → ordered list of {id, marker}. Order is by id to
+    // keep the spread deterministic across renders.
+    const buckets = new globalThis.Map();
+    const entries = [];
+    this._pointMarkers.forEach((mk, id) => {
+      try {
+        const ll = mk.getLngLat();
+        const pt = this.m.project(ll);
+        const key = Math.round(pt.x / bucket) + ':' + Math.round(pt.y / bucket);
+        entries.push({ id, mk, key });
+      } catch (e) {}
+    });
+    entries.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    entries.forEach(e => {
+      let list = buckets.get(e.key);
+      if (!list) { list = []; buckets.set(e.key, list); }
+      list.push(e);
+    });
+    buckets.forEach(list => {
+      if (list.length <= 1) {
+        try { list[0].mk.setOffset([0, 0]); } catch (e) {}
+        return;
+      }
+      // Anchor the first marker at the true position; spread the rest
+      // around it in a circle of DEOVERLAP_RADIUS_PX.
+      const n = list.length;
+      const r = this.DEOVERLAP_RADIUS_PX;
+      list.forEach((e, i) => {
+        if (i === 0) { try { e.mk.setOffset([0, 0]); } catch (err) {} return; }
+        const angle = (2 * Math.PI * (i - 1)) / (n - 1);
+        const dx = Math.round(Math.cos(angle) * r);
+        const dy = Math.round(Math.sin(angle) * r);
+        try { e.mk.setOffset([dx, dy]); } catch (err) {}
+      });
     });
   },
 
@@ -2237,9 +2301,18 @@ const UI = {
     }
     if (aheadList.length === 0) {
       const dest = State.activeDest();
-      const hint = !dest
-        ? '<div class="next-empty">— pick a destination —</div>'
-        : '<div class="next-empty">— nothing ahead —</div>';
+      // v23.18.4 — Auto Route Mode: when there is no destination but
+      // the trip is live, the panel must reflect the auto-detect flow
+      // instead of the legacy "pick a destination" call to action,
+      // which only makes sense in idle mode.
+      let hint;
+      if (dest) {
+        hint = '<div class="next-empty">— nothing ahead —</div>';
+      } else if (State.mode === 'gps') {
+        hint = '<div class="next-empty">Auto Route · detecting alerts ahead</div>';
+      } else {
+        hint = '<div class="next-empty">— pick a destination —</div>';
+      }
       body.innerHTML = hint;
     } else {
       const n = aheadList[0];

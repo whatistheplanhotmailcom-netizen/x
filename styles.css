@@ -1307,18 +1307,22 @@ body {
   pointer-events: none;
   z-index: 0;  /* below the emoji/badges of the marker */
 }
+/* v23.18.9 — thicker, more opaque arcs with a dark drop-shadow halo so
+   the bearing direction is readable on light or busy map tiles. */
 .ra-marker .cam-radar-arc {
   fill: none;
-  stroke-width: 1.8;
+  stroke-width: 3;
   stroke-linecap: round;
+  filter: drop-shadow(0 0 1.5px rgba(0,0,0,0.7))
+          drop-shadow(0 1px 1.5px rgba(0,0,0,0.5));
 }
 .ra-marker.t-speed_camera  .cam-radar-arc { stroke: #dc2626; }
 .ra-marker.t-mobile_camera .cam-radar-arc { stroke: #ea580c; }
 .ra-marker.t-pole_camera   .cam-radar-arc { stroke: #b91c1c; }
 .ra-marker.t-spider_camera .cam-radar-arc { stroke: #7e22ce; }
-.ra-marker .cam-radar-arc-1 { stroke-opacity: 0.55; }
-.ra-marker .cam-radar-arc-2 { stroke-opacity: 0.4;  }
-.ra-marker .cam-radar-arc-3 { stroke-opacity: 0.25; }
+.ra-marker .cam-radar-arc-1 { stroke-opacity: 1;    stroke-width: 3.4; }
+.ra-marker .cam-radar-arc-2 { stroke-opacity: 0.85; stroke-width: 3;   }
+.ra-marker .cam-radar-arc-3 { stroke-opacity: 0.65; stroke-width: 2.6; }
 /* v23.9.1: missed-feedback red SQUARE in the top-left corner of every
    marker that has unresolved missed-feedback entries. Distinct shape +
    color from the round green/red feedback-count badge in the top-right

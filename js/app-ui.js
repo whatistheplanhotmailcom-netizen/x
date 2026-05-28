@@ -3211,6 +3211,15 @@ const UI = {
       // appended to dest.routePointRefs[] post-migration. Direct
       // State.data.points.push left captures invisible to activePoints().
       State.addPointToActiveDest(c);
+      // v23.18.10 — back-link the chain: each of c.chainPrev3 gains a
+      // forward ref to this new capture in its chainNext3. Pure
+      // metadata; never affects scoring. Only runs on the new-point
+      // branch — merged captures don't introduce a new chain node.
+      try {
+        if (typeof CaptureMeta !== 'undefined' && CaptureMeta.linkChainNeighbors) {
+          CaptureMeta.linkChainNeighbors(c, State.data.points);
+        }
+      } catch (e) {}
       Utils.toast(`${Utils.typeLabel(c.type)} saved`, 'good');
       announce = Utils.typeLabel(c.type) + ' captured';
       trackedId = c.id;
@@ -3324,6 +3333,22 @@ const UI = {
       }
       return Utils.escapeHtml(String(v));
     };
+    // v23.18.10 — render the capture chain (3 prev + 3 next) compactly.
+    // Each ref is a `{id, type, captureBearing}` object; we show the
+    // last 6 chars of the id, the type emoji, and the bearing in
+    // degrees so a glance tells you direction + identity.
+    const fmtChain = (arr) => {
+      if (!Array.isArray(arr) || !arr.length) return '—';
+      return arr.map(ref => {
+        if (!ref || !ref.id) return '?';
+        const idShort = String(ref.id).slice(-6);
+        const emoji = (typeof Utils !== 'undefined' && Utils.emoji && ref.type)
+          ? Utils.emoji(ref.type) : '';
+        const b = (ref.captureBearing != null && isFinite(ref.captureBearing))
+          ? Math.round(ref.captureBearing) + '°' : '—';
+        return `${emoji} ${idShort} (${b})`.trim();
+      }).join(' → ');
+    };
     const rows = [
       ['Captured at', point.capturedAt],
       ['GPS timestamp', point.gpsTimestamp],
@@ -3345,6 +3370,8 @@ const UI = {
       ['Side confidence', point.sideOfRoadConfidence],
       ['Heartbeat at capture', point.heartbeatAtCapture],
       ['Capture quality', point.captureQuality],
+      ['Prev chain (3)', fmtChain(point.chainPrev3)],
+      ['Next chain (3)', fmtChain(point.chainNext3)],
     ];
     const body = rows.map(([label, val]) =>
       `<div class="capmeta-row"><span class="capmeta-k">${Utils.escapeHtml(label)}</span>` +

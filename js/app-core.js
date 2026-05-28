@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.9';
+const APP_VERSION = 'v23.18.10';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -4451,6 +4451,106 @@ const CaptureMeta = {
     return null;
   },
 
+  // v23.18.10 — capture-chain support. Each capture stores a backward
+  // link to the 3 most recently captured points and (filled in later
+  // as more captures arrive) a forward link to the next 3 points.
+  // Pure metadata; never read by the alert engine in this commit.
+  // Future filters can use it to confirm the user moved consistently
+  // along a captured path.
+  CHAIN_LENGTH: 3,
+  _chainRef(p) {
+    if (!p || !p.id) return null;
+    return {
+      id: p.id,
+      lat: (typeof p.lat === 'number') ? Math.round(p.lat * 1e6) / 1e6 : null,
+      lng: (typeof p.lng === 'number') ? Math.round(p.lng * 1e6) / 1e6 : null,
+      type: p.type || null,
+      capturedAt: p.capturedAt || p.createdAt || null,
+      captureBearing: (typeof p.captureBearing === 'number') ? Math.round(p.captureBearing * 10) / 10 : null,
+    };
+  },
+  /** Build chainPrev3: the 3 most recent captures before `c` (oldest
+   *  first inside the array so reading the chain is left-to-right in
+   *  time). Read-only; never mutates `points`. */
+  buildChainPrev3(c, points) {
+    if (!c || !Array.isArray(points)) return [];
+    const cAt = c.capturedAt || c.createdAt || new Date().toISOString();
+    const sorted = [];
+    for (const p of points) {
+      if (!p || !p.id || p.id === c.id) continue;
+      const at = p.capturedAt || p.createdAt;
+      if (!at || at >= cAt) continue;
+      sorted.push(p);
+    }
+    sorted.sort((a, b) => {
+      const at = a.capturedAt || a.createdAt;
+      const bt = b.capturedAt || b.createdAt;
+      return at < bt ? -1 : at > bt ? 1 : 0;
+    });
+    return sorted.slice(-this.CHAIN_LENGTH).map(p => this._chainRef(p)).filter(Boolean);
+  },
+  /** After a NEW point has been pushed to State.data.points, prepend
+   *  its compact ref onto each prev-chain neighbor's chainNext3 (cap
+   *  CHAIN_LENGTH, newest first). Idempotent — duplicates are skipped.
+   *  Returns the count of neighbors that gained a forward link. */
+  linkChainNeighbors(newPoint, points) {
+    if (!newPoint || !Array.isArray(points)) return 0;
+    const prev = Array.isArray(newPoint.chainPrev3) ? newPoint.chainPrev3 : [];
+    if (!prev.length) return 0;
+    const newRef = this._chainRef(newPoint);
+    if (!newRef) return 0;
+    const byId = new Map();
+    for (const p of points) { if (p && p.id) byId.set(p.id, p); }
+    let touched = 0;
+    for (const ref of prev) {
+      if (!ref || !ref.id) continue;
+      const neighbor = byId.get(ref.id);
+      if (!neighbor) continue;
+      if (!Array.isArray(neighbor.chainNext3)) neighbor.chainNext3 = [];
+      if (neighbor.chainNext3.some(x => x && x.id === newRef.id)) continue;
+      neighbor.chainNext3.unshift(newRef);
+      if (neighbor.chainNext3.length > this.CHAIN_LENGTH) {
+        neighbor.chainNext3.length = this.CHAIN_LENGTH;
+      }
+      touched++;
+    }
+    return touched;
+  },
+  /** One-shot migration: fill chainPrev3/chainNext3 on every existing
+   *  point that's missing them. Walks all points sorted by capturedAt
+   *  and computes the chain links from time order. Additive only:
+   *  fields that already exist are left untouched. */
+  migrateChain(points) {
+    if (!Array.isArray(points) || !points.length) return 0;
+    const sorted = [];
+    for (const p of points) {
+      if (!p || !p.id || !(p.capturedAt || p.createdAt)) continue;
+      sorted.push(p);
+    }
+    sorted.sort((a, b) => {
+      const at = a.capturedAt || a.createdAt;
+      const bt = b.capturedAt || b.createdAt;
+      return at < bt ? -1 : at > bt ? 1 : 0;
+    });
+    let touched = 0;
+    for (let i = 0; i < sorted.length; i++) {
+      const p = sorted[i];
+      let changed = false;
+      if (p.chainPrev3 === undefined) {
+        const start = Math.max(0, i - this.CHAIN_LENGTH);
+        p.chainPrev3 = sorted.slice(start, i).map(q => this._chainRef(q)).filter(Boolean);
+        changed = true;
+      }
+      if (p.chainNext3 === undefined) {
+        const end = Math.min(sorted.length, i + 1 + this.CHAIN_LENGTH);
+        p.chainNext3 = sorted.slice(i + 1, end).map(q => this._chainRef(q)).filter(Boolean);
+        changed = true;
+      }
+      if (changed) touched++;
+    }
+    return touched;
+  },
+
   /** Attach the full 20-field capture-metadata block to a capture object.
    *  ADDITIVE: only fills fields that are currently undefined, so a
    *  re-finalize never clobbers an earlier value. NEVER writes
@@ -4484,6 +4584,12 @@ const CaptureMeta = {
     set('sideOfRoadConfidence', side.confidence);
     set('heartbeatAtCapture', this.buildHeartbeatAtCapture(c));
     set('captureQuality', this.deriveCaptureQuality(snap));
+    // v23.18.10 — chain metadata. chainPrev3 is read from the current
+    // points list; chainNext3 starts empty and is back-filled by
+    // CaptureMeta.linkChainNeighbors after the new point is pushed.
+    const allPts = (State && State.data && Array.isArray(State.data.points)) ? State.data.points : [];
+    set('chainPrev3', this.buildChainPrev3(c, allPts));
+    set('chainNext3', []);
     return c;
   },
 
@@ -4615,6 +4721,24 @@ const CaptureMeta = {
     }
     localStorage.setItem('roadAlert.v23.14.0.captureMetaFields', '1');
   } catch (e) { console.warn('capture-metadata migration', e); }
+})();
+// v23.18.10 — one-shot bulk fill of chainPrev3 / chainNext3 across every
+// existing point. Same pattern as the v23.14.0 migration above: flag-
+// gated in localStorage, additive only, never overwrites an existing
+// chain field. Runs after CaptureMeta is defined so the helper is
+// available; persists through Storage.save.
+(function migrateCaptureChain() {
+  try {
+    if (localStorage.getItem('roadAlert.v23.18.10.captureChain')) return;
+    if (State && State.data && Array.isArray(State.data.points)) {
+      const n = CaptureMeta.migrateChain(State.data.points);
+      if (n > 0) {
+        Storage.save(Storage.KEYS.data, State.data);
+        console.log('v23.18.10: filled capture chain on', n, 'point(s)');
+      }
+    }
+    localStorage.setItem('roadAlert.v23.18.10.captureChain', '1');
+  } catch (e) { console.warn('capture-chain migration', e); }
 })();
 
 /* ============================================================

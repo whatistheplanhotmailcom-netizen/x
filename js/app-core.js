@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.10';
+const APP_VERSION = 'v23.18.11';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -4739,6 +4739,32 @@ const CaptureMeta = {
     }
     localStorage.setItem('roadAlert.v23.18.10.captureChain', '1');
   } catch (e) { console.warn('capture-chain migration', e); }
+})();
+// v23.18.11 — backfill captureBearing on EVERY capture type. Older
+// non-camera / non-speed_change points were saved without a bearing.
+// Recover the value from the existing capture-metadata heading
+// (p.headingDeg) or the legacy p.heading alias. Additive: never
+// overwrites an existing captureBearing.
+(function migrateUniversalCaptureBearing() {
+  try {
+    if (localStorage.getItem('roadAlert.v23.18.11.captureBearingAll')) return;
+    if (State && State.data && Array.isArray(State.data.points)) {
+      let touched = 0;
+      for (const p of State.data.points) {
+        if (!p) continue;
+        if (typeof p.captureBearing === 'number' && isFinite(p.captureBearing)) continue;
+        let b = null;
+        if (typeof p.headingDeg === 'number' && isFinite(p.headingDeg)) b = p.headingDeg;
+        else if (typeof p.heading === 'number' && isFinite(p.heading)) b = p.heading;
+        if (b != null) { p.captureBearing = b; touched++; }
+      }
+      if (touched > 0) {
+        Storage.save(Storage.KEYS.data, State.data);
+        console.log('v23.18.11: backfilled captureBearing on', touched, 'point(s)');
+      }
+    }
+    localStorage.setItem('roadAlert.v23.18.11.captureBearingAll', '1');
+  } catch (e) { console.warn('captureBearing backfill', e); }
 })();
 
 /* ============================================================

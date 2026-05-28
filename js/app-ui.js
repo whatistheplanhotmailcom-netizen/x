@@ -2978,6 +2978,21 @@ const UI = {
   finalizeCapture() {
     const c = State.pendingCapture;
     if (!c) return;
+    // v23.18.11 — EVERY capture (including speed_change, traffic_light,
+    // gate, custom, petrol, checkpoint) records the user's travel
+    // direction at capture time as captureBearing. The `directional`
+    // flag still stays type-specific (cameras only) so non-camera
+    // captures keep their bidirectional alert behavior — only the
+    // bearing field is universalized. Fallback chain: rolling-average
+    // heading → live GPS heading → device compass → null. Set only
+    // when missing so a manual edit (or a future re-finalize) can't
+    // be clobbered.
+    if (c.captureBearing === undefined || c.captureBearing === null) {
+      let b = (typeof State.avgHeading === 'function') ? State.avgHeading() : null;
+      if (b == null && typeof State.heading === 'number') b = State.heading;
+      if (b == null && typeof State.deviceHeading === 'number') b = State.deviceHeading;
+      if (b != null && isFinite(b)) c.captureBearing = b;
+    }
     // v22.91: auto-fill the v22.91 schema fields for speed_change + cameras.
     // User can edit them via the Edit Point modal afterwards.
     const camTypes = new Set(['speed_camera', 'mobile_camera', 'pole_camera', 'spider_camera']);
@@ -2985,7 +3000,9 @@ const UI = {
       // Cameras default directional, speed_change non-directional (per spec)
       c.directional = camTypes.has(c.type);
       c.roadType = Speed.inferRoadTypeFromRollingSpeed(State.avgSpeedKmh());
-      c.captureBearing = State.avgHeading();
+      // captureBearing is set above (unified for every capture type);
+      // the legacy assignment here is no-op now but harmless.
+      if (c.captureBearing === undefined) c.captureBearing = State.avgHeading();
       c.updatedAt = c.createdAt || new Date().toISOString();
       if (c.type === 'speed_change' && typeof c.limit === 'number') {
         c.speedLimit = c.limit;

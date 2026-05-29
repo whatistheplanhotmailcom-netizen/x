@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.20';
+const APP_VERSION = 'v23.18.21';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -3370,12 +3370,6 @@ const Storage = {
       // frequency value affects Audio.preview repeats/intensity but
       // not live alert triggering.
       soundAlerts: {},
-      // v23.7.2 — optional revalidation prompt for stored speed-limit
-      // observations. When ON, the app may ask "The speed limit here is
-      // N. Confirm?" as the user approaches a saved speed_change point.
-      // Default OFF — must be explicitly enabled per spec; never fires
-      // automatically out of the box.
-      speedLimitRevalidation: false,
       // v23.9.9 — master switch for the "Still there?" feedback popup.
       // Default ON. Toggled from the topbar 💬 button. When OFF, no
       // feedback popup is queued or shown (alerts, capture, sounds are
@@ -7235,34 +7229,6 @@ const Alerts = {
     }
 
     this.checkSpeed();
-
-    // v23.7.2 — optional speed-limit revalidation prompt. Self-gated by
-    // setting (default OFF), so this is a no-op unless the user
-    // explicitly enabled it in Settings. When ON, finds the nearest
-    // saved speed_change point ahead within SPEED_REVAL_DIST_M and asks
-    // the driver to confirm or reject the saved limit.
-    if (State.settings && State.settings.speedLimitRevalidation) {
-      try {
-        const userHeading = State.heading;
-        const headingReliable = Speed.isHeadingReliable((State.speedMps || 0) * 3.6);
-        const candidates = State.data.points
-          .filter(p => p && p.type === 'speed_change' && p.status !== 'no')
-          .map(p => ({ p, dM: Utils.distKm(State.pos, p) * 1000 }))
-          .filter(x => x.dM <= Confirm.SPEED_REVAL_DIST_M)
-          .filter(x => {
-            // Direction guard: only prompt when going the same way as the
-            // captured sign (or when heading isn't reliable / sign has
-            // no recorded bearing — legacy data gets the benefit).
-            if (!headingReliable) return true;
-            if (x.p.captureBearing == null) return true;
-            return Speed.headingMatches(userHeading, x.p.captureBearing, 45);
-          })
-          .sort((a, b) => a.dM - b.dM);
-        if (candidates.length) {
-          Confirm.requestSpeedLimitConfirm(candidates[0].p, candidates[0].dM);
-        }
-      } catch (e) {}
-    }
   },
 
   /** v22.16: speak the "next ahead" the first time a new point reaches #1
@@ -7368,18 +7334,6 @@ const Confirm = {
   // popups back-to-back. Cluster suppression is in-memory only; on a
   // future GPS session each point can prompt again.
   FEEDBACK_CLUSTER_RADIUS_M: 50,
-  // v23.7.2 — speed-limit revalidation tuning. Trigger when a saved
-  // speed_change is this close ahead; auto-dismiss after this many s
-  // if the driver doesn't respond; suppress re-prompt for the same
-  // point for this many minutes (additionally to the in-memory
-  // _promptedSpeedIds set).
-  SPEED_REVAL_DIST_M: 120,
-  SPEED_REVAL_COUNTDOWN_S: 20,
-  SPEED_REVAL_COOLDOWN_MIN: 30,
-  // v23.7.2 — session set of point IDs already prompted for revalidation
-  // this trip. Cleared on resetTrip() (GPS restart).
-  _promptedSpeedIds: new Set(),
-  _speedLimitMode: false,
   // Don't ask more than once per point per trip.
   _askedThisTrip: new Set(),
   // FIFO queue of point IDs waiting to be asked about.
@@ -8201,160 +8155,6 @@ const Confirm = {
     });
     try { logEvent('FEEDBACK-REVALIDATION', `position adjustment suggested ${point.id} · Δ ${distM.toFixed(1)}m · spread ${maxSpread.toFixed(1)}m · n=${recent.length} (not auto-applied)`); } catch (e) {}
   },
-
-  /** v23.7.2 — speed-limit revalidation entry point.
-   *  Called from Alerts.tick when a saved speed_change is close ahead.
-   *  Gated by:
-   *    1. settings.speedLimitRevalidation must be true (default false)
-   *    2. no other popup currently active
-   *    3. not already prompted this session (_promptedSpeedIds)
-   *    4. point.lastPromptedAt cooldown (default 30 min)
-   *    5. point has a numeric speedLimit/limit value
-   *  Records lastPromptedAt + adds id to session set BEFORE showing,
-   *  so re-entry within the same tick window can't double-fire. */
-  requestSpeedLimitConfirm(point, distM) {
-    if (!point || point.type !== 'speed_change') return false;
-    if (point.status === 'no') return false;
-    if (!State.settings || !State.settings.speedLimitRevalidation) return false;
-    if (this._activeId) return false;
-    if (this._promptedSpeedIds.has(point.id)) return false;
-    if (point.lastPromptedAt) {
-      const ageMs = Date.now() - new Date(point.lastPromptedAt).getTime();
-      if (ageMs < this.SPEED_REVAL_COOLDOWN_MIN * 60 * 1000) return false;
-    }
-    const lim = (typeof point.speedLimit === 'number') ? point.speedLimit
-      : (typeof point.limit === 'number' ? point.limit : null);
-    if (lim == null || !isFinite(lim)) return false;
-    this._promptedSpeedIds.add(point.id);
-    point.lastPromptedAt = new Date().toISOString();
-    try { State.saveData(); } catch (e) {}
-    this._showSpeedLimitPrompt(point, lim, distM);
-    try { logEvent('SPEED', `[SPEED] revalidation_prompt_shown — ${point.id} limit=${lim} @ ${distM != null ? Math.round(distM) : '?'}m`); } catch (e) {}
-    return true;
-  },
-
-  _showSpeedLimitPrompt(point, lim, distM) {
-    let host = document.getElementById('confirm-popup');
-    if (!host) {
-      host = document.createElement('div');
-      host.id = 'confirm-popup';
-      host.className = 'confirm-popup';
-      document.body.appendChild(host);
-    }
-    this._activeId = point.id;
-    this._activeDistanceM = (typeof distM === 'number') ? distM : null;
-    this._speedLimitMode = true;
-    const distText = (typeof distM === 'number') ? ` · ${Math.round(distM)} m ahead` : '';
-    host.innerHTML = `
-      <div class="confirm-card">
-        <div class="confirm-head">
-          <div class="confirm-title">🚦 Speed limit revalidation</div>
-          <div class="confirm-meta">The speed limit here is ${Utils.escapeHtml(String(lim))}. Confirm?${Utils.escapeHtml(distText)}</div>
-        </div>
-        <div class="confirm-progress"><div class="confirm-progress-bar" id="confirm-bar"></div></div>
-        <div class="confirm-actions">
-          <button class="confirm-btn confirm-yes" id="confirm-yes">YES</button>
-          <button class="confirm-btn confirm-no"  id="confirm-no">NO</button>
-        </div>
-      </div>`;
-    host.classList.add('show');
-    document.getElementById('confirm-yes').onclick = () => this._answerSpeedLimit('yes');
-    document.getElementById('confirm-no').onclick  = () => this._answerSpeedLimit('no');
-    this._startSpeedLimitCountdown(this.SPEED_REVAL_COUNTDOWN_S);
-    // Reuse the existing popup sound — same UX as feedback prompts.
-    try {
-      if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackPopupSound === 'function') {
-        Audio.playFeedbackPopupSound();
-      }
-    } catch (e) {}
-  },
-
-  _startSpeedLimitCountdown(secs) {
-    this._remainingMs = secs * 1000;
-    const startedAt = Date.now();
-    const totalMs = this._remainingMs;
-    const bar = document.getElementById('confirm-bar');
-    if (this._timer) clearInterval(this._timer);
-    this._timer = setInterval(() => {
-      const elapsed = Date.now() - startedAt;
-      const left = Math.max(0, totalMs - elapsed);
-      this._remainingMs = left;
-      if (bar) bar.style.width = (left / totalMs * 100) + '%';
-      if (left <= 0) {
-        try { logEvent('SPEED', `[SPEED] revalidation_timeout — ${this._activeId}`); } catch (e) {}
-        this._cleanup();
-        this._activeId = null;
-        this._activeDistanceM = null;
-        this._speedLimitMode = false;
-      }
-    }, 100);
-  },
-
-  _answerSpeedLimit(value) {
-    const id = this._activeId;
-    if (!id) return;
-    const point = State.data.points.find(p => p.id === id);
-    if (!point) {
-      this._cleanup();
-      this._activeId = null;
-      this._speedLimitMode = false;
-      return;
-    }
-    const now = new Date().toISOString();
-    point.observationCount = (point.observationCount || 1) + 1;
-    if (value === 'yes') {
-      // v23.17.0 — gate the YES against feedback-geometry. speed_change
-      // is a heading-gated type: opposite-direction or far-distance YES
-      // taps must NOT bump confirmationCount / validConfirmationCount.
-      // The sample is preserved on the point as quarantined/rejected
-      // evidence so the audit trail stays intact.
-      const sample = Confirm._captureRevalidationSample(point, 'positive', 'speed_limit_revalidation');
-      const gateEnabled = !State.settings || !State.settings.feedbackGeometryGates
-                        || State.settings.feedbackGeometryGates.enabled !== false;
-      const verdict = (sample && gateEnabled) ? FeedbackGate.validateFeedbackGeometry(point, sample) : null;
-      if (verdict && verdict.verdict !== 'accepted') {
-        FeedbackGate._ensureGateFields(point);
-        point.revalidation.samples.push(Object.assign({}, sample, { _gate: {
-          verdict: verdict.verdict, reasons: verdict.reasons.slice(),
-          headingDiffDeg: verdict.headingDiffDeg, distanceM: verdict.distanceM,
-          gateVersion: verdict.gateVersion,
-        } }));
-        FeedbackGate.recordNonAcceptedPositive(point, sample, verdict);
-        // Skip the raw confirmationCount bump for non-accepted YES taps.
-      } else {
-        if (sample) {
-          FeedbackGate._ensureGateFields(point);
-          point.revalidation.samples.push(Object.assign({}, sample, { _gate: verdict ? {
-            verdict: 'accepted', reasons: verdict.reasons.slice(),
-            headingDiffDeg: verdict.headingDiffDeg, distanceM: verdict.distanceM,
-            gateVersion: verdict.gateVersion,
-          } : null }));
-        }
-        point.confirmationCount = (point.confirmationCount || 0) + 1;
-        FeedbackGate.recordAcceptedPositive(point);
-        point.lastConfirmedAt = now;
-      }
-    } else {
-      point.rejectionCount = (point.rejectionCount || 0) + 1;
-      point.lastRejectedAt = now;
-    }
-    point.lastObservedAt = now;
-    point.confidenceStatus = Speed.deriveConfidenceStatus(point);
-    State.saveData();
-    try { logEvent('SPEED', `[SPEED] revalidation_response — ${point.id} → ${value} · status=${point.confidenceStatus}`, 'ok'); } catch (e) {}
-    Utils.toast(value === 'yes' ? `✓ Speed limit confirmed` : `Speed limit marked unsure`, value === 'yes' ? 'good' : 'bad');
-    try {
-      if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackConfirmSound === 'function') {
-        Audio.playFeedbackConfirmSound();
-      }
-    } catch (e) {}
-    if (MapView.m) { MapView._lastPointRefresh = 0; MapView.updatePoints(); }
-    this._cleanup();
-    this._activeId = null;
-    this._activeDistanceM = null;
-    this._speedLimitMode = false;
-  },
-
   /** Reset trip state when GPS starts a fresh session. */
   resetTrip() {
     this._askedThisTrip.clear();
@@ -8363,9 +8163,6 @@ const Confirm = {
     this._activeDistanceM = null;
     this._resolvingMissedId = null;
     this._popupSoundPlayedForId = null;
-    // v23.7.2 — clear session-suppression set so fresh trip can prompt again.
-    this._promptedSpeedIds.clear();
-    this._speedLimitMode = false;
     this._cleanup();
   },
 };

@@ -4127,9 +4127,6 @@ const UI = {
     // v22.33: proximity ping start distance
     document.getElementById('i-proximity-start').value = State.settings.proximityStartM || 1000;
     document.getElementById('t-proximity').classList.toggle('on', State.settings.proximityPing !== false);
-    // v23.7.2: speed-limit revalidation toggle
-    const tSpeedReval = document.getElementById('t-speed-reval');
-    if (tSpeedReval) tSpeedReval.classList.toggle('on', !!State.settings.speedLimitRevalidation);
     // v22.76: here-now announcement settings
     document.getElementById('i-here-speed').value = State.settings.hereSpeedThreshold || 100;
     document.getElementById('i-here-repeat').value = State.settings.hereRepeatCount || 2;
@@ -5061,16 +5058,6 @@ function wire() {
     document.getElementById('t-proximity').classList.toggle('on', State.settings.proximityPing);
     Utils.toast('Proximity ping ' + (State.settings.proximityPing ? 'on' : 'off'), 'good');
   };
-  // v23.7.2: speed-limit revalidation toggle
-  const tSpeedRevalBtn = document.getElementById('t-speed-reval');
-  if (tSpeedRevalBtn) {
-    tSpeedRevalBtn.onclick = () => {
-      State.settings.speedLimitRevalidation = !State.settings.speedLimitRevalidation;
-      State.saveSettings();
-      tSpeedRevalBtn.classList.toggle('on', !!State.settings.speedLimitRevalidation);
-      Utils.toast('Speed-limit revalidation ' + (State.settings.speedLimitRevalidation ? 'on' : 'off'), 'good');
-    };
-  }
   // v22.33: proximity ping start distance
   document.getElementById('i-proximity-start').onchange = e => {
     const v = Math.round(+e.target.value);

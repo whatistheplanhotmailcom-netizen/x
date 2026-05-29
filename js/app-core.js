@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.19';
+const APP_VERSION = 'v23.18.20';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1023,7 +1023,11 @@ const AutoRoute = {
       //    suppression; this gate covers ANY directional capture by
       //    keeping it out of the AutoRoute focused list when the driver
       //    is approaching from the opposite side.
-      if (!closeSafety && headingKnown && p.directional === true &&
+      //    v23.18.20 — HARD: closeSafety no longer bypasses this gate.
+      //    An opposite-direction directional capture at < 80 m is the
+      //    classic safety-override-misfire pattern (e.g. parallel road
+      //    going the other way) — suppress regardless of distance.
+      if (headingKnown && p.directional === true &&
           typeof p.captureBearing === 'number') {
         const diff = Speed.angleDiff(heading, p.captureBearing);
         if (diff >= this.DIRECTIONAL_OPPOSITE_DEG) {
@@ -1167,16 +1171,24 @@ const AutoRoute = {
     const isDirectional = (p.directional === true) ||
       (typeof p.captureBearing === 'number' && isFinite(p.captureBearing));
     // 1) Opposite chain direction.
-    if (!closeSafety && chainAlign >= this.CHAIN_OPPOSITE_DEG) {
+    //    v23.18.20 — HARD: directional opposite-direction always
+    //    suppresses, even within the safety-override distance. Only
+    //    the non-directional opposite-chain penalty still respects
+    //    closeSafety (since geometry there is noisy at < 80 m).
+    if (chainAlign >= this.CHAIN_OPPOSITE_DEG) {
       if (isDirectional) {
         out.action = 'suppress';
         out.suppressReason = 'chain-opposite-directional';
-      } else {
-        out.action = 'penalize';
+        out.scoreDelta = this.CHAIN_OPPOSITE_PENALTY;
+        out.reasons.push('chain-opposite');
+        return out;
       }
-      out.scoreDelta = this.CHAIN_OPPOSITE_PENALTY;
-      out.reasons.push('chain-opposite');
-      return out;
+      if (!closeSafety) {
+        out.action = 'penalize';
+        out.scoreDelta = this.CHAIN_OPPOSITE_PENALTY;
+        out.reasons.push('chain-opposite');
+        return out;
+      }
     }
     // 2) Perpendicular/penalize band.
     if (!closeSafety && chainAlign > this.CHAIN_WEAK_ALIGN_DEG && chainAlign < this.CHAIN_OPPOSITE_DEG) {
@@ -1282,12 +1294,20 @@ const AutoRoute = {
     out._diff = bestDiff;
     out._matchedField = bestField;
     out._issue = bestIssue;
-    // v23.18.19 — single-FP fast path for opposite_direction_likely.
-    if (oppositeMatch) {
+    // v23.18.19/20 — single-FP fast path for the strong
+    // direction-based classifier issues. Both opposite_direction_likely
+    // AND parallel_road_likely indicate "user is approaching from a
+    // direction the capture wasn't meant to alert from" and one match
+    // is enough to suppress.
+    const directionFp = oppositeMatch ||
+      bestIssue === 'parallel_road_likely';
+    if (directionFp) {
       out.action = 'suppress';
-      out.suppressReason = 'feedback-opposite-direction';
+      out.suppressReason = oppositeMatch
+        ? 'feedback-opposite-direction'
+        : 'feedback-similar-approach';
       out.scoreDelta = -200;
-      out.reasons.push('feedback-opposite-direction');
+      out.reasons.push(out.suppressReason);
       return out;
     }
     if (matches >= this.FEEDBACK_SUPPRESS_AFTER) {
@@ -1633,44 +1653,135 @@ const AutoRoute = {
   /** v23.18.19 — Final emission gate. Re-runs the cheap suppression
    *  checks at the EXACT moment before Audio.alert fires, so a
    *  late-arrived FP / a state change since aheadList was computed
-   *  can still veto the sound. Returns {emit, reason}. */
-  finalGateForEmission(point, meters) {
-    const out = { emit: true, reason: 'pass', source: 'final' };
+   *  can still veto the sound. Returns {emit, reason}.
+   *  v23.18.20 — accepts `alertKind` so re-approach / here-now /
+   *  threshold paths can share one gate and emit a unified
+   *  AUTO-ROUTE-FINAL log. The returned object now also carries
+   *  pointId / shortId / dist / heading / bearingTo / captureBearing
+   *  / chain / safetyOverride so callers can log uniformly. */
+  HARD_SUPPRESSION_REASONS: new Set([
+    'feedback-similar-approach',
+    'feedback-opposite-direction',
+    'feedback-revalidation',
+    'chain-opposite-directional',
+    'opposite-direction',
+    'side-road-chain',
+    'lateral',
+    'moving-away',
+    'cooldown-passed',
+  ]),
+  isHardSuppression(reason) {
+    return !!(reason && this.HARD_SUPPRESSION_REASONS.has(reason));
+  },
+  finalGateForEmission(point, meters, alertKind) {
+    const kind = alertKind || 'threshold';
+    const out = { emit: true, reason: 'pass', source: 'final',
+                  alertKind: kind, pointId: null, shortId: null, type: null,
+                  distM: null, headingDeg: null, bearingToCandidateDeg: null,
+                  captureBearingDeg: null, chainDirectionDeg: null,
+                  safetyOverride: false };
     if (!point || !State || typeof State.activeDest !== 'function') return out;
-    // Destination mode is not AutoRoute — let it through unchanged.
-    if (State.activeDest()) return out;
+    if (State.activeDest()) return out; // destination mode unchanged
     const userState = (typeof Observations !== 'undefined' && Observations.buildUserState)
       ? Observations.buildUserState() : null;
     if (!userState) return out;
     const distM = (meters != null) ? meters
       : (point.lat != null) ? Utils.distKm(userState, point) * 1000 : null;
-    // 1) FeedbackGate-driven hard suppression.
+    out.pointId = point.id || null;
+    out.shortId = point.shortId || null;
+    out.type = point.type || null;
+    out.distM = (distM != null) ? Math.round(distM) : null;
+    out.headingDeg = (Number.isFinite(userState.heading)) ? Math.round(userState.heading) : null;
+    if (point.lat != null) {
+      out.bearingToCandidateDeg = Math.round(
+        Speed.bearingBetween(userState.lat, userState.lng, point.lat, point.lng));
+    }
+    out.captureBearingDeg = (typeof point.captureBearing === 'number')
+      ? Math.round(point.captureBearing) : null;
+    try {
+      const cd = this._inferChainDirection(point);
+      out.chainDirectionDeg = (cd && cd.deg != null) ? Math.round(cd.deg) : null;
+    } catch (e) {}
+    out.safetyOverride = (distM != null && distM <= this.SAFETY_OVERRIDE_M);
+    // 1) FeedbackGate-driven hard suppression. ALWAYS fires.
     if (point.suppressedPendingRevalidation === true) {
       out.emit = false; out.reason = 'feedback-revalidation'; return out;
     }
     // 2) Feedback similar approach (heading / moveBear / bearingTo).
+    //    v23.18.19 + 20 — opposite-direction fast path = single-FP
+    //    suppress; remains a HARD suppression that safety override
+    //    cannot bypass.
     const fb = this.feedbackEvidenceForCandidate(point, userState);
     if (fb && fb.action === 'suppress') {
       out.emit = false;
       out.reason = fb.suppressReason || 'feedback-similar-approach';
       return out;
     }
-    // 3) Chain evidence (opposite-direction / side-road).
+    // 3) Chain evidence (opposite-direction directional / side-road).
+    //    v23.18.20 — chainEvidenceForCandidate now reports opposite-
+    //    direction-directional even when distM ≤ SAFETY_OVERRIDE_M.
     const ce = this.chainEvidenceForCandidate(point, userState);
     if (ce && ce.action === 'suppress') {
       out.emit = false;
       out.reason = ce.suppressReason || 'chain-suppress';
       return out;
     }
-    // 4) Moving-away (uses already-recorded rolling distance history).
-    if (distM != null && this.isMovingAway(point.id, distM)) {
+    // 4) Directional capture opposite-bearing. Hard.
+    if (point.directional === true && typeof point.captureBearing === 'number' &&
+        Number.isFinite(userState.heading)) {
+      const diff = Speed.angleDiff(userState.heading, point.captureBearing);
+      if (diff >= this.DIRECTIONAL_OPPOSITE_DEG) {
+        out.emit = false; out.reason = 'opposite-direction'; return out;
+      }
+    }
+    // 5) Moving-away (uses already-recorded rolling distance history).
+    //    Safety-override skips this only for very close approaches
+    //    that already passed the harder checks above.
+    if (distM != null && !out.safetyOverride && this.isMovingAway(point.id, distM)) {
       out.emit = false; out.reason = 'moving-away'; return out;
     }
-    // 5) Cooldown / already passed.
-    if (point.id && State.passedPoints && State.passedPoints.has(point.id)) {
+    // 6) Cooldown / already passed. Threshold path may explicitly want
+    //    to bypass (re-approach re-arm is what clears it), so re-approach
+    //    callers explicitly pass alertKind='re-approach' and accept the
+    //    cooldown check as informational rather than suppressive.
+    if (kind !== 're-approach' && point.id && State.passedPoints &&
+        State.passedPoints.has(point.id)) {
       out.emit = false; out.reason = 'cooldown-passed'; return out;
     }
     return out;
+  },
+
+  /** v23.18.20 — Single, shared final-emission gate used by every
+   *  AutoRoute alert path (threshold, here-now, re-approach,
+   *  focused-candidate diagnostics, safety-override). Wraps
+   *  finalGateForEmission and emits a single throttled
+   *  [AUTO-ROUTE-FINAL] log per call. Suppress logs are throttled to
+   *  1.5 s per channel; emit logs are not throttled (rare event). */
+  _finalLogAt: { emit: 0, suppress: 0 },
+  finalEmissionAllowed(point, meters, alertKind, opts) {
+    const g = this.finalGateForEmission(point, meters, alertKind);
+    const allowed = !!g.emit;
+    const sid = this.shortIdOf(point);
+    const hd = (g.headingDeg != null) ? g.headingDeg : 'n/a';
+    const bt = (g.bearingToCandidateDeg != null) ? g.bearingToCandidateDeg : 'n/a';
+    const cb = (g.captureBearingDeg != null) ? g.captureBearingDeg : 'null';
+    const ch = (g.chainDirectionDeg != null) ? g.chainDirectionDeg : 'null';
+    const so = g.safetyOverride ? 'true' : 'false';
+    const finalLbl = allowed ? 'emit' : 'suppress';
+    const channel = allowed ? 'emit' : 'suppress';
+    const now = Date.now();
+    const force = !!(opts && opts.forceLog);
+    const throttle = (channel === 'suppress') ? 1500 : 0;
+    if (force || throttle === 0 || (now - (this._finalLogAt[channel] || 0)) >= throttle) {
+      this._finalLogAt[channel] = now;
+      try {
+        logEvent('AUTO-ROUTE-FINAL',
+          `point=${sid} alertKind=${g.alertKind} final=${finalLbl} reason=${g.reason}` +
+          ` dist=${g.distM} heading=${hd} bearingTo=${bt}` +
+          ` captureBearing=${cb} chain=${ch} safetyOverride=${so}`);
+      } catch (e) {}
+    }
+    return { allowed, gate: g };
   },
 };
 
@@ -6743,6 +6854,28 @@ const Alerts = {
         // Approaching: meaningfully closer than the last "moving away"
         // sample AND inside a reasonable re-engage envelope.
         if (distM < recordedM - 50 && distM < 800) {
+          // v23.18.20 — re-approach must pass the shared final gate.
+          // Without it, a candidate that was correctly marked passed
+          // (e.g. opposite-direction directional, lateral, or
+          // feedback-suppressed) gets re-armed solely because distance
+          // dropped — leaking past every chain/feedback/direction
+          // gate. The gate runs in AutoRoute mode only; destination
+          // mode keeps the legacy unconditional re-arm.
+          let reapproachAllowed = true;
+          if (!State.activeDest() && typeof AutoRoute !== 'undefined' &&
+              AutoRoute.finalEmissionAllowed) {
+            try {
+              const ev = AutoRoute.finalEmissionAllowed(p, distM, 're-approach');
+              reapproachAllowed = !!ev.allowed;
+            } catch (e) {}
+          }
+          if (!reapproachAllowed) {
+            // Update the moving-away tracker so the next tick's
+            // re-approach window is fresh, but DO NOT clear passed
+            // state or fire the ALERT line.
+            State.passedDistByPoint.set(p.id, distM);
+            return;
+          }
           State.passedPoints.delete(p.id);
           State.passedDistByPoint.delete(p.id);
           State.alertedMarkers.delete(p.id);
@@ -6792,25 +6925,45 @@ const Alerts = {
       const _hereRingM = _speedKmh >= _hereSpeedT ? 100 : 50;
       const _silent = this.SILENT_ALERT_TYPES.has(p.type);
       if (!_silent && _camDirAllows && meters <= _hereRingM && !State.hereAnnouncedPoints.has(p.id)) {
-        State.hereAnnouncedPoints.add(p.id);
-        // v22.87: suppress the distance-marker announcements ("in 500m",
-        // "in 1km") for this point now that we're at it. They were
-        // continuing to fire alongside "is here" and the user reported
-        // them as repetitive noise.
-        const _firedMark = State.alertedMarkers.get(p.id) || new Set();
-        for (const _m of (State.settings.alertMarkersM || [2000, 1000, 500])) _firedMark.add(_m);
-        State.alertedMarkers.set(p.id, _firedMark);
-        const reps = Math.max(1, Math.min(10, +State.settings.hereRepeatCount || 2));
-        const name = p.name || Utils.typeLabel(p.type);
-        const text = Array(reps).fill(`${name} is here`).join('. ');
-        if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
-          Audio.say(text);
+        // v23.18.20 — here-now must also pass the shared final gate
+        // in AutoRoute mode. Without it, the "is here" voice could
+        // fire for a candidate that chain/feedback/direction gates
+        // had already classified as opposite/side-road/FP — the very
+        // pattern the user reported (lateral / opposite-direction
+        // points at < ring distance still announcing).
+        let hereAllowed = true;
+        if (!State.activeDest() && typeof AutoRoute !== 'undefined' &&
+            AutoRoute.finalEmissionAllowed) {
+          try {
+            const ev = AutoRoute.finalEmissionAllowed(p, meters, 'here-now');
+            hereAllowed = !!ev.allowed;
+          } catch (e) {}
         }
-        if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-        State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
-        State.lastAlertAt = Date.now();
-        State.lastAlertText = name + ' is here';
-        logEvent('ALERT', `here-now: ${name} @ ${Math.round(meters)}m (ring=${_hereRingM}m, ${reps}x)`, 'ok');
+        if (!hereAllowed) {
+          // Mark as already-announced so we don't re-evaluate next
+          // tick; suppression already produced its AUTO-ROUTE-FINAL log.
+          State.hereAnnouncedPoints.add(p.id);
+        } else {
+          State.hereAnnouncedPoints.add(p.id);
+          // v22.87: suppress the distance-marker announcements ("in 500m",
+          // "in 1km") for this point now that we're at it. They were
+          // continuing to fire alongside "is here" and the user reported
+          // them as repetitive noise.
+          const _firedMark = State.alertedMarkers.get(p.id) || new Set();
+          for (const _m of (State.settings.alertMarkersM || [2000, 1000, 500])) _firedMark.add(_m);
+          State.alertedMarkers.set(p.id, _firedMark);
+          const reps = Math.max(1, Math.min(10, +State.settings.hereRepeatCount || 2));
+          const name = p.name || Utils.typeLabel(p.type);
+          const text = Array(reps).fill(`${name} is here`).join('. ');
+          if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
+            Audio.say(text);
+          }
+          if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+          State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
+          State.lastAlertAt = Date.now();
+          State.lastAlertText = name + ' is here';
+          logEvent('ALERT', `here-now: ${name} @ ${Math.round(meters)}m (ring=${_hereRingM}m, ${reps}x)`, 'ok');
+        }
       }
 
       const prevMeters = State.lastDistByPoint.get(p.id);
@@ -6963,55 +7116,50 @@ const Alerts = {
             // the point is NOT marked passed, hidden, or re-scored.
             const suppressedByDirection = !_camDirAllows;
             const suppressedByIntel = (intelMode === 'active' && intelEval && !intelEval.intelligenceWouldAlert);
-            // v23.18.19 — final emission gate. Re-runs the cheap
-            // chain/feedback/cooldown checks at the EXACT emit moment.
-            // Late-arrived FP / state changes since aheadList was
-            // computed can still veto here. AutoRoute-only.
-            let suppressedByFinal = false; let finalReason = 'pass';
-            try {
-              const fg = (typeof AutoRoute !== 'undefined' && AutoRoute.finalGateForEmission)
-                ? AutoRoute.finalGateForEmission(p, meters) : null;
-              if (fg && fg.emit === false) {
-                suppressedByFinal = true;
-                finalReason = fg.reason || 'final-gate';
+            // v23.18.20 — single shared final gate for the threshold
+            // path. Wraps suppressedByDirection / suppressedByIntel
+            // so all suppress branches emit a uniform
+            // AUTO-ROUTE-FINAL line via finalEmissionAllowed.
+            let allowed = true;
+            if (suppressedByDirection || suppressedByIntel) {
+              allowed = false;
+              const reason = suppressedByDirection ? 'opposite-direction-camera' : 'intel-veto';
+              if (typeof AutoRoute !== 'undefined' && AutoRoute.finalEmissionAllowed) {
+                // Re-use the canonical log shape; treat it as already
+                // decided to suppress by stamping a synthetic gate
+                // result before the call. Simpler: just emit a
+                // separate AUTO-ROUTE-FINAL line.
+                try {
+                  const sid = AutoRoute.shortIdOf(p);
+                  const hd = Number.isFinite(State.heading) ? Math.round(State.heading) : 'n/a';
+                  const bt = (State.pos && typeof p.lat === 'number')
+                    ? Math.round(Speed.bearingBetween(State.pos.lat, State.pos.lng, p.lat, p.lng)) : 'n/a';
+                  const cb = (typeof p.captureBearing === 'number') ? Math.round(p.captureBearing) : 'null';
+                  let chainDeg = 'null';
+                  try {
+                    const cd = AutoRoute._inferChainDirection(p);
+                    if (cd && cd.deg != null) chainDeg = Math.round(cd.deg);
+                  } catch (e) {}
+                  const so = (meters <= AutoRoute.SAFETY_OVERRIDE_M) ? 'true' : 'false';
+                  logEvent('AUTO-ROUTE-FINAL',
+                    `point=${sid} alertKind=threshold final=suppress reason=${reason}` +
+                    ` dist=${meters} heading=${hd} bearingTo=${bt}` +
+                    ` captureBearing=${cb} chain=${chainDeg} safetyOverride=${so}`);
+                } catch (e) {}
               }
-            } catch (e) {}
-            const hd = Number.isFinite(State.heading) ? Math.round(State.heading) : 'n/a';
-            const bt = (State.pos && typeof p.lat === 'number')
-              ? Math.round(Speed.bearingBetween(State.pos.lat, State.pos.lng, p.lat, p.lng)) : 'n/a';
-            const cb = (typeof p.captureBearing === 'number') ? Math.round(p.captureBearing) : 'null';
-            const chainDeg = (() => {
+              if (suppressedByIntel) IntelligenceEngine.noteSuppression(p, intelEval, meters, m);
+            } else if (typeof AutoRoute !== 'undefined' && AutoRoute.finalEmissionAllowed) {
               try {
-                const cd = (typeof AutoRoute !== 'undefined' && AutoRoute._inferChainDirection)
-                  ? AutoRoute._inferChainDirection(p) : null;
-                return (cd && cd.deg != null) ? Math.round(cd.deg) : 'null';
-              } catch (e) { return 'null'; }
-            })();
-            const sid = (typeof AutoRoute !== 'undefined' && AutoRoute.shortIdOf)
-              ? AutoRoute.shortIdOf(p) : (p.shortId || p.id);
-            if (suppressedByDirection) {
-              // opposite-facing camera — no announcement this crossing.
-              logEvent('AUTO-ROUTE-FINAL',
-                `point=${sid} final=suppress reason=opposite-direction-camera dist=${meters}` +
-                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
-            } else if (suppressedByIntel) {
-              IntelligenceEngine.noteSuppression(p, intelEval, meters, m);
-              logEvent('AUTO-ROUTE-FINAL',
-                `point=${sid} final=suppress reason=intel-veto dist=${meters}` +
-                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
-            } else if (suppressedByFinal) {
-              logEvent('AUTO-ROUTE-FINAL',
-                `point=${sid} final=suppress reason=${finalReason} dist=${meters}` +
-                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
-            } else {
+                const ev = AutoRoute.finalEmissionAllowed(p, meters, 'threshold');
+                allowed = !!ev.allowed;
+              } catch (e) {}
+            }
+            if (allowed) {
               Audio.alert(p, m);
               if (intelMode === 'active') IntelligenceEngine.noteAlertFired();
-              logEvent('AUTO-ROUTE-FINAL',
-                `point=${sid} final=emit reason=${finalReason} dist=${meters}` +
-                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
+              if (navigator.vibrate) navigator.vibrate(60);
             }
             fired.add(m);
-            if (navigator.vibrate && !suppressedByIntel && !suppressedByDirection && !suppressedByFinal) navigator.vibrate(60);
           }
         }
         // Disagreement on the OTHER direction: legacy didn't fire this tick

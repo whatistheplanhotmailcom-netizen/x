@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.16';
+const APP_VERSION = 'v23.18.17';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1202,57 +1202,83 @@ const AutoRoute = {
     return out;
   },
   /** False-positive evidence — reads point.falsePositiveApproaches[]
-   *  (v23.18.13 new field, written by recordFalsePositiveApproach)
-   *  AND, for back-compat, the existing v23.9.6
-   *  point.feedbackStats.falsePositiveDirectionEvidence[]. Pure. */
+   *  (v23.18.13/17 enriched shape) AND the back-compat v23.9.6
+   *  point.feedbackStats.falsePositiveDirectionEvidence[].
+   *  v23.18.17 — similarity matches on ANY of: stored heading,
+   *  movementBearing, bearingToCandidate (each within ±45° of the
+   *  current approach). Pure. */
   feedbackEvidenceForCandidate(p, userState) {
     const out = { usable: false, action: 'neutral', scoreDelta: 0, reasons: [],
-                  suppressReason: null, _diff: null };
+                  suppressReason: null, _diff: null, _matchedField: null };
     if (!p || !userState) return out;
     const heading = userState.heading;
     if (!Number.isFinite(heading)) return out;
-    const headings = [];
+    const moveBear = this._movementBearingFromBuffer();
+    let bearingToPt = null;
+    if (typeof p.lat === 'number' && typeof userState.lat === 'number') {
+      bearingToPt = Speed.bearingBetween(userState.lat, userState.lng, p.lat, p.lng);
+    }
+    // Pull richer approach entries (each may contain heading / moveBear /
+    // bearingToCandidate). Old-shape entries fall back to `heading`.
+    const approaches = [];
     if (Array.isArray(p.falsePositiveApproaches)) {
       for (const a of p.falsePositiveApproaches) {
-        if (a && Number.isFinite(a.heading)) headings.push(a.heading);
+        if (!a) continue;
+        approaches.push({
+          heading: Number.isFinite(a.headingDeg) ? a.headingDeg
+                 : Number.isFinite(a.heading)    ? a.heading : null,
+          moveBear: Number.isFinite(a.movementBearingDeg) ? a.movementBearingDeg : null,
+          bearingTo: Number.isFinite(a.bearingToCandidateDeg) ? a.bearingToCandidateDeg : null,
+        });
       }
     }
-    // Back-compat: derive an approach heading from each
-    // feedbackStats.falsePositiveDirectionEvidence entry by combining
-    // captureBearing + the stored headingDelta. headingDelta was
-    // angleDiff(captureBearing, sample.heading) so the absolute heading
-    // direction is captureBearing ± delta — we accept both candidates.
+    // Back-compat heading derivation from v23.9.6 evidence list.
     const fb = (p.feedbackStats && Array.isArray(p.feedbackStats.falsePositiveDirectionEvidence))
       ? p.feedbackStats.falsePositiveDirectionEvidence : [];
     if (fb.length && typeof p.captureBearing === 'number') {
       for (const e of fb) {
         if (!e || !Number.isFinite(e.headingDelta)) continue;
-        const a = ((p.captureBearing + e.headingDelta) % 360 + 360) % 360;
-        const b = ((p.captureBearing - e.headingDelta) % 360 + 360) % 360;
-        headings.push(a, b);
+        approaches.push({
+          heading: ((p.captureBearing + e.headingDelta) % 360 + 360) % 360,
+          moveBear: null, bearingTo: null,
+        });
+        approaches.push({
+          heading: ((p.captureBearing - e.headingDelta) % 360 + 360) % 360,
+          moveBear: null, bearingTo: null,
+        });
       }
     }
-    if (!headings.length) return out;
-    let matches = 0, bestDiff = null;
-    for (const h of headings) {
-      const d = Speed.angleDiff(heading, h);
+    if (!approaches.length) return out;
+    let matches = 0, bestDiff = null, bestField = null;
+    const matchCh = (field, prevVal, curVal) => {
+      if (!Number.isFinite(prevVal) || !Number.isFinite(curVal)) return false;
+      const d = Speed.angleDiff(curVal, prevVal);
       if (d <= this.FEEDBACK_HEADING_MATCH_DEG) {
-        matches++;
-        if (bestDiff == null || d < bestDiff) bestDiff = d;
+        if (bestDiff == null || d < bestDiff) { bestDiff = d; bestField = field; }
+        return true;
       }
+      return false;
+    };
+    for (const a of approaches) {
+      let hit = false;
+      if (matchCh('heading',   a.heading,   heading))    hit = true;
+      if (matchCh('moveBear',  a.moveBear,  moveBear))   hit = true;
+      if (matchCh('bearingTo', a.bearingTo, bearingToPt))hit = true;
+      if (hit) matches++;
     }
     if (!matches) return out;
     out.usable = true;
     out._diff = bestDiff;
+    out._matchedField = bestField;
     if (matches >= this.FEEDBACK_SUPPRESS_AFTER) {
       out.action = 'suppress';
-      out.suppressReason = 'feedback-similar-heading';
+      out.suppressReason = 'feedback-similar-approach';
       out.scoreDelta = -200;
     } else {
       out.action = 'penalize';
       out.scoreDelta = this.FEEDBACK_PENALIZE;
     }
-    out.reasons.push('feedback-similar-heading');
+    out.reasons.push('feedback-similar-approach');
     return out;
   },
   /** Throttled diagnostic emitters. Per-channel rate-limit (1.5 s). */
@@ -1277,9 +1303,18 @@ const AutoRoute = {
     const hd = Number.isFinite(heading) ? Math.round(heading) : 'n/a';
     const diff = (ev._diff != null) ? Math.round(ev._diff) : 'n/a';
     const idShown = p.shortId || p.id;
-    logEvent('AUTO-ROUTE-FEEDBACK',
-      `point=${idShown} action=${ev.action} reason=${ev.suppressReason || 'feedback-similar-heading'}` +
-      ` heading=${hd} diff=${diff}`);
+    // v23.18.17 — emit as AUTO-ROUTE-FP-SUPPRESS when the action is
+    // suppress so the spec-mandated log name shows up in the audit
+    // panel; non-suppress (penalize) keeps the older channel.
+    if (ev.action === 'suppress') {
+      logEvent('AUTO-ROUTE-FP-SUPPRESS',
+        `point=${idShown} reason=feedback-similar-approach heading=${hd}` +
+        ` matched=${ev._matchedField || 'n/a'} diff=${diff}`);
+    } else {
+      logEvent('AUTO-ROUTE-FEEDBACK',
+        `point=${idShown} action=${ev.action} reason=${ev.suppressReason || 'feedback-similar-approach'}` +
+        ` heading=${hd} diff=${diff}`);
+    }
   },
   /** Record a false-positive approach onto the point. Append-only;
    *  size-capped so the array can't grow without bound. */
@@ -1287,34 +1322,231 @@ const AutoRoute = {
   recordFalsePositiveApproach(point, userState, reason) {
     if (!point) return;
     if (!Array.isArray(point.falsePositiveApproaches)) point.falsePositiveApproaches = [];
+    // v23.18.17 — pull richer context from the most recent emission
+    // snapshot so the stored approach has everything needed for
+    // similarity matching: movement bearing, bearingToCandidate,
+    // captureBearing, chainDirection, lateralOffset, gpsAccuracy.
+    const last = (point.lastAutoRouteDecision && typeof point.lastAutoRouteDecision === 'object')
+      ? point.lastAutoRouteDecision : null;
     const heading = (userState && Number.isFinite(userState.heading))
       ? userState.heading
       : (Number.isFinite(State && State.heading) ? State.heading : null);
-    const distanceM = (userState && userState.lat != null && point.lat != null)
-      ? Math.round(Utils.distKm(userState, point) * 1000)
-      : null;
+    const moveBear = this._movementBearingFromBuffer();
+    let bearingToPt = null;
+    if (userState && userState.lat != null && point.lat != null && typeof Speed !== 'undefined') {
+      bearingToPt = Speed.bearingBetween(userState.lat, userState.lng, point.lat, point.lng);
+    }
+    const captureBearingDeg = (typeof point.captureBearing === 'number') ? point.captureBearing : null;
     let chainDirectionDeg = null;
     try {
       const cd = this._inferChainDirection(point);
       chainDirectionDeg = (cd && cd.deg != null) ? Math.round(cd.deg * 10) / 10 : null;
     } catch (e) {}
-    point.falsePositiveApproaches.push({
-      heading: (heading != null) ? Math.round(heading * 10) / 10 : null,
-      chainDirectionDeg,
-      distanceM,
-      reason: reason || 'manual',
+    const angleDiffDeg = (Number.isFinite(heading) && Number.isFinite(captureBearingDeg))
+      ? Speed.angleDiff(heading, captureBearingDeg) : null;
+    const lateralOffsetM = (userState && Number.isFinite(heading))
+      ? this.lateralOffsetM(userState, point, heading) : null;
+    const distanceM = (userState && userState.lat != null && point.lat != null)
+      ? Math.round(Utils.distKm(userState, point) * 1000)
+      : (last && Number.isFinite(last.distM)) ? Math.round(last.distM) : null;
+    // Infer a structured reason if the caller didn't classify.
+    let resolved = reason || null;
+    if (!resolved || resolved === 'manual') {
+      resolved = this._inferFpReason({ angleDiffDeg, lateralOffsetM, point });
+    }
+    const entry = {
       createdAt: new Date().toISOString(),
-    });
+      pointId: point.id || null,
+      shortId: point.shortId || null,
+      chainId: point.chainId || null,
+      headingDeg: (heading != null) ? Math.round(heading * 10) / 10 : null,
+      movementBearingDeg: (moveBear != null) ? Math.round(moveBear * 10) / 10 : null,
+      captureBearingDeg: (captureBearingDeg != null) ? Math.round(captureBearingDeg * 10) / 10 : null,
+      chainDirectionDeg,
+      bearingToCandidateDeg: (bearingToPt != null) ? Math.round(bearingToPt * 10) / 10 : null,
+      angleDiffDeg: (angleDiffDeg != null) ? Math.round(angleDiffDeg * 10) / 10 : null,
+      lateralOffsetM: (lateralOffsetM != null) ? Math.round(lateralOffsetM) : null,
+      distM: distanceM,
+      // Back-compat alias the v23.18.13 reader expects:
+      heading: (heading != null) ? Math.round(heading * 10) / 10 : null,
+      distanceM: distanceM,
+      reason: resolved || 'unknown',
+      sourceDecisionReason: last ? (last.finalReason || null) : null,
+      sourceDecisionScore: last ? (last.score != null ? last.score : null) : null,
+    };
+    point.falsePositiveApproaches.push(entry);
     while (point.falsePositiveApproaches.length > this.FALSE_POSITIVE_APPROACH_CAP) {
       point.falsePositiveApproaches.shift();
     }
-    if (typeof point.lastFalsePositiveAt === 'undefined') {
-      point.lastFalsePositiveAt = new Date().toISOString();
-    } else {
-      point.lastFalsePositiveAt = new Date().toISOString();
-    }
+    point.lastFalsePositiveAt = entry.createdAt;
+    point.lastFalsePositiveReason = entry.reason;
     if (typeof point.falsePositiveCount !== 'number') point.falsePositiveCount = 0;
     point.falsePositiveCount++;
+    try {
+      const shortIdShown = point.shortId || point.id || '?';
+      const cb = (entry.captureBearingDeg != null) ? Math.round(entry.captureBearingDeg) : 'null';
+      const ch = (entry.chainDirectionDeg != null) ? Math.round(entry.chainDirectionDeg) : 'null';
+      const hd = (entry.headingDeg != null) ? Math.round(entry.headingDeg) : 'n/a';
+      const bt = (entry.bearingToCandidateDeg != null) ? Math.round(entry.bearingToCandidateDeg) : 'n/a';
+      logEvent('AUTO-ROUTE-FP-STORED',
+        `point=${shortIdShown} reason=${entry.reason} heading=${hd} bearingTo=${bt}` +
+        ` captureBearing=${cb} chain=${ch}`);
+    } catch (e) {}
+  },
+
+  /* ------------------------------------------------------------------
+   * v23.18.17 — DECISION SNAPSHOT + EMISSION HOOK
+   * Captures the exact state at the moment an AutoRoute alert fires
+   * so a later false-positive report can explain "why was this
+   * allowed?" without re-running the gates. Pure write; never touches
+   * scoring or sound.
+   * ------------------------------------------------------------------ */
+  /** Compute the movement bearing across the most recent two GPS fixes.
+   *  Returns null if we don't have two distinct fixes yet. */
+  _movementBearingFromBuffer() {
+    try {
+      const buf = (State && Array.isArray(State.gpsFixBuffer)) ? State.gpsFixBuffer : [];
+      if (buf.length < 2) return null;
+      const a = buf[buf.length - 2], b = buf[buf.length - 1];
+      if (!a || !b || typeof a.lat !== 'number' || typeof b.lat !== 'number') return null;
+      if (a.lat === b.lat && a.lng === b.lng) return null;
+      if (typeof Speed === 'undefined') return null;
+      return Speed.bearingBetween(a.lat, a.lng, b.lat, b.lng);
+    } catch (e) { return null; }
+  },
+  /** Best-effort distance trend across recent fixes. */
+  _distTrendForPoint(point) {
+    const buf = (State && Array.isArray(State.gpsFixBuffer)) ? State.gpsFixBuffer : [];
+    if (buf.length < 2 || !point) return null;
+    const last = buf[buf.length - 1], prev = buf[buf.length - 2];
+    if (!last || !prev || typeof point.lat !== 'number') return null;
+    const lastM = Utils.distKm(last, point) * 1000;
+    const prevM = Utils.distKm(prev, point) * 1000;
+    if (lastM > prevM + this.MOVE_AWAY_SLACK_M) return 'increasing';
+    if (lastM < prevM - this.MOVE_AWAY_SLACK_M) return 'decreasing';
+    return 'flat';
+  },
+  /** Returns gate pass/fail map for the current state. Pure. */
+  gateStatusForPoint(point, userState, distM) {
+    const cfg = this.config();
+    const out = {
+      distance: 'unknown', forward: 'unknown', direction: 'unknown',
+      lateral: 'unknown', movingToward: 'unknown', cooldown: 'unknown',
+      feedback: 'unknown', chain: 'unknown',
+    };
+    if (!point || !userState) return out;
+    const heading = (userState.heading != null) ? userState.heading
+                  : (typeof Observations !== 'undefined' && Observations.effectiveHeading)
+                    ? Observations.effectiveHeading() : null;
+    const headingKnown = Number.isFinite(heading);
+    out.distance = (distM != null && distM <= cfg.scanRadiusM) ? 'pass' : 'fail';
+    if (headingKnown) {
+      const geo = this.isPointAheadOfTravel(userState, point, heading);
+      out.forward = (geo && !geo.behind) ? 'pass' : 'fail';
+      const lat = this.lateralOffsetM(userState, point, heading);
+      const speedKmh = userState.speedKmh || 0;
+      const accM = userState.accuracy || 0;
+      const corridorM = (speedKmh >= this.HIGHWAY_SPEED_KMH) ? this.LATERAL_CORRIDOR_HIGHWAY_M
+                      : (accM >= this.POOR_GPS_ACCURACY_M)   ? this.LATERAL_CORRIDOR_POOR_GPS_M
+                      : this.LATERAL_CORRIDOR_M;
+      out.lateral = (lat == null || lat <= corridorM) ? 'pass' : 'fail';
+      if (point.directional === true && typeof point.captureBearing === 'number') {
+        out.direction = (Speed.angleDiff(heading, point.captureBearing) < this.DIRECTIONAL_OPPOSITE_DEG)
+          ? 'pass' : 'fail';
+      }
+    }
+    if (point.id && State && State.passedPoints) {
+      out.cooldown = State.passedPoints.has(point.id) ? 'fail' : 'pass';
+    }
+    out.movingToward = (this.isMovingAway(point.id, distM)) ? 'fail' : 'pass';
+    out.feedback = (point.suppressedPendingRevalidation === true) ? 'fail' : 'pass';
+    try {
+      const chain = this.chainEvidenceForCandidate(point, userState);
+      out.chain = (chain && chain.action === 'suppress') ? 'fail' : 'pass';
+    } catch (e) {}
+    return out;
+  },
+  /** Build a compact decision snapshot. Pure. */
+  buildDecisionSnapshot(point, userState, distM, finalReason, score) {
+    const heading = (userState && Number.isFinite(userState.heading)) ? userState.heading : null;
+    const moveBear = this._movementBearingFromBuffer();
+    const cb = (typeof point.captureBearing === 'number') ? point.captureBearing : null;
+    let chainDir = null;
+    try {
+      const cd = this._inferChainDirection(point);
+      chainDir = (cd && cd.deg != null) ? Math.round(cd.deg * 10) / 10 : null;
+    } catch (e) {}
+    let bearingTo = null;
+    if (userState && userState.lat != null && point.lat != null) {
+      bearingTo = Speed.bearingBetween(userState.lat, userState.lng, point.lat, point.lng);
+    }
+    const angleDiff = (Number.isFinite(heading) && Number.isFinite(cb))
+      ? Speed.angleDiff(heading, cb) : null;
+    const lateral = (userState && Number.isFinite(heading))
+      ? this.lateralOffsetM(userState, point, heading) : null;
+    return {
+      alertedAt: new Date().toISOString(),
+      pointId: point.id || null,
+      shortId: point.shortId || null,
+      chainId: point.chainId || null,
+      type: point.type || null,
+      distM: (distM != null) ? Math.round(distM) : null,
+      headingDeg: (heading != null) ? Math.round(heading * 10) / 10 : null,
+      movementBearingDeg: (moveBear != null) ? Math.round(moveBear * 10) / 10 : null,
+      captureBearingDeg: (cb != null) ? Math.round(cb * 10) / 10 : null,
+      chainDirectionDeg: chainDir,
+      bearingToCandidateDeg: (bearingTo != null) ? Math.round(bearingTo * 10) / 10 : null,
+      angleDiffDeg: (angleDiff != null) ? Math.round(angleDiff * 10) / 10 : null,
+      lateralOffsetM: (lateral != null) ? Math.round(lateral) : null,
+      gpsAccuracyM: (userState && typeof userState.accuracy === 'number') ? Math.round(userState.accuracy) : null,
+      score: (score != null) ? score : null,
+      finalAction: 'alert',
+      finalReason: finalReason || 'threshold-cross',
+      gates: this.gateStatusForPoint(point, userState, distM),
+    };
+  },
+  /** Infer an FP reason from the most recent snapshot when the user
+   *  didn't (or couldn't) classify. Returns one of the documented
+   *  reason strings or 'unknown'. */
+  _inferFpReason(ctx) {
+    if (!ctx) return 'unknown';
+    const { angleDiffDeg, lateralOffsetM, point } = ctx;
+    if (angleDiffDeg != null && angleDiffDeg >= 135) return 'opposite-direction';
+    if (lateralOffsetM != null && lateralOffsetM > this.LATERAL_CORRIDOR_M * 1.5) return 'side-road';
+    try {
+      const trend = this._distTrendForPoint(point);
+      if (trend === 'increasing') return 'already-passed';
+    } catch (e) {}
+    return 'unknown';
+  },
+  /** Called from Audio.alert at the exact emission moment. Writes
+   *  point.lastAutoRouteDecision and emits AUTO-ROUTE-EMIT. Pure-ish:
+   *  only mutates the point's snapshot field. */
+  noteAlertEmitted(point, meters, finalReason) {
+    if (!point || !State || typeof State.activeDest !== 'function') return;
+    // Snapshot is only meaningful for AutoRoute (destinationless)
+    // emissions — destination mode has its own context-only sort and
+    // we don't want to pollute that path's per-point snapshot.
+    if (State.activeDest()) return;
+    const userState = (typeof Observations !== 'undefined' && Observations.buildUserState)
+      ? Observations.buildUserState() : null;
+    if (!userState) return;
+    const distM = (meters != null) ? meters
+      : (point.lat != null) ? Utils.distKm(userState, point) * 1000 : null;
+    const snap = this.buildDecisionSnapshot(point, userState, distM, finalReason, null);
+    point.lastAutoRouteDecision = snap;
+    try {
+      const sid = point.shortId || point.id || '?';
+      const cb = (snap.captureBearingDeg != null) ? Math.round(snap.captureBearingDeg) : 'null';
+      const ch = (snap.chainDirectionDeg != null) ? Math.round(snap.chainDirectionDeg) : 'null';
+      const hd = (snap.headingDeg != null) ? Math.round(snap.headingDeg) : 'n/a';
+      const bt = (snap.bearingToCandidateDeg != null) ? Math.round(snap.bearingToCandidateDeg) : 'n/a';
+      logEvent('AUTO-ROUTE-EMIT',
+        `point=${sid} type=${snap.type || '?'} dist=${snap.distM}` +
+        ` score=${snap.score != null ? snap.score : 'n/a'}` +
+        ` reason=${snap.finalReason} heading=${hd} bearingTo=${bt}` +
+        ` captureBearing=${cb} chain=${ch}`);
+    } catch (e) {}
   },
 };
 
@@ -4012,6 +4244,15 @@ const Audio = {
   alert(point, meters) {
     const s = State.settings.sound;
     if (s === 'off') return; // master mute still respected
+    // v23.18.17 — at the exact emission moment, write the decision
+    // snapshot to point.lastAutoRouteDecision (AutoRoute mode only)
+    // and emit the AUTO-ROUTE-EMIT line. The snapshot is what later
+    // false-positive feedback uses to explain "why was this allowed?".
+    try {
+      if (typeof AutoRoute !== 'undefined' && AutoRoute.noteAlertEmitted) {
+        AutoRoute.noteAlertEmitted(point, meters, 'threshold-cross');
+      }
+    } catch (e) {}
     // v22.102: level='ok' so ALERTs show green in the debug log
     logEvent('ALERT', `${point.name || Utils.typeLabel(point.type)} @ ${meters}m`, 'ok');
     // v22.12: count for diagnostic strip

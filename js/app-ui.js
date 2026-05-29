@@ -3392,6 +3392,22 @@ const UI = {
       ['Capture quality', point.captureQuality],
       ['Prev chain (3)', fmtChain(point.chainPrev3)],
       ['Next chain (3)', fmtChain(point.chainNext3)],
+      // v23.18.17 — false-positive review block. Reads the new
+      // falsePositiveApproaches[] + lastAutoRouteDecision snapshot so
+      // the editor reveals "why was this previously allowed?" and
+      // "why did the user mark it false positive?".
+      ['False positive count', point.falsePositiveCount],
+      ['Last false positive at', point.lastFalsePositiveAt],
+      ['Last false positive reason',
+        point.lastFalsePositiveReason ||
+        (Array.isArray(point.falsePositiveApproaches) && point.falsePositiveApproaches.length
+          ? point.falsePositiveApproaches[point.falsePositiveApproaches.length - 1].reason
+          : null)],
+      ['Last alert decision reason',
+        (point.lastAutoRouteDecision && point.lastAutoRouteDecision.finalReason) || null],
+      ['Last alert decision score',
+        (point.lastAutoRouteDecision && point.lastAutoRouteDecision.score != null)
+          ? point.lastAutoRouteDecision.score : null],
     ];
     const body = rows.map(([label, val]) =>
       `<div class="capmeta-row"><span class="capmeta-k">${Utils.escapeHtml(label)}</span>` +

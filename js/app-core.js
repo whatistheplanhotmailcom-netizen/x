@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.18';
+const APP_VERSION = 'v23.18.19';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1206,10 +1206,14 @@ const AutoRoute = {
    *  point.feedbackStats.falsePositiveDirectionEvidence[].
    *  v23.18.17 — similarity matches on ANY of: stored heading,
    *  movementBearing, bearingToCandidate (each within ±45° of the
-   *  current approach). Pure. */
+   *  current approach).
+   *  v23.18.19 — opposite_direction_likely fast-path: a SINGLE prior
+   *  FP carrying that issue + similar approach geometry suppresses
+   *  immediately (no 2-FP threshold). Other issues still need
+   *  FEEDBACK_SUPPRESS_AFTER matches. Pure. */
   feedbackEvidenceForCandidate(p, userState) {
     const out = { usable: false, action: 'neutral', scoreDelta: 0, reasons: [],
-                  suppressReason: null, _diff: null, _matchedField: null };
+                  suppressReason: null, _diff: null, _matchedField: null, _issue: null };
     if (!p || !userState) return out;
     const heading = userState.heading;
     if (!Number.isFinite(heading)) return out;
@@ -1229,6 +1233,8 @@ const AutoRoute = {
                  : Number.isFinite(a.heading)    ? a.heading : null,
           moveBear: Number.isFinite(a.movementBearingDeg) ? a.movementBearingDeg : null,
           bearingTo: Number.isFinite(a.bearingToCandidateDeg) ? a.bearingToCandidateDeg : null,
+          issue: (typeof a.issue === 'string' && a.issue) ? a.issue
+               : (typeof a.reason === 'string' && a.reason) ? a.reason : null,
         });
       }
     }
@@ -1249,7 +1255,8 @@ const AutoRoute = {
       }
     }
     if (!approaches.length) return out;
-    let matches = 0, bestDiff = null, bestField = null;
+    let matches = 0, bestDiff = null, bestField = null, bestIssue = null;
+    let oppositeMatch = false;
     const matchCh = (field, prevVal, curVal) => {
       if (!Number.isFinite(prevVal) || !Number.isFinite(curVal)) return false;
       const d = Speed.angleDiff(curVal, prevVal);
@@ -1264,12 +1271,25 @@ const AutoRoute = {
       if (matchCh('heading',   a.heading,   heading))    hit = true;
       if (matchCh('moveBear',  a.moveBear,  moveBear))   hit = true;
       if (matchCh('bearingTo', a.bearingTo, bearingToPt))hit = true;
-      if (hit) matches++;
+      if (hit) {
+        matches++;
+        if (a.issue && bestIssue == null) bestIssue = a.issue;
+        if (a.issue === 'opposite_direction_likely') oppositeMatch = true;
+      }
     }
     if (!matches) return out;
     out.usable = true;
     out._diff = bestDiff;
     out._matchedField = bestField;
+    out._issue = bestIssue;
+    // v23.18.19 — single-FP fast path for opposite_direction_likely.
+    if (oppositeMatch) {
+      out.action = 'suppress';
+      out.suppressReason = 'feedback-opposite-direction';
+      out.scoreDelta = -200;
+      out.reasons.push('feedback-opposite-direction');
+      return out;
+    }
     if (matches >= this.FEEDBACK_SUPPRESS_AFTER) {
       out.action = 'suppress';
       out.suppressReason = 'feedback-similar-approach';
@@ -1291,9 +1311,8 @@ const AutoRoute = {
     const diff = (ev.chainAlignmentDeg != null) ? Math.round(ev.chainAlignmentDeg) : 'n/a';
     const hd = Number.isFinite(heading) ? Math.round(heading) : 'n/a';
     const reason = ev.suppressReason || (ev.reasons.length ? ev.reasons[0] : 'none');
-    const idShown = p.shortId || p.id;
     logEvent('AUTO-ROUTE-CHAIN',
-      `point=${idShown} action=${ev.action} reason=${reason} dist=${Math.round(distM)}` +
+      `point=${this.shortIdOf(p)} action=${ev.action} reason=${reason} dist=${Math.round(distM)}` +
       ` heading=${hd} chain=${ch} captureBearing=${cb} diff=${diff}`);
   },
   _maybeLogFeedbackEvent(p, ev, distM, heading) {
@@ -1302,14 +1321,16 @@ const AutoRoute = {
     this._feedbackLogAt = now;
     const hd = Number.isFinite(heading) ? Math.round(heading) : 'n/a';
     const diff = (ev._diff != null) ? Math.round(ev._diff) : 'n/a';
-    const idShown = p.shortId || p.id;
-    // v23.18.17 — emit as AUTO-ROUTE-FP-SUPPRESS when the action is
-    // suppress so the spec-mandated log name shows up in the audit
-    // panel; non-suppress (penalize) keeps the older channel.
+    const idShown = this.shortIdOf(p);
+    // v23.18.17/19 — emit as AUTO-ROUTE-FP-SUPPRESS when the action is
+    // suppress. The reason already encodes whether it's the
+    // single-FP opposite-direction fast path or the generic
+    // similar-approach match.
     if (ev.action === 'suppress') {
       logEvent('AUTO-ROUTE-FP-SUPPRESS',
-        `point=${idShown} reason=feedback-similar-approach heading=${hd}` +
-        ` matched=${ev._matchedField || 'n/a'} diff=${diff}`);
+        `point=${idShown} reason=${ev.suppressReason || 'feedback-similar-approach'}` +
+        ` heading=${hd} matched=${ev._matchedField || 'n/a'} diff=${diff}` +
+        ` issue=${ev._issue || 'n/a'}`);
     } else {
       logEvent('AUTO-ROUTE-FEEDBACK',
         `point=${idShown} action=${ev.action} reason=${ev.suppressReason || 'feedback-similar-approach'}` +
@@ -1318,7 +1339,7 @@ const AutoRoute = {
   },
   /** Record a false-positive approach onto the point. Append-only;
    *  size-capped so the array can't grow without bound. */
-  FALSE_POSITIVE_APPROACH_CAP: 20,
+  FALSE_POSITIVE_APPROACH_CAP: 5,
   recordFalsePositiveApproach(point, userState, reason) {
     if (!point) return;
     if (!Array.isArray(point.falsePositiveApproaches)) point.falsePositiveApproaches = [];
@@ -1371,6 +1392,11 @@ const AutoRoute = {
       heading: (heading != null) ? Math.round(heading * 10) / 10 : null,
       distanceM: distanceM,
       reason: resolved || 'unknown',
+      // v23.18.19 — `issue` mirrors the FeedbackGate classifier output
+      // (opposite_direction_likely / parallel_road_likely / …) so the
+      // suppression read-side can act on it without re-classifying.
+      issue: resolved || 'unknown',
+      source: 'feedback-popup',
       sourceDecisionReason: last ? (last.finalReason || null) : null,
       sourceDecisionScore: last ? (last.score != null ? last.score : null) : null,
     };
@@ -1383,14 +1409,14 @@ const AutoRoute = {
     if (typeof point.falsePositiveCount !== 'number') point.falsePositiveCount = 0;
     point.falsePositiveCount++;
     try {
-      const shortIdShown = point.shortId || point.id || '?';
+      const sid = this.shortIdOf(point);
       const cb = (entry.captureBearingDeg != null) ? Math.round(entry.captureBearingDeg) : 'null';
       const ch = (entry.chainDirectionDeg != null) ? Math.round(entry.chainDirectionDeg) : 'null';
       const hd = (entry.headingDeg != null) ? Math.round(entry.headingDeg) : 'n/a';
       const bt = (entry.bearingToCandidateDeg != null) ? Math.round(entry.bearingToCandidateDeg) : 'n/a';
       logEvent('AUTO-ROUTE-FP-STORED',
-        `point=${shortIdShown} reason=${entry.reason} heading=${hd} bearingTo=${bt}` +
-        ` captureBearing=${cb} chain=${ch}`);
+        `point=${sid} reason=${entry.reason} issue=${entry.issue || 'n/a'}` +
+        ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${ch}`);
     } catch (e) {}
   },
 
@@ -1535,8 +1561,25 @@ const AutoRoute = {
       : (point.lat != null) ? Utils.distKm(userState, point) * 1000 : null;
     const snap = this.buildDecisionSnapshot(point, userState, distM, finalReason, null);
     point.lastAutoRouteDecision = snap;
+    // v23.18.19 — keep a per-module "last emitted alert" pointer so
+    // Confirm._showNext can log binding source and the final emission
+    // gate can re-verify against this exact point.
+    this.lastEmittedAlert = {
+      pointId: point.id || null,
+      shortId: point.shortId || null,
+      type: snap.type,
+      emittedAt: snap.alertedAt,
+      distM: snap.distM,
+      headingDeg: snap.headingDeg,
+      movementBearingDeg: snap.movementBearingDeg,
+      bearingToCandidateDeg: snap.bearingToCandidateDeg,
+      captureBearingDeg: snap.captureBearingDeg,
+      chainDirectionDeg: snap.chainDirectionDeg,
+      finalReason: snap.finalReason,
+      score: snap.score,
+    };
     try {
-      const sid = point.shortId || point.id || '?';
+      const sid = this.shortIdOf(point);
       const cb = (snap.captureBearingDeg != null) ? Math.round(snap.captureBearingDeg) : 'null';
       const ch = (snap.chainDirectionDeg != null) ? Math.round(snap.chainDirectionDeg) : 'null';
       const hd = (snap.headingDeg != null) ? Math.round(snap.headingDeg) : 'n/a';
@@ -1547,6 +1590,87 @@ const AutoRoute = {
         ` reason=${snap.finalReason} heading=${hd} bearingTo=${bt}` +
         ` captureBearing=${cb} chain=${ch}`);
     } catch (e) {}
+  },
+
+  /** v23.18.19 — Canonical shortId fallback used by every AutoRoute
+   *  log. Order: point.shortId → point.id → 'unknown'. */
+  shortIdOf(p) {
+    if (!p) return 'unknown';
+    if (typeof p.shortId === 'string' && p.shortId) return p.shortId;
+    if (typeof p.id === 'string' && p.id) return p.id;
+    return 'unknown';
+  },
+
+  /** v23.18.19 — Feedback-binding window (ms). A feedback prompt that
+   *  opens within this window of a real AutoRoute alert emission for
+   *  the SAME pointId is treated as "bound" to the emitted alert; an
+   *  out-of-window or different-point prompt is logged as a
+   *  passed-fallback for troubleshooting. */
+  FEEDBACK_BINDING_WINDOW_MS: 60 * 1000,
+  /** Returns 'last-emitted' or 'passed-fallback' for a given queued
+   *  prompt. Pure read; emits the FEEDBACK-BINDING log line so the
+   *  audit channel makes the binding explicit. */
+  logFeedbackBinding(point, queuedKind) {
+    if (!point) return 'unknown';
+    const last = this.lastEmittedAlert;
+    const now = Date.now();
+    let source = 'passed-fallback';
+    let reason = (queuedKind === 'passed') ? 'queued-onPassed' : 'queued-' + (queuedKind || 'ahead');
+    if (last && last.pointId === point.id) {
+      const emittedMs = last.emittedAt ? Date.parse(last.emittedAt) : NaN;
+      if (isFinite(emittedMs) && now - emittedMs <= this.FEEDBACK_BINDING_WINDOW_MS) {
+        source = 'last-emitted';
+        reason = 'same-point-within-window';
+      }
+    }
+    try {
+      logEvent('FEEDBACK-BINDING',
+        `source=${source} point=${this.shortIdOf(point)} kind=${queuedKind || 'ahead'} reason=${reason}`);
+    } catch (e) {}
+    return source;
+  },
+
+  /** v23.18.19 — Final emission gate. Re-runs the cheap suppression
+   *  checks at the EXACT moment before Audio.alert fires, so a
+   *  late-arrived FP / a state change since aheadList was computed
+   *  can still veto the sound. Returns {emit, reason}. */
+  finalGateForEmission(point, meters) {
+    const out = { emit: true, reason: 'pass', source: 'final' };
+    if (!point || !State || typeof State.activeDest !== 'function') return out;
+    // Destination mode is not AutoRoute — let it through unchanged.
+    if (State.activeDest()) return out;
+    const userState = (typeof Observations !== 'undefined' && Observations.buildUserState)
+      ? Observations.buildUserState() : null;
+    if (!userState) return out;
+    const distM = (meters != null) ? meters
+      : (point.lat != null) ? Utils.distKm(userState, point) * 1000 : null;
+    // 1) FeedbackGate-driven hard suppression.
+    if (point.suppressedPendingRevalidation === true) {
+      out.emit = false; out.reason = 'feedback-revalidation'; return out;
+    }
+    // 2) Feedback similar approach (heading / moveBear / bearingTo).
+    const fb = this.feedbackEvidenceForCandidate(point, userState);
+    if (fb && fb.action === 'suppress') {
+      out.emit = false;
+      out.reason = fb.suppressReason || 'feedback-similar-approach';
+      return out;
+    }
+    // 3) Chain evidence (opposite-direction / side-road).
+    const ce = this.chainEvidenceForCandidate(point, userState);
+    if (ce && ce.action === 'suppress') {
+      out.emit = false;
+      out.reason = ce.suppressReason || 'chain-suppress';
+      return out;
+    }
+    // 4) Moving-away (uses already-recorded rolling distance history).
+    if (distM != null && this.isMovingAway(point.id, distM)) {
+      out.emit = false; out.reason = 'moving-away'; return out;
+    }
+    // 5) Cooldown / already passed.
+    if (point.id && State.passedPoints && State.passedPoints.has(point.id)) {
+      out.emit = false; out.reason = 'cooldown-passed'; return out;
+    }
+    return out;
   },
 };
 
@@ -6553,6 +6677,11 @@ const Alerts = {
 
     // v23.18.0 — Auto Route diagnostics: only with no destination, throttled
     // to once / 5s, focused candidate only (no extra pool scan).
+    // v23.18.19 — relabel as "focused" (not "accepted") and tag
+    // safety-override so a freshly-passed candidate at distance ≤ 80m
+    // (legitimately let through by the safety override) doesn't read
+    // as a contradictory "accepted with bearingDiff=179". Field
+    // renamed: bearingDiff → headingToBearingDiff for clarity.
     if (!State.activeDest() && focusedId) {
       const now = Date.now();
       if (now - (this._autoRouteLogAt || 0) >= 5000) {
@@ -6560,10 +6689,13 @@ const Alerts = {
         if (c) {
           this._autoRouteLogAt = now;
           const geo = AutoRoute.isPointAheadOfTravel(State.pos, c, Observations.effectiveHeading());
+          const distM = Math.round(geo.distanceM != null ? geo.distanceM : (c.dist || 0) * 1000);
+          const safety = (distM <= AutoRoute.SAFETY_OVERRIDE_M) ? 'true' : 'false';
           logEvent('AUTO-ROUTE',
-            `candidate accepted point=${c.id} type=${c.type}` +
-            ` distanceM=${Math.round(geo.distanceM != null ? geo.distanceM : (c.dist || 0) * 1000)}` +
-            ` bearingDiff=${geo.bearingDiff != null ? Math.round(geo.bearingDiff) : 'n/a'}`);
+            `focused candidate point=${AutoRoute.shortIdOf(c)} type=${c.type}` +
+            ` distanceM=${distM}` +
+            ` headingToBearingDiff=${geo.bearingDiff != null ? Math.round(geo.bearingDiff) : 'n/a'}` +
+            ` safetyOverride=${safety}`);
         }
       }
     }
@@ -6831,16 +6963,55 @@ const Alerts = {
             // the point is NOT marked passed, hidden, or re-scored.
             const suppressedByDirection = !_camDirAllows;
             const suppressedByIntel = (intelMode === 'active' && intelEval && !intelEval.intelligenceWouldAlert);
+            // v23.18.19 — final emission gate. Re-runs the cheap
+            // chain/feedback/cooldown checks at the EXACT emit moment.
+            // Late-arrived FP / state changes since aheadList was
+            // computed can still veto here. AutoRoute-only.
+            let suppressedByFinal = false; let finalReason = 'pass';
+            try {
+              const fg = (typeof AutoRoute !== 'undefined' && AutoRoute.finalGateForEmission)
+                ? AutoRoute.finalGateForEmission(p, meters) : null;
+              if (fg && fg.emit === false) {
+                suppressedByFinal = true;
+                finalReason = fg.reason || 'final-gate';
+              }
+            } catch (e) {}
+            const hd = Number.isFinite(State.heading) ? Math.round(State.heading) : 'n/a';
+            const bt = (State.pos && typeof p.lat === 'number')
+              ? Math.round(Speed.bearingBetween(State.pos.lat, State.pos.lng, p.lat, p.lng)) : 'n/a';
+            const cb = (typeof p.captureBearing === 'number') ? Math.round(p.captureBearing) : 'null';
+            const chainDeg = (() => {
+              try {
+                const cd = (typeof AutoRoute !== 'undefined' && AutoRoute._inferChainDirection)
+                  ? AutoRoute._inferChainDirection(p) : null;
+                return (cd && cd.deg != null) ? Math.round(cd.deg) : 'null';
+              } catch (e) { return 'null'; }
+            })();
+            const sid = (typeof AutoRoute !== 'undefined' && AutoRoute.shortIdOf)
+              ? AutoRoute.shortIdOf(p) : (p.shortId || p.id);
             if (suppressedByDirection) {
               // opposite-facing camera — no announcement this crossing.
+              logEvent('AUTO-ROUTE-FINAL',
+                `point=${sid} final=suppress reason=opposite-direction-camera dist=${meters}` +
+                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
             } else if (suppressedByIntel) {
               IntelligenceEngine.noteSuppression(p, intelEval, meters, m);
+              logEvent('AUTO-ROUTE-FINAL',
+                `point=${sid} final=suppress reason=intel-veto dist=${meters}` +
+                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
+            } else if (suppressedByFinal) {
+              logEvent('AUTO-ROUTE-FINAL',
+                `point=${sid} final=suppress reason=${finalReason} dist=${meters}` +
+                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
             } else {
               Audio.alert(p, m);
               if (intelMode === 'active') IntelligenceEngine.noteAlertFired();
+              logEvent('AUTO-ROUTE-FINAL',
+                `point=${sid} final=emit reason=${finalReason} dist=${meters}` +
+                ` heading=${hd} bearingTo=${bt} captureBearing=${cb} chain=${chainDeg}`);
             }
             fired.add(m);
-            if (navigator.vibrate && !suppressedByIntel && !suppressedByDirection) navigator.vibrate(60);
+            if (navigator.vibrate && !suppressedByIntel && !suppressedByDirection && !suppressedByFinal) navigator.vibrate(60);
           }
         }
         // Disagreement on the OTHER direction: legacy didn't fire this tick
@@ -7094,7 +7265,11 @@ const Confirm = {
     // queue popups for this trip.
     this._addClusterToAskedThisTrip(point);
     this._queue.push({ id: point.id, kind: 'ahead', distM });
-    try { logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${point.id} @ ${Math.round(distM)}m (ahead)`); } catch (e) {}
+    try {
+      const sid = (typeof AutoRoute !== 'undefined' && AutoRoute.shortIdOf)
+        ? AutoRoute.shortIdOf(point) : (point.shortId || point.id);
+      logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${sid} @ ${Math.round(distM)}m (ahead)`);
+    } catch (e) {}
     if (!this._activeId) this._showNext();
   },
 
@@ -7112,7 +7287,11 @@ const Confirm = {
     // queue popups for this trip.
     this._addClusterToAskedThisTrip(point);
     this._queue.push({ id: point.id, kind: 'passed', distM: 0 });
-    try { logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${point.id} (passed-fallback)`); } catch (e) {}
+    try {
+      const sid = (typeof AutoRoute !== 'undefined' && AutoRoute.shortIdOf)
+        ? AutoRoute.shortIdOf(point) : (point.shortId || point.id);
+      logEvent('FEEDBACK', `[FEEDBACK] feedback_prompt_shown — ${sid} (passed-fallback)`);
+    } catch (e) {}
     if (!this._activeId) this._showNext();
   },
 
@@ -7193,12 +7372,21 @@ const Confirm = {
     }
     const next = this._queue.shift();
     const id = (typeof next === 'string') ? next : next.id;
+    const queuedKind = (next && next.kind) ? next.kind : 'ahead';
     this._activeDistanceM = (next && typeof next.distM === 'number') ? next.distM : null;
     const point = State.data.points.find(p => p.id === id);
     if (!point) { this._showNext(); return; }
     this._activeId = id;
     this._resolvingMissedId = null;
     this._popupSoundPlayedForId = null;
+    // v23.18.19 — emit a binding source line so audit logs make it
+    // explicit whether the popup attaches to the actual last-emitted
+    // alert or to a passed-fallback (different point or stale).
+    try {
+      if (typeof AutoRoute !== 'undefined' && AutoRoute.logFeedbackBinding) {
+        AutoRoute.logFeedbackBinding(point, queuedKind);
+      }
+    } catch (e) {}
     this._render(point);
     this._startCountdown(this.FEEDBACK_COUNTDOWN_S);
     this._maybePlayPopupSound();

@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.18.14">
+<link rel="stylesheet" href="styles.css?v=23.18.15">
 </head>
 <body data-theme="light">
 
@@ -35,6 +35,15 @@
            confirmed via real fetch failures. Title carries the full
            breakdown for hover/longpress. -->
       <span class="offline-indicator" id="offline-indicator" hidden></span>
+    </div>
+    <!-- v23.18.15 — destination card now lives inline in the topbar,
+         parallel to the logo. Same #btn-route / #route-name IDs as
+         before so existing handlers + renderRouteBar still work. -->
+    <div class="route-bar route-bar-inline">
+      <button class="route-current" id="btn-route">
+        <span class="arrow">→</span>
+        <span id="route-name">Pick a destination</span>
+      </button>
     </div>
     <span class="topbar-spacer"></span>
     <!-- v23.18.14 — actions split into two explicit rows. The wrapper
@@ -66,14 +75,6 @@
         <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
       </div>
     </div>
-  </div>
-
-  <!-- ROUTE BAR -->
-  <div class="route-bar">
-    <button class="route-current" id="btn-route">
-      <span class="arrow">→</span>
-      <span id="route-name">Pick a destination</span>
-    </button>
   </div>
 
   <!-- v22.29: simplified diagnostic strip — GPS accuracy only -->
@@ -916,8 +917,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.18.14"></script>
-<script defer src="js/app-ui.js?v=23.18.14"></script>
+<script defer src="js/app-core.js?v=23.18.15"></script>
+<script defer src="js/app-ui.js?v=23.18.15"></script>
 
 </body>
 </html>

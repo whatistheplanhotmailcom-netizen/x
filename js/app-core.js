@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.12';
+const APP_VERSION = 'v23.18.13';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -1038,8 +1038,48 @@ const AutoRoute = {
           captureBearing: p.captureBearing, angleDiff: geo.bearingDiff };
         continue;
       }
+      // v23.18.13 — chain + feedback evidence. Pure reads; never mutates
+      // the point. Either may suppress (drops from focused list while
+      // marker stays visible) or contribute a scoreDelta used to re-sort
+      // survivors below.
+      const chainEv = this.chainEvidenceForCandidate(p, userState);
+      const fbEv = this.feedbackEvidenceForCandidate(p, userState);
+      if (chainEv.action === 'suppress') {
+        if (!firstReject) firstReject = { id: p.id, reason: chainEv.suppressReason || 'chain',
+          distM, heading, captureBearing: p.captureBearing, angleDiff: chainEv.chainAlignmentDeg };
+        this._maybeLogChainEvent(p, chainEv, distM, heading);
+        continue;
+      }
+      if (fbEv.action === 'suppress') {
+        if (!firstReject) firstReject = { id: p.id, reason: fbEv.suppressReason || 'feedback',
+          distM, heading, captureBearing: p.captureBearing, angleDiff: fbEv._diff };
+        this._maybeLogFeedbackEvent(p, fbEv, distM, heading);
+        continue;
+      }
+      c._chainEvidence = chainEv;
+      c._feedbackEvidence = fbEv;
+      c._scoreDelta = (chainEv.scoreDelta || 0) + (fbEv.scoreDelta || 0);
+      // Log non-suppress events too (boost/penalize) for audit visibility.
+      if (chainEv.action === 'boost' || chainEv.action === 'penalize') {
+        this._maybeLogChainEvent(p, chainEv, distM, heading);
+      }
+      if (fbEv.action === 'penalize') {
+        this._maybeLogFeedbackEvent(p, fbEv, distM, heading);
+      }
       out.push(c);
     }
+    // v23.18.13 — sort survivors so chain/feedback evidence reorders the
+    // focused-id selection. Highest scoreDelta wins; ties fall back to
+    // ascending distance (closest first), preserving the prior behavior
+    // when no evidence is available.
+    out.sort((a, b) => {
+      const da = (a._scoreDelta || 0);
+      const db = (b._scoreDelta || 0);
+      if (da !== db) return db - da;
+      const ad = (a.distM != null) ? a.distM : (Utils.distKm(userState, a.point) * 1000);
+      const bd = (b.distM != null) ? b.distM : (Utils.distKm(userState, b.point) * 1000);
+      return ad - bd;
+    });
     // Whole-tick throttled diagnostic — log only the first rejection so
     // the debug buffer doesn't flood. Drops below ~once per 1.5s.
     const now = Date.now();
@@ -1054,6 +1094,227 @@ const AutoRoute = {
         ` captureBearing=${cb} angleDiff=${ad}`);
     }
     return out;
+  },
+
+  // v23.18.13 — CHAIN + FEEDBACK EVIDENCE
+  // Pure helpers consumed by applyGates above. Read-only on the point;
+  // no mutation, no I/O.
+  CHAIN_STRONG_ALIGN_DEG: 45,
+  CHAIN_WEAK_ALIGN_DEG: 75,
+  CHAIN_OPPOSITE_DEG: 135,
+  CHAIN_BOOST: 25,
+  CHAIN_PENALIZE: -25,
+  CHAIN_OPPOSITE_PENALTY: -60,
+  SIDE_ROAD_BEARING_DIFF_DEG: 75,
+  SIDE_ROAD_CHAIN_DIFF_DEG: 60,
+  FEEDBACK_HEADING_MATCH_DEG: 45,
+  FEEDBACK_PENALIZE: -40,
+  FEEDBACK_SUPPRESS_AFTER: 2, // ≥ N matching-heading FPs ⇒ suppress
+  _chainLogAt: 0,
+  _feedbackLogAt: 0,
+  /** Best-effort chain direction (deg). Prefers captureBearing; falls
+   *  back to the segment from the closest prev to the closest next
+   *  chain neighbor, then to a single segment if only one neighbor
+   *  exists. Returns `{deg, confidence}` — confidence is one of
+   *  'unknown' / 'weak' / 'medium' / 'strong'. */
+  _inferChainDirection(p) {
+    const prev = Array.isArray(p.chainPrev3) ? p.chainPrev3 : [];
+    const next = Array.isArray(p.chainNext3) ? p.chainNext3 : [];
+    const lastPrev = prev.length ? prev[prev.length - 1] : null;
+    const firstNext = next.length ? next[0] : null;
+    const hasCB = (typeof p.captureBearing === 'number' && isFinite(p.captureBearing));
+    if (hasCB && (lastPrev || firstNext)) return { deg: p.captureBearing, confidence: 'strong' };
+    if (hasCB) return { deg: p.captureBearing, confidence: 'medium' };
+    if (lastPrev && firstNext &&
+        typeof lastPrev.lat === 'number' && typeof firstNext.lat === 'number') {
+      const deg = Speed.bearingBetween(lastPrev.lat, lastPrev.lng, firstNext.lat, firstNext.lng);
+      return { deg, confidence: 'strong' };
+    }
+    if (lastPrev && typeof lastPrev.lat === 'number' &&
+        typeof p.lat === 'number' && typeof p.lng === 'number') {
+      const deg = Speed.bearingBetween(lastPrev.lat, lastPrev.lng, p.lat, p.lng);
+      return { deg, confidence: 'weak' };
+    }
+    if (firstNext && typeof firstNext.lat === 'number' &&
+        typeof p.lat === 'number' && typeof p.lng === 'number') {
+      const deg = Speed.bearingBetween(p.lat, p.lng, firstNext.lat, firstNext.lng);
+      return { deg, confidence: 'weak' };
+    }
+    return { deg: null, confidence: 'unknown' };
+  },
+  /** Per-candidate chain evidence. Pure. */
+  chainEvidenceForCandidate(p, userState) {
+    const out = {
+      usable: false, action: 'neutral', scoreDelta: 0, reasons: [],
+      chainDirectionDeg: null, chainAlignmentDeg: null, approachAlignmentDeg: null,
+      lateralConfidence: 'unknown', suppressReason: null,
+    };
+    if (!p || !userState) return out;
+    const heading = (userState.heading != null) ? userState.heading : null;
+    if (!Number.isFinite(heading)) return out; // no heading ⇒ neutral, not broken
+    const chain = this._inferChainDirection(p);
+    out.chainDirectionDeg = chain.deg;
+    out.lateralConfidence = chain.confidence;
+    if (chain.deg == null) return out;
+    out.usable = true;
+    const chainAlign = Speed.angleDiff(heading, chain.deg);
+    out.chainAlignmentDeg = chainAlign;
+    const bearingToPt = Speed.bearingBetween(userState.lat, userState.lng, p.lat, p.lng);
+    const approachAlign = Speed.angleDiff(heading, bearingToPt);
+    out.approachAlignmentDeg = approachAlign;
+    const distM = Utils.distKm(userState, p) * 1000;
+    const closeSafety = distM <= this.SAFETY_OVERRIDE_M;
+    const isDirectional = (p.directional === true) ||
+      (typeof p.captureBearing === 'number' && isFinite(p.captureBearing));
+    // 1) Opposite chain direction.
+    if (!closeSafety && chainAlign >= this.CHAIN_OPPOSITE_DEG) {
+      if (isDirectional) {
+        out.action = 'suppress';
+        out.suppressReason = 'chain-opposite-directional';
+      } else {
+        out.action = 'penalize';
+      }
+      out.scoreDelta = this.CHAIN_OPPOSITE_PENALTY;
+      out.reasons.push('chain-opposite');
+      return out;
+    }
+    // 2) Perpendicular/penalize band.
+    if (!closeSafety && chainAlign > this.CHAIN_WEAK_ALIGN_DEG && chainAlign < this.CHAIN_OPPOSITE_DEG) {
+      out.action = 'penalize';
+      out.scoreDelta = this.CHAIN_PENALIZE;
+      out.reasons.push('chain-misaligned');
+    } else if (chainAlign <= this.CHAIN_STRONG_ALIGN_DEG &&
+               (chain.confidence === 'medium' || chain.confidence === 'strong')) {
+      out.action = 'boost';
+      out.scoreDelta = this.CHAIN_BOOST;
+      out.reasons.push('chain-aligned');
+    }
+    // 3) Side-road / parallel-road suppression.
+    //    bearing-to-candidate > 75° from heading AND chain alignment > 60°
+    //    AND candidate not extremely close.
+    if (!closeSafety &&
+        approachAlign > this.SIDE_ROAD_BEARING_DIFF_DEG &&
+        chainAlign > this.SIDE_ROAD_CHAIN_DIFF_DEG) {
+      out.action = 'suppress';
+      out.suppressReason = 'side-road-chain';
+      out.reasons.push('side-road-chain');
+    }
+    return out;
+  },
+  /** False-positive evidence — reads point.falsePositiveApproaches[]
+   *  (v23.18.13 new field, written by recordFalsePositiveApproach)
+   *  AND, for back-compat, the existing v23.9.6
+   *  point.feedbackStats.falsePositiveDirectionEvidence[]. Pure. */
+  feedbackEvidenceForCandidate(p, userState) {
+    const out = { usable: false, action: 'neutral', scoreDelta: 0, reasons: [],
+                  suppressReason: null, _diff: null };
+    if (!p || !userState) return out;
+    const heading = userState.heading;
+    if (!Number.isFinite(heading)) return out;
+    const headings = [];
+    if (Array.isArray(p.falsePositiveApproaches)) {
+      for (const a of p.falsePositiveApproaches) {
+        if (a && Number.isFinite(a.heading)) headings.push(a.heading);
+      }
+    }
+    // Back-compat: derive an approach heading from each
+    // feedbackStats.falsePositiveDirectionEvidence entry by combining
+    // captureBearing + the stored headingDelta. headingDelta was
+    // angleDiff(captureBearing, sample.heading) so the absolute heading
+    // direction is captureBearing ± delta — we accept both candidates.
+    const fb = (p.feedbackStats && Array.isArray(p.feedbackStats.falsePositiveDirectionEvidence))
+      ? p.feedbackStats.falsePositiveDirectionEvidence : [];
+    if (fb.length && typeof p.captureBearing === 'number') {
+      for (const e of fb) {
+        if (!e || !Number.isFinite(e.headingDelta)) continue;
+        const a = ((p.captureBearing + e.headingDelta) % 360 + 360) % 360;
+        const b = ((p.captureBearing - e.headingDelta) % 360 + 360) % 360;
+        headings.push(a, b);
+      }
+    }
+    if (!headings.length) return out;
+    let matches = 0, bestDiff = null;
+    for (const h of headings) {
+      const d = Speed.angleDiff(heading, h);
+      if (d <= this.FEEDBACK_HEADING_MATCH_DEG) {
+        matches++;
+        if (bestDiff == null || d < bestDiff) bestDiff = d;
+      }
+    }
+    if (!matches) return out;
+    out.usable = true;
+    out._diff = bestDiff;
+    if (matches >= this.FEEDBACK_SUPPRESS_AFTER) {
+      out.action = 'suppress';
+      out.suppressReason = 'feedback-similar-heading';
+      out.scoreDelta = -200;
+    } else {
+      out.action = 'penalize';
+      out.scoreDelta = this.FEEDBACK_PENALIZE;
+    }
+    out.reasons.push('feedback-similar-heading');
+    return out;
+  },
+  /** Throttled diagnostic emitters. Per-channel rate-limit (1.5 s). */
+  _maybeLogChainEvent(p, ev, distM, heading) {
+    const now = Date.now();
+    if (now - this._chainLogAt < 1500) return;
+    this._chainLogAt = now;
+    const cb = (typeof p.captureBearing === 'number') ? Math.round(p.captureBearing) : 'n/a';
+    const ch = (ev.chainDirectionDeg != null) ? Math.round(ev.chainDirectionDeg) : 'n/a';
+    const diff = (ev.chainAlignmentDeg != null) ? Math.round(ev.chainAlignmentDeg) : 'n/a';
+    const hd = Number.isFinite(heading) ? Math.round(heading) : 'n/a';
+    const reason = ev.suppressReason || (ev.reasons.length ? ev.reasons[0] : 'none');
+    const idShown = p.shortId || p.id;
+    logEvent('AUTO-ROUTE-CHAIN',
+      `point=${idShown} action=${ev.action} reason=${reason} dist=${Math.round(distM)}` +
+      ` heading=${hd} chain=${ch} captureBearing=${cb} diff=${diff}`);
+  },
+  _maybeLogFeedbackEvent(p, ev, distM, heading) {
+    const now = Date.now();
+    if (now - this._feedbackLogAt < 1500) return;
+    this._feedbackLogAt = now;
+    const hd = Number.isFinite(heading) ? Math.round(heading) : 'n/a';
+    const diff = (ev._diff != null) ? Math.round(ev._diff) : 'n/a';
+    const idShown = p.shortId || p.id;
+    logEvent('AUTO-ROUTE-FEEDBACK',
+      `point=${idShown} action=${ev.action} reason=${ev.suppressReason || 'feedback-similar-heading'}` +
+      ` heading=${hd} diff=${diff}`);
+  },
+  /** Record a false-positive approach onto the point. Append-only;
+   *  size-capped so the array can't grow without bound. */
+  FALSE_POSITIVE_APPROACH_CAP: 20,
+  recordFalsePositiveApproach(point, userState, reason) {
+    if (!point) return;
+    if (!Array.isArray(point.falsePositiveApproaches)) point.falsePositiveApproaches = [];
+    const heading = (userState && Number.isFinite(userState.heading))
+      ? userState.heading
+      : (Number.isFinite(State && State.heading) ? State.heading : null);
+    const distanceM = (userState && userState.lat != null && point.lat != null)
+      ? Math.round(Utils.distKm(userState, point) * 1000)
+      : null;
+    let chainDirectionDeg = null;
+    try {
+      const cd = this._inferChainDirection(point);
+      chainDirectionDeg = (cd && cd.deg != null) ? Math.round(cd.deg * 10) / 10 : null;
+    } catch (e) {}
+    point.falsePositiveApproaches.push({
+      heading: (heading != null) ? Math.round(heading * 10) / 10 : null,
+      chainDirectionDeg,
+      distanceM,
+      reason: reason || 'manual',
+      createdAt: new Date().toISOString(),
+    });
+    while (point.falsePositiveApproaches.length > this.FALSE_POSITIVE_APPROACH_CAP) {
+      point.falsePositiveApproaches.shift();
+    }
+    if (typeof point.lastFalsePositiveAt === 'undefined') {
+      point.lastFalsePositiveAt = new Date().toISOString();
+    } else {
+      point.lastFalsePositiveAt = new Date().toISOString();
+    }
+    if (typeof point.falsePositiveCount !== 'number') point.falsePositiveCount = 0;
+    point.falsePositiveCount++;
   },
 };
 
@@ -6964,6 +7225,17 @@ const Confirm = {
           classification: lastIssue,
         });
       }
+      // v23.18.13 — also record the FP approach in the structured
+      // falsePositiveApproaches[] AutoRoute consumes for heading-based
+      // suppression. Captures the actual approach heading + distance
+      // without depending on captureBearing existing.
+      try {
+        if (typeof AutoRoute !== 'undefined' && AutoRoute.recordFalsePositiveApproach) {
+          const userState = (typeof Observations !== 'undefined' && Observations.buildUserState)
+            ? Observations.buildUserState() : null;
+          AutoRoute.recordFalsePositiveApproach(point, userState, lastIssue || 'manual');
+        }
+      } catch (e) {}
     } catch (e) {
       try { logEvent('FEEDBACK-POPUP', 'false_positive handling error: ' + (e && e.message || e), 'err'); } catch (e2) {}
     }

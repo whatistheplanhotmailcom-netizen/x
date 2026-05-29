@@ -1817,6 +1817,29 @@ const UI = {
     if (!type) return false;
     return this._ALERT_AUDIT_PREFIXES.some(p => type.indexOf(p) === 0);
   },
+  // v23.18.18 — feedback-channel classifier. Catches every FEEDBACK*
+  // type plus the AUTO-ROUTE-FP-STORED / -FP-SUPPRESS lines (which
+  // both truncate to 'AUTO-ROUTE' in the type column, so we have to
+  // peek at the message body) and the user-feedback CAPTURE lines.
+  _FEEDBACK_AUDIT_MESSAGE_HINTS: ['FP-STORED', 'FP-SUPPRESS', 'false_positive', 'false positive', 'still there'],
+  _isFeedbackAuditEntry(L) {
+    if (!L) return false;
+    const t = L.type || '';
+    if (t.indexOf('FEEDBACK') === 0) return true;
+    const m = L.msg || '';
+    return this._FEEDBACK_AUDIT_MESSAGE_HINTS.some(h => m.indexOf(h) >= 0);
+  },
+  _renderAuditRows(targetEl, entries) {
+    if (!targetEl) return;
+    targetEl.innerHTML = entries.map(L =>
+      `<div class="debug-row ${Utils.escapeHtml(L.level)}">
+        <span class="ts">${Utils.escapeHtml(L.t)}</span>
+        <span class="ty">${Utils.escapeHtml(L.type)}</span>
+        <span class="msg">${Utils.escapeHtml(L.msg)}</span>
+      </div>`
+    ).join('');
+    targetEl.scrollTop = 0;
+  },
   renderAlertAudit() {
     const modal = document.getElementById('m-alert-audit');
     if (!modal) return;
@@ -1865,24 +1888,36 @@ const UI = {
       aheadEl.innerHTML = html;
     }
 
-    // --- Recent alert activity ---
+    // --- Recent alert activity + Recent feedback activity ---
     const list = document.getElementById('alert-audit-log');
     const count = document.getElementById('alert-audit-count');
-    if (!list) return;
-    const matches = Logger.logs.filter(L => UI._isAlertAuditType(L.type));
-    if (count) count.textContent = `(${matches.length})`;
-    if (!matches.length) {
-      list.innerHTML = '<div class="empty">No alert activity yet</div>';
-      return;
+    const fbList = document.getElementById('feedback-audit-log');
+    const fbCount = document.getElementById('feedback-audit-count');
+    // One pass over Logger.logs — fan each entry into the right bucket.
+    const alertEntries = [];
+    const feedbackEntries = [];
+    for (const L of Logger.logs) {
+      const isFb = UI._isFeedbackAuditEntry(L);
+      const isAlert = UI._isAlertAuditType(L.type);
+      if (isFb) feedbackEntries.push(L);
+      if (isAlert && !isFb) alertEntries.push(L);
     }
-    list.innerHTML = matches.map(L =>
-      `<div class="debug-row ${Utils.escapeHtml(L.level)}">
-        <span class="ts">${Utils.escapeHtml(L.t)}</span>
-        <span class="ty">${Utils.escapeHtml(L.type)}</span>
-        <span class="msg">${Utils.escapeHtml(L.msg)}</span>
-      </div>`
-    ).join('');
-    list.scrollTop = 0;
+    if (count) count.textContent = `(${alertEntries.length})`;
+    if (fbCount) fbCount.textContent = `(${feedbackEntries.length})`;
+    if (list) {
+      if (!alertEntries.length) {
+        list.innerHTML = '<div class="empty">No alert activity yet</div>';
+      } else {
+        this._renderAuditRows(list, alertEntries);
+      }
+    }
+    if (fbList) {
+      if (!feedbackEntries.length) {
+        fbList.innerHTML = '<div class="empty">No feedback activity yet</div>';
+      } else {
+        this._renderAuditRows(fbList, feedbackEntries);
+      }
+    }
   },
 
   renderDebugLog() {
@@ -4321,11 +4356,17 @@ function wire() {
   if (alertAuditCopy) alertAuditCopy.onclick = async () => {
     const aheadEl = document.getElementById('alert-audit-ahead');
     const aheadText = aheadEl ? aheadEl.innerText.trim() : '';
-    const logText = Logger.logs
-      .filter(L => UI._isAlertAuditType(L.type))
-      .map(L => `[${L.t}] ${L.type}: ${L.msg}`)
-      .join('\n');
-    const full = `=== Next ahead ===\n${aheadText || '(none)'}\n\n=== Alert activity ===\n${logText || '(none)'}`;
+    const fmt = L => `[${L.t}] ${L.type}: ${L.msg}`;
+    const alertText = Logger.logs
+      .filter(L => UI._isAlertAuditType(L.type) && !UI._isFeedbackAuditEntry(L))
+      .map(fmt).join('\n');
+    const fbText = Logger.logs
+      .filter(L => UI._isFeedbackAuditEntry(L))
+      .map(fmt).join('\n');
+    const full =
+      `=== Next ahead ===\n${aheadText || '(none)'}\n\n` +
+      `=== Alert activity ===\n${alertText || '(none)'}\n\n` +
+      `=== Feedback activity ===\n${fbText || '(none)'}`;
     try {
       await navigator.clipboard.writeText(full);
       Utils.toast('Copied alert audit', 'good');

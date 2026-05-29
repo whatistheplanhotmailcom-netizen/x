@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.18.17">
+<link rel="stylesheet" href="styles.css?v=23.18.18">
 </head>
 <body data-theme="light">
 
@@ -821,7 +821,13 @@
       <div id="alert-audit-ahead">—</div>
     </div>
     <div style="margin-top:6px;font-weight:700;color:var(--ink-2);font-size:11px;">Recent alert activity</div>
-    <div id="alert-audit-log" style="max-height:48vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
+    <div id="alert-audit-log" style="max-height:32vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
+    <!-- v23.18.18 — dedicated feedback channel so FP recording /
+         suppression events are easy to spot for troubleshooting. -->
+    <div style="margin-top:6px;font-weight:700;color:var(--ink-2);font-size:11px;">
+      Recent feedback activity <span id="feedback-audit-count" style="color:var(--ink-3);font-weight:400;">(0)</span>
+    </div>
+    <div id="feedback-audit-log" style="max-height:24vh;overflow-y:auto;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px;"></div>
   </div>
 </div>
 
@@ -918,8 +924,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.18.17"></script>
-<script defer src="js/app-ui.js?v=23.18.17"></script>
+<script defer src="js/app-core.js?v=23.18.18"></script>
+<script defer src="js/app-ui.js?v=23.18.18"></script>
 
 </body>
 </html>

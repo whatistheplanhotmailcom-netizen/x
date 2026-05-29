@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.13';
+const APP_VERSION = 'v23.18.14';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {

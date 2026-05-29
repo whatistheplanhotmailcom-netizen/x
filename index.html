@@ -16,7 +16,7 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.18.13">
+<link rel="stylesheet" href="styles.css?v=23.18.14">
 </head>
 <body data-theme="light">
 
@@ -37,27 +37,34 @@
       <span class="offline-indicator" id="offline-indicator" hidden></span>
     </div>
     <span class="topbar-spacer"></span>
+    <!-- v23.18.14 — actions split into two explicit rows. The wrapper
+         is a single column on the right; each .topbar-actions-row is a
+         right-aligned flex row of icon buttons. No wrap heuristics. -->
     <div class="topbar-actions">
-      <button class="icon-btn" id="btn-sound" title="Sound mode">🔊</button>
-      <button class="icon-btn" id="btn-theme" title="Theme">☀</button>
-      <!-- v22.56: toggle long-press-to-capture on/off. OFF (🔒) prevents
-           accidental captures. ON (🔓) enables long-press on empty map. -->
-      <button class="icon-btn" id="btn-longpress" title="Long-press capture">🔒</button>
-      <!-- v22.98: debug log panel — tap to see timestamped event history -->
-      <button class="icon-btn" id="btn-debug" title="Debug log">🐛</button>
-      <!-- v23.18.2: alert audit panel — top candidates ahead + recent
-           alert-related events. Read-only diagnostic; never alters
-           scoring, candidate selection, or sound. -->
-      <button class="icon-btn" id="btn-alert-audit" title="Alert audit (next ahead + recent activity)">🎯</button>
-      <!-- v23.9.2: Drive view toggle — snaps the map to a fixed
-           driving configuration (zoom 18, 3D pitch, heading-up,
-           follow ON). Tap again to exit the preset. -->
-      <button class="icon-btn" id="btn-drive-view" title="Drive view (zoom + 3D + follow)">🚗</button>
-      <!-- v23.9.9: master toggle for the "Still there?" feedback popup. -->
-      <button class="icon-btn" id="btn-feedback-toggle" title="Feedback popup on/off">💬</button>
-      <!-- v23.11.0: show/hide the LEFT rail (opposite-direction captures). -->
-      <button class="icon-btn" id="btn-left-rail" title="Left rail (opposite direction) on/off">⬅</button>
-      <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
+      <div class="topbar-actions-row">
+        <button class="icon-btn" id="btn-sound" title="Sound mode">🔊</button>
+        <button class="icon-btn" id="btn-theme" title="Theme">☀</button>
+        <!-- v22.56: toggle long-press-to-capture on/off. OFF (🔒) prevents
+             accidental captures. ON (🔓) enables long-press on empty map. -->
+        <button class="icon-btn" id="btn-longpress" title="Long-press capture">🔒</button>
+        <!-- v22.98: debug log panel — tap to see timestamped event history -->
+        <button class="icon-btn" id="btn-debug" title="Debug log">🐛</button>
+        <!-- v23.18.2: alert audit panel — top candidates ahead + recent
+             alert-related events. Read-only diagnostic; never alters
+             scoring, candidate selection, or sound. -->
+        <button class="icon-btn" id="btn-alert-audit" title="Alert audit (next ahead + recent activity)">🎯</button>
+      </div>
+      <div class="topbar-actions-row">
+        <!-- v23.9.2: Drive view toggle — snaps the map to a fixed
+             driving configuration (zoom 18, 3D pitch, heading-up,
+             follow ON). Tap again to exit the preset. -->
+        <button class="icon-btn" id="btn-drive-view" title="Drive view (zoom + 3D + follow)">🚗</button>
+        <!-- v23.9.9: master toggle for the "Still there?" feedback popup. -->
+        <button class="icon-btn" id="btn-feedback-toggle" title="Feedback popup on/off">💬</button>
+        <!-- v23.11.0: show/hide the LEFT rail (opposite-direction captures). -->
+        <button class="icon-btn" id="btn-left-rail" title="Left rail (opposite direction) on/off">⬅</button>
+        <button class="icon-btn" id="btn-settings" title="Settings">⚙</button>
+      </div>
     </div>
   </div>
 
@@ -909,8 +916,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.18.13"></script>
-<script defer src="js/app-ui.js?v=23.18.13"></script>
+<script defer src="js/app-core.js?v=23.18.14"></script>
+<script defer src="js/app-ui.js?v=23.18.14"></script>
 
 </body>
 </html>

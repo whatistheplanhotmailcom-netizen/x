@@ -269,13 +269,25 @@ body {
 .route-bar .route-current > .arrow {
   flex: 0 0 auto;
 }
-/* v23.18.15 — inline variant: lives inside the topbar next to the
-   brand. Takes only its natural width, capped so a long destination
-   name can't push the icon buttons off the right edge. */
+/* v23.18.16 — left-column wrapper inside .topbar. Stacks the brand on
+   top and the destination card directly underneath, while .topbar
+   itself stays a single flex row that pushes the action stack to the
+   right edge. min-width:0 lets the destination text ellipsis-truncate
+   instead of expanding the column. */
+.topbar .topbar-left {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+/* v23.18.15/16 — inline variant of the destination card. Renders
+   directly under the logo + version inside .topbar-left. Compact
+   font + padding so the topbar stays tight. */
 .topbar .route-bar-inline {
   display: flex;
   min-width: 0;
-  max-width: 220px;
+  max-width: 240px;
   flex: 0 1 auto;
 }
 .topbar .route-bar-inline .route-current {

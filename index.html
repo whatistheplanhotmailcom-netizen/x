@@ -16,34 +16,35 @@
 <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.7.3/dist/maplibre-gl.css"
       onerror="this.onerror=null;this.href='https://cdn.jsdelivr.net/npm/maplibre-gl@5.7.3/dist/maplibre-gl.css';">
 
-<link rel="stylesheet" href="styles.css?v=23.18.15">
+<link rel="stylesheet" href="styles.css?v=23.18.16">
 </head>
 <body data-theme="light">
 
 <div class="app">
   <!-- TOP BAR -->
   <div class="topbar">
-    <div class="brand">
-      <span class="dot"></span>
-      <span>X</span>
-      <span class="version" id="app-version-label"></span>
-      <!-- v23.4.1: alert-engine visibility chip. Hidden in Legacy mode;
-           amber in Shadow; red+pulse in Active. Driven from UI.applyIntelIndicator. -->
-      <span class="intel-indicator" id="intel-indicator" hidden></span>
-      <!-- v23.5 Phase 4: offline / degraded-network persistent chip.
-           Hidden when fully online. Amber when suspected; red when
-           confirmed via real fetch failures. Title carries the full
-           breakdown for hover/longpress. -->
-      <span class="offline-indicator" id="offline-indicator" hidden></span>
-    </div>
-    <!-- v23.18.15 — destination card now lives inline in the topbar,
-         parallel to the logo. Same #btn-route / #route-name IDs as
-         before so existing handlers + renderRouteBar still work. -->
-    <div class="route-bar route-bar-inline">
-      <button class="route-current" id="btn-route">
-        <span class="arrow">→</span>
-        <span id="route-name">Pick a destination</span>
-      </button>
+    <!-- v23.18.16 — brand and destination card stack as a left-side
+         column. Destination sits directly under the logo + app version. -->
+    <div class="topbar-left">
+      <div class="brand">
+        <span class="dot"></span>
+        <span>X</span>
+        <span class="version" id="app-version-label"></span>
+        <!-- v23.4.1: alert-engine visibility chip. Hidden in Legacy mode;
+             amber in Shadow; red+pulse in Active. Driven from UI.applyIntelIndicator. -->
+        <span class="intel-indicator" id="intel-indicator" hidden></span>
+        <!-- v23.5 Phase 4: offline / degraded-network persistent chip.
+             Hidden when fully online. Amber when suspected; red when
+             confirmed via real fetch failures. Title carries the full
+             breakdown for hover/longpress. -->
+        <span class="offline-indicator" id="offline-indicator" hidden></span>
+      </div>
+      <div class="route-bar route-bar-inline">
+        <button class="route-current" id="btn-route">
+          <span class="arrow">→</span>
+          <span id="route-name">Pick a destination</span>
+        </button>
+      </div>
     </div>
     <span class="topbar-spacer"></span>
     <!-- v23.18.14 — actions split into two explicit rows. The wrapper
@@ -917,8 +918,8 @@
 })();
 </script>
 
-<script defer src="js/app-core.js?v=23.18.15"></script>
-<script defer src="js/app-ui.js?v=23.18.15"></script>
+<script defer src="js/app-core.js?v=23.18.16"></script>
+<script defer src="js/app-ui.js?v=23.18.16"></script>
 
 </body>
 </html>

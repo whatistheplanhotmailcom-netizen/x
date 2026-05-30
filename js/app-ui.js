@@ -1821,7 +1821,7 @@ const UI = {
   // type plus the AUTO-ROUTE-FP-STORED / -FP-SUPPRESS lines (which
   // both truncate to 'AUTO-ROUTE' in the type column, so we have to
   // peek at the message body) and the user-feedback CAPTURE lines.
-  _FEEDBACK_AUDIT_MESSAGE_HINTS: ['FP-STORED', 'FP-SUPPRESS', 'false_positive', 'false positive', 'still there'],
+  _FEEDBACK_AUDIT_MESSAGE_HINTS: ['FP-STORED', 'FP-SUPPRESS', 'false_positive', 'false positive', 'still there', 'passed-fallback'],
   _isFeedbackAuditEntry(L) {
     if (!L) return false;
     const t = L.type || '';

@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.21';
+const APP_VERSION = 'v23.18.22';
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
@@ -7376,13 +7376,38 @@ const Confirm = {
   },
 
   /** Legacy onPassed fallback — fires if the user crossed the 50 m
-   *  window faster than one GPS tick. Same queue, same guard. */
+   *  window faster than one GPS tick. Same queue, same guard.
+   *  v23.18.22 — gated by AutoRoute.finalEmissionAllowed so we don't
+   *  enqueue passed-fallback prompts for points the engine already
+   *  classified as opposite-direction / side-road / feedback-suppressed.
+   *  Those are points the user never actually approached. Skipping
+   *  the popup avoids nuisance prompts; the engine's existing
+   *  AUTO-ROUTE-FINAL log already explains why the candidate would
+   *  not have alerted, so a FEEDBACK-SKIP line just references it. */
   onPassed(point) {
     if (!point || !point.id) return;
     if (State.settings && State.settings.feedbackEnabled === false) return; // v23.9.9 master switch
     if (!this.ASKABLE_TYPES.includes(point.type)) return;
     if (point.status === 'no') return;
     if (this._askedThisTrip.has(point.id)) return;
+    // v23.18.22 — engine-suppressed candidates don't get a passed-fallback
+    // popup. Only runs in AutoRoute mode (destinationless trip); the
+    // destination flow is untouched.
+    try {
+      if (!State.activeDest() && typeof AutoRoute !== 'undefined' &&
+          AutoRoute.finalGateForEmission) {
+        const distM = State.pos ? Math.round(Utils.distKm(State.pos, point) * 1000) : null;
+        const g = AutoRoute.finalGateForEmission(point, distM, 'passed-fallback');
+        if (g && g.emit === false) {
+          const sid = AutoRoute.shortIdOf(point);
+          logEvent('FEEDBACK-SKIP',
+            `passed-fallback skipped point=${sid} reason=${g.reason} dist=${g.distM}` +
+            ` heading=${g.headingDeg != null ? g.headingDeg : 'n/a'}` +
+            ` captureBearing=${g.captureBearingDeg != null ? g.captureBearingDeg : 'null'}`);
+          return;
+        }
+      }
+    } catch (e) {}
     this._askedThisTrip.add(point.id);
     // v23.9.7: cluster-suppress nearby askable points so opposite-
     // direction cameras captured at the same intersection don't both

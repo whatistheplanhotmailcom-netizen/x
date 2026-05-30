@@ -143,6 +143,121 @@ function logEvent(type, message, level) {
 }
 
 /* ============================================================
+   0b2. AUDIO AUDIT — lightweight audio/speech/vibration log collector
+   SEPARATE from Logger / the alert-audit. Newest entries at index 0.
+   Bounded ring buffer (MAX 400). The SAME decision object that gates an
+   emission is what gets logged here — no gating logic is duplicated.
+   The collector answers ONLY audio-layer questions: did the audio policy
+   allow this tone/speech, which audio policy blocked it, did preview
+   bypass mute, did the audio API throw, did haptics fire.
+   Exposed as window.AudioAudit for console troubleshooting.
+   ============================================================ */
+const AudioAudit = {
+  MAX: 400,
+  logs: [],
+
+  /** Normalize + push one audit entry. `decision` is the SAME object the
+   *  emitter used to gate the tone/speech (or null for haptics/preview). */
+  log(o) {
+    o = o || {};
+    const s = (typeof State !== 'undefined' && State.settings) ? State.settings : {};
+    const decision = o.decision;
+    const entry = {
+      ts: Date.now(),
+      source: o.source,
+      action: o.action,
+      pointId: o.pointId || null,
+      pointType: o.pointType || null,
+      distanceM: o.distanceM != null ? o.distanceM : null,
+      markerM: o.markerM != null ? o.markerM : null,
+      sound: o.sound != null ? o.sound : s.sound,
+      voiceGender: o.voiceGender != null ? o.voiceGender : s.voiceGender,
+      speedAlertMode: o.speedAlertMode != null ? o.speedAlertMode : (s.speedAlertMode || null),
+      allowed: (decision && decision.allowed != null) ? decision.allowed : null,
+      reason: (decision && decision.reason) || o.reason || null,
+      previewBypass: !!o.previewBypass,
+      vibrationFired: !!o.vibrationFired,
+      error: o.error || null,
+      extra: o.extra || null,
+    };
+    this.logs.unshift(entry);
+    if (this.logs.length > this.MAX) this.logs.length = this.MAX;
+    // If a diagnostics view is open, refresh it (looked up lazily).
+    try {
+      const modal = document.getElementById('m-debug');
+      if (modal && modal.classList.contains('open') &&
+          typeof UI !== 'undefined' && UI.renderAudioAudit) {
+        UI.renderAudioAudit();
+      }
+    } catch (e) {}
+    return entry;
+  },
+
+  /** Per-point throttle bookkeeping for proximity_ping. Logs when: first
+   *  ping for a point, distance-band change, suppression-state change,
+   *  error, OR at most once per 5000ms per point. */
+  _proxState: {},
+  PROX_THROTTLE_MS: 5000,
+  logProximity(o) {
+    o = o || {};
+    const pid = o.pointId || '_';
+    const decision = o.decision || {};
+    const allowed = decision.allowed;
+    const band = o.band != null ? o.band : null;
+    const isErr = !!o.error;
+    const now = Date.now();
+    const prev = this._proxState[pid];
+    let should = false;
+    if (!prev) should = true;                              // first ping
+    else if (prev.band !== band) should = true;            // band change
+    else if (prev.allowed !== allowed) should = true;      // suppression-state change
+    else if (isErr) should = true;                         // error
+    else if (now - prev.ts >= this.PROX_THROTTLE_MS) should = true; // time cap
+    this._proxState[pid] = { band, allowed, ts: now };
+    if (!should) return null;
+    return this.log(o);
+  },
+
+  /** Return a shallow copy of the buffer (newest first) and console.table it. */
+  dump() {
+    const copy = this.logs.slice();
+    try { console.table(copy); } catch (e) { try { console.log(copy); } catch (e2) {} }
+    return copy;
+  },
+
+  asText() {
+    return this.logs.map(L => {
+      const d = new Date(L.ts).toLocaleTimeString();
+      const bits = [
+        d,
+        L.source + '/' + L.action,
+        'allowed=' + L.allowed,
+        L.reason ? ('reason=' + L.reason) : null,
+        L.pointType ? ('type=' + L.pointType) : null,
+        L.distanceM != null ? ('dist=' + L.distanceM) : null,
+        'sound=' + L.sound,
+        'voice=' + L.voiceGender,
+        L.speedAlertMode ? ('speedMode=' + L.speedAlertMode) : null,
+        L.previewBypass ? 'preview' : null,
+        L.vibrationFired ? 'vibrated' : null,
+        L.error ? ('error=' + L.error) : null,
+        L.extra ? ('extra=' + (function(){ try { return JSON.stringify(L.extra); } catch (e) { return String(L.extra); } })()) : null,
+      ].filter(Boolean);
+      return bits.join(' | ');
+    }).join('\n');
+  },
+
+  clear() {
+    this.logs = [];
+    this._proxState = {};
+    try {
+      if (typeof UI !== 'undefined' && UI.renderAudioAudit) UI.renderAudioAudit();
+    } catch (e) {}
+  },
+};
+try { window.AudioAudit = AudioAudit; } catch (e) {}
+
+/* ============================================================
    0c. SPEED — v22.91
    Pure-math helpers + scoring engine for road-aware speed-limit alerts.
    Storage.migrate calls Speed.migrateSpeedPoints to extend the schema
@@ -4171,12 +4286,54 @@ const Audio = {
     this._unlocked = true;
   },
 
-  beep(type) {
+  /* ----- Decision helpers -----
+     SINGLE source of truth for whether a tone / speech is allowed by the
+     audio policy. Enforcement AND audit logging must use the SAME returned
+     decision object per emission. Boolean helpers DERIVE from these. */
+  beepDecision() {
+    if (State.settings.sound === 'off') return { allowed: false, reason: 'sound_off' };
+    if (State.settings.sound === 'voice') return { allowed: false, reason: 'tone_not_allowed_by_sound_mode' };
+    return { allowed: true, reason: null };
+  },
+  speakDecision() {
+    if (State.settings.sound === 'off') return { allowed: false, reason: 'sound_off' };
+    if (State.settings.voiceGender === 'none') return { allowed: false, reason: 'voice_gender_none' };
+    if (State.settings.sound === 'beep') return { allowed: false, reason: 'speech_not_allowed_by_sound_mode' };
+    return { allowed: true, reason: null };
+  },
+  speedToneDecision() {
+    const base = this.beepDecision(); if (!base.allowed) return base;
+    const mode = State.settings.speedAlertMode || 'beep';
+    if (mode === 'off') return { allowed: false, reason: 'speed_alert_mode_off' };
+    if (mode === 'voice') return { allowed: false, reason: 'tone_not_allowed_by_speed_alert_mode' };
+    return { allowed: true, reason: null };
+  },
+  speedSpeechDecision() {
+    const base = this.speakDecision(); if (!base.allowed) return base;
+    const mode = State.settings.speedAlertMode || 'beep';
+    if (mode === 'off') return { allowed: false, reason: 'speed_alert_mode_off' };
+    if (mode === 'beep') return { allowed: false, reason: 'speech_not_allowed_by_speed_alert_mode' };
+    return { allowed: true, reason: null };
+  },
+  shouldBeep() { return this.beepDecision().allowed; },
+  shouldSpeak() { return this.speakDecision().allowed; },
+
+  // `opts` may carry { preview:true } (preview-test bypass) and { auditSource }
+  // so a thrown AudioContext error is logged against the right source. beep()
+  // does NOT gate by the master sound mode — gating stays the caller's job so
+  // historically-ungated paths keep playing exactly as before.
+  beep(type, opts) {
+    opts = opts || {};
+    const auditSrc = opts.auditSource || (opts.preview ? 'preview_test' : null);
     const ctx = this.ensure();
     if (!ctx) {
+      // Vibration is intentionally independent from the master sound setting.
+      // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
       if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 200]);
+      if (auditSrc) AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, extra: { relatedSource: auditSrc, fallback: 'no_audio_context' } });
       return;
     }
+    try {
     // v22.31: Radarbot-style alert — two pure-tone "pings" with slight pitch
     // rise between them. Distinctive radar-return character: short attack,
     // sustained body, exponential decay. Different per-type pings to keep
@@ -4256,9 +4413,14 @@ const Audio = {
       osc.start(t);
       osc.stop(t + ping.dur + 0.01);
       t += ping.dur + gap;
-    });
+      });
+    } catch (e) {
+      if (auditSrc) AudioAudit.log({ source: auditSrc, action: 'tone_error', error: String(e), reason: 'audio_context_error', pointType: type });
+    }
 
-    // Vibration mirror — silent mode safety net
+    // Vibration mirror — silent mode safety net.
+    // Vibration is intentionally independent from the master sound setting.
+    // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
     if (navigator.vibrate) {
       const vibPattern = [];
       pings.forEach((p, i) => {
@@ -4266,6 +4428,7 @@ const Audio = {
         vibPattern.push(Math.round(p.dur * 1000));
       });
       navigator.vibrate(vibPattern);
+      if (auditSrc) AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, pointType: type, extra: { relatedSource: auditSrc, pattern: 'beep_mirror' } });
     }
   },
 
@@ -4294,7 +4457,9 @@ const Audio = {
    *  edited their mapping see no behavior change.
    *  Plays the catalogue pattern ONCE (the surrounding Audio.alert
    *  loop handles repeat counts via alertRepeatCount). */
-  playAlertSoundForType(type) {
+  playAlertSoundForType(type, opts) {
+    opts = opts || {};
+    const auditSrc = opts.auditSource || (opts.preview ? 'preview_test' : null);
     const mappedId = this.findMappedSoundId(type);
     if (mappedId) {
       const def = (typeof SoundCatalogue !== 'undefined')
@@ -4303,17 +4468,22 @@ const Audio = {
         const ctx = this.ensure();
         if (ctx) {
           this.playPattern(def.pattern, { intensity: 0.7 });
-          // Vibration mirror — silent-mode safety net (matches Audio.beep)
+          // Vibration mirror — silent-mode safety net (matches Audio.beep).
+          // Vibration is intentionally independent from the master sound setting.
+          // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
           if (navigator.vibrate) {
             const totalMs = Math.round(def.pattern.reduce((s, p) => s + p.dur + 0.05, 0) * 1000);
-            try { navigator.vibrate(Math.max(60, totalMs)); } catch (e) {}
+            try {
+              navigator.vibrate(Math.max(60, totalMs));
+              AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, pointType: type, extra: { relatedSource: auditSrc || 'threshold_alert', pattern: 'mapped_mirror' } });
+            } catch (e) {}
           }
           return;
         }
       }
     }
     // No mapping (or catalogue lookup failed) → legacy radar tones
-    this.beep(type);
+    this.beep(type, { auditSource: auditSrc || 'threshold_alert', preview: !!opts.preview });
   },
 
   /** v23.7.1 — feedback popup sound. Plays the catalogue sound mapped
@@ -4426,11 +4596,14 @@ const Audio = {
         onStatus('Played');
         this._previewCancelPrev = null;
       }
+      // Catalogue preview explicitly bypasses the master mute (preview-only).
+      AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', previewBypass: true, reason: 'preview_bypass', extra: { soundId: soundId } });
       return { ok: true };
     } catch (e) {
       onStatus('Failed');
       if (this._previewToken === myToken) this._previewCancelPrev = null;
       try { logEvent('SOUND', '[SOUND] preview failed: ' + (e && e.message || e), 'err'); } catch (err) {}
+      AudioAudit.log({ source: 'preview_test', action: 'preview_error', previewBypass: true, error: String(e), reason: 'audio_context_error', extra: { soundId: soundId } });
       return { ok: false, error: 'play_failed' };
     }
   },
@@ -4454,7 +4627,13 @@ const Audio = {
     this._voiceCache = voices[0]; this._voiceCacheFor = pref; return voices[0];
   },
 
-  say(text) {
+  // `opts` may carry { preview:true } and { auditSource } so a
+  // speechSynthesis failure is logged against the right source. say() keeps
+  // its historical gate (voiceGender==='none') only — callers apply the
+  // master sound-mode gate.
+  say(text, opts) {
+    opts = opts || {};
+    const auditSrc = opts.auditSource || (opts.preview ? 'preview_test' : null);
     if (!('speechSynthesis' in window)) return;
     if (State.settings.voiceGender === 'none') return;
     try {
@@ -4463,16 +4642,31 @@ const Audio = {
       if (v) { u.voice = v; u.lang = v.lang; }
       speechSynthesis.cancel();
       speechSynthesis.speak(u);
-    } catch (e) {}
+    } catch (e) {
+      if (auditSrc) AudioAudit.log({ source: auditSrc, action: 'speech_error', error: String(e), reason: 'speech_synthesis_error', extra: { textLen: (text || '').length } });
+    }
   },
 
   /** Fire alert for a point crossing a specific marker (meters).
    *  v22.32: tone plays unconditionally; voice plays additionally if
    *  voiceGender !== 'none'. The old 4-way sound mode is now binary
    *  (off vs on) via the master mute. */
-  alert(point, meters) {
+  // `opts.preview` is set by the Sound Check / settings preview path so the
+  // alert plays even when sound==='off'. Generated runtime alerts never set it.
+  alert(point, meters, opts) {
+    opts = opts || {};
+    const preview = !!opts.preview;
     const s = State.settings.sound;
-    if (s === 'off') return; // master mute still respected
+    // master mute still respected for GENERATED alerts (preview bypasses it).
+    // Behavior preserved: when muted and not preview, the entire alert path
+    // (AutoRoute snapshot, counters, tones, speech) is skipped exactly as before,
+    // and we record a single suppression event per channel for the audit.
+    if (s === 'off' && !preview) {
+      const dec = { allowed: false, reason: 'sound_off' };
+      AudioAudit.log({ source: 'threshold_alert', action: 'tone_suppressed', pointId: point.id, pointType: point.type, distanceM: meters, decision: dec });
+      AudioAudit.log({ source: 'threshold_alert', action: 'speech_suppressed', pointId: point.id, pointType: point.type, distanceM: meters, decision: dec });
+      return;
+    }
     // v23.18.17 — at the exact emission moment, write the decision
     // snapshot to point.lastAutoRouteDecision (AutoRoute mode only)
     // and emit the AUTO-ROUTE-EMIT line. The snapshot is what later
@@ -4496,44 +4690,76 @@ const Audio = {
     // v22.6: repeat N times with a gap
     const count = Math.max(1, Math.min(5, +State.settings.alertRepeatCount || 1));
     const gapMs = Math.max(0.3, +State.settings.alertRepeatGapS || 1.5) * 1000;
-    const voiceOn = State.settings.voiceGender && State.settings.voiceGender !== 'none';
-    const fireOnce = () => {
-      // v22.32: tone ALWAYS plays (unless master sound is off, which is checked above)
-      // v23.7.0: route through playAlertSoundForType so the Sound
-      // Alerts mapping (Settings → Sound Alerts / Edit Point's
-      // "Sound alert" row) controls the actual peep.
-      this.playAlertSoundForType(point.type);
-      // Voice plays only if a voice gender is selected
-      if (voiceOn) this.say(text);
+    const fireOnce = (i) => {
+      const src = i === 0 ? 'threshold_alert' : 'threshold_alert_repeat';
+      // Re-compute the decision at EMISSION time so muting between repeats is honored.
+      const toneDec = this.beepDecision();
+      const speakDec = this.speakDecision();
+      // ----- tone channel -----
+      // NOTE: preview bypasses the master mute; the original code played the
+      // tone whenever sound !== 'off' (i.e. unless muted) regardless of
+      // 'voice' mode, so to preserve outcomes exactly the runtime tone fires
+      // whenever sound !== 'off'. We therefore gate on (s !== 'off') for the
+      // ACTUAL play, but log the policy decision (beepDecision) for visibility.
+      const tonePlays = preview || s !== 'off';
+      if (preview) {
+        this.playAlertSoundForType(point.type, { preview: true, auditSource: 'preview_test' });
+        AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', pointId: point.id, pointType: point.type, distanceM: meters, previewBypass: true, reason: 'preview_bypass' });
+      } else if (tonePlays) {
+        this.playAlertSoundForType(point.type, { auditSource: src });
+        AudioAudit.log({ source: src, action: 'tone_played', pointId: point.id, pointType: point.type, distanceM: meters, decision: { allowed: true, reason: null } });
+      } else {
+        AudioAudit.log({ source: src, action: 'tone_suppressed', pointId: point.id, pointType: point.type, distanceM: meters, decision: toneDec });
+      }
+      // ----- speech channel -----
+      // Original behavior: voice plays only when a voice gender is selected
+      // (independent of beep/voice/both — the master mute already gated above).
+      const voiceOn = State.settings.voiceGender && State.settings.voiceGender !== 'none';
+      if (preview) {
+        if (voiceOn) this.say(text, { preview: true, auditSource: 'preview_test' });
+        AudioAudit.log({ source: 'preview_test', action: 'preview_speech_spoken', pointId: point.id, pointType: point.type, distanceM: meters, previewBypass: true, reason: 'preview_bypass' });
+      } else if (voiceOn) {
+        this.say(text, { auditSource: src });
+        AudioAudit.log({ source: src, action: 'speech_spoken', pointId: point.id, pointType: point.type, distanceM: meters, decision: { allowed: true, reason: null } });
+      } else {
+        AudioAudit.log({ source: src, action: 'speech_suppressed', pointId: point.id, pointType: point.type, distanceM: meters, decision: { allowed: false, reason: 'voice_gender_none' } });
+      }
     };
-    fireOnce();
+    fireOnce(0);
     for (let i = 1; i < count; i++) {
-      setTimeout(fireOnce, i * gapMs);
+      setTimeout(() => fireOnce(i), i * gapMs);
     }
   },
   /** v22.32: short single ping at user-configured frequency.
    *  Used by the proximity ping system (continuous stepped beep).
    *  Different from beep() — single tone, short duration, no per-type pattern.
    *  v22.34: also pulses the focused (#1) map marker visually in sync. */
-  proximityPing() {
+  // `audit` (optional) carries { decision, pointId, pointType, distanceM,
+  // band } so the proximity ping can be logged (throttled) at emission time.
+  proximityPing(audit) {
     const ctx = this.ensure();
     if (!ctx) return;
-    const freq = +State.settings.toneFreq || 1900;
-    const dur = 0.10;
-    const peakGain = 0.5;
-    const t = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.001, t);
-    gain.gain.exponentialRampToValueAtTime(peakGain, t + 0.003);
-    gain.gain.setValueAtTime(peakGain, t + dur * 0.6);
-    gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start(t);
-    osc.stop(t + dur + 0.01);
+    try {
+      const freq = +State.settings.toneFreq || 1900;
+      const dur = 0.10;
+      const peakGain = 0.5;
+      const t = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.001, t);
+      gain.gain.exponentialRampToValueAtTime(peakGain, t + 0.003);
+      gain.gain.setValueAtTime(peakGain, t + dur * 0.6);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + dur + 0.01);
+      if (audit) AudioAudit.logProximity({ source: 'proximity_ping', action: 'tone_played', pointId: audit.pointId, pointType: audit.pointType, distanceM: audit.distanceM, decision: audit.decision, band: audit.band });
+    } catch (e) {
+      if (audit) AudioAudit.logProximity({ source: 'proximity_ping', action: 'tone_error', pointId: audit.pointId, pointType: audit.pointType, distanceM: audit.distanceM, error: String(e), reason: 'audio_context_error', band: audit.band });
+    }
     // v22.34: visual flash on the focused (#1) marker, synced with this ping.
     // v22.60: also flash the matching sidebar timeline entry for ahead-1.
     try {
@@ -4559,7 +4785,14 @@ const Audio = {
    *  Where mid = startM × 0.5, final = startM × 0.2.
    *  When the focused point changes (passed → next), state resets cleanly. */
   updateProximityPing(pointId, distMeters, pointType) {
-    if (State.settings.sound === 'off') { this._proximityPointId = null; return; }
+    // Audio-policy gate for the ping tone. Original enforcement only checked
+    // sound==='off' (the ping plays in 'voice' mode too), so we preserve that
+    // exact gate for the ACTUAL play while logging the same decision object.
+    if (State.settings.sound === 'off') {
+      this._proximityPointId = null;
+      AudioAudit.logProximity({ source: 'proximity_ping', action: 'tone_suppressed', pointId: pointId, pointType: pointType, distanceM: distMeters, decision: { allowed: false, reason: 'sound_off' }, band: 'suppressed' });
+      return;
+    }
     if (State.settings.proximityPing === false) { this._proximityPointId = null; return; }
     // v23.7.3 — per-type heartbeat override. When the focused point's
     // type is explicitly toggled OFF in Edit Point, suppress its ping
@@ -4588,7 +4821,7 @@ const Audio = {
     else interval = 200;
     const now = Date.now();
     if (now - this._lastProximityPing >= interval) {
-      this.proximityPing();
+      this.proximityPing({ decision: { allowed: true, reason: null }, pointId: pointId, pointType: pointType, distanceM: distMeters, band: interval });
       this._lastProximityPing = now;
     }
   },
@@ -6949,10 +7182,21 @@ const Alerts = {
           const reps = Math.max(1, Math.min(10, +State.settings.hereRepeatCount || 2));
           const name = p.name || Utils.typeLabel(p.type);
           const text = Array(reps).fill(`${name} is here`).join('. ');
+          // Original here-now speech gate is sound!=='off' && voiceGender!=='none'
+          // (speech plays even in 'beep' mode). Preserve that for enforcement and
+          // log an equivalent decision object.
           if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
-            Audio.say(text);
+            Audio.say(text, { auditSource: 'here_now' });
+            AudioAudit.log({ source: 'here_now', action: 'speech_spoken', pointId: p.id, pointType: p.type, distanceM: Math.round(meters), decision: { allowed: true, reason: null } });
+          } else {
+            AudioAudit.log({ source: 'here_now', action: 'speech_suppressed', pointId: p.id, pointType: p.type, distanceM: Math.round(meters), decision: { allowed: false, reason: State.settings.sound === 'off' ? 'sound_off' : 'voice_gender_none' } });
           }
-          if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+          // Vibration is intentionally independent from the master sound setting.
+          // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
+          if (navigator.vibrate) {
+            navigator.vibrate([100, 50, 100]);
+            AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, pointId: p.id, pointType: p.type, extra: { relatedSource: 'here_now' } });
+          }
           State.alertsFiredThisTrip = (State.alertsFiredThisTrip || 0) + 1;
           State.lastAlertAt = Date.now();
           State.lastAlertText = name + ' is here';
@@ -7151,7 +7395,16 @@ const Alerts = {
             if (allowed) {
               Audio.alert(p, m);
               if (intelMode === 'active') IntelligenceEngine.noteAlertFired();
-              if (navigator.vibrate) navigator.vibrate(60);
+              // Vibration is intentionally independent from the master sound setting.
+              // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
+              if (navigator.vibrate) {
+                navigator.vibrate(60);
+                AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, pointId: p.id, pointType: p.type, distanceM: m, extra: { relatedSource: 'threshold_alert' } });
+              } else {
+                // Device has no Vibration API — record once so the audit shows
+                // why no haptic fired.
+                AudioAudit.log({ source: 'haptic', action: 'haptic_not_applicable', vibrationFired: false, reason: 'not_applicable', pointId: p.id, pointType: p.type, distanceM: m, extra: { relatedSource: 'threshold_alert' } });
+              }
             }
             fired.add(m);
           }
@@ -7210,8 +7463,12 @@ const Alerts = {
           Speed.shouldAlert(best.point, State.pos.lat, State.pos.lng)) {
         State.lastAnnouncedLimit = limit;
         Speed.recordAlert(best.point, State.pos.lat, State.pos.lng);
+        // Speed-limit ZONE announce (not overspeed). Original gate preserved.
         if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
-          Audio.say(`Speed limit ${limit}`);
+          Audio.say(`Speed limit ${limit}`, { auditSource: 'auto_announce' });
+          AudioAudit.log({ source: 'auto_announce', action: 'speech_spoken', pointId: best.point.id, decision: { allowed: true, reason: null }, extra: { kind: 'speed_limit_zone', limit: limit } });
+        } else {
+          AudioAudit.log({ source: 'auto_announce', action: 'speech_suppressed', pointId: best.point.id, decision: { allowed: false, reason: State.settings.sound === 'off' ? 'sound_off' : 'voice_gender_none' }, extra: { kind: 'speed_limit_zone', limit: limit } });
         }
         logEvent('ALERT', `Speed limit ${limit} (score ${best.score}, ${Math.round(best.distance)}m)`, 'ok');
       }
@@ -7259,10 +7516,23 @@ const Alerts = {
       text += top.side === 'left' ? ', left' : ', right';
     }
 
-    // Respect sound mode: voice mode → only voice; tone mode → only tone; both → both
-    if (s === 'beep' || s === 'both') Audio.beep(top.type);
-    if ((s === 'voice' || s === 'both') && State.settings.voiceGender !== 'none') {
-      setTimeout(() => Audio.say(text), 200);
+    // Respect sound mode: voice mode → only voice; tone mode → only tone; both → both.
+    // Enforcement preserved exactly; decisions logged for visibility.
+    {
+      const toneDec = Audio.beepDecision();
+      if (s === 'beep' || s === 'both') {
+        Audio.beep(top.type, { auditSource: 'auto_announce' });
+        AudioAudit.log({ source: 'auto_announce', action: 'tone_played', pointId: top.id, pointType: top.type, decision: { allowed: true, reason: null } });
+      } else {
+        AudioAudit.log({ source: 'auto_announce', action: 'tone_suppressed', pointId: top.id, pointType: top.type, decision: toneDec });
+      }
+      const speakDec = Audio.speakDecision();
+      if ((s === 'voice' || s === 'both') && State.settings.voiceGender !== 'none') {
+        setTimeout(() => Audio.say(text, { auditSource: 'auto_announce' }), 200);
+        AudioAudit.log({ source: 'auto_announce', action: 'speech_spoken', pointId: top.id, pointType: top.type, decision: { allowed: true, reason: null } });
+      } else {
+        AudioAudit.log({ source: 'auto_announce', action: 'speech_suppressed', pointId: top.id, pointType: top.type, decision: speakDec });
+      }
     }
 
     // Count it for the diag strip
@@ -7528,6 +7798,7 @@ const Confirm = {
     try {
       if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackPopupSound === 'function') {
         Audio.playFeedbackPopupSound();
+        AudioAudit.log({ source: 'feedback_popup', action: 'tone_played', decision: Audio.beepDecision(), extra: { activeId: this._activeId } });
         logEvent('FEEDBACK', `[FEEDBACK] feedback_popup_sound_played — ${this._activeId}`);
       }
     } catch (e) {}
@@ -7698,6 +7969,7 @@ const Confirm = {
     try {
       if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackConfirmSound === 'function') {
         Audio.playFeedbackConfirmSound();
+        AudioAudit.log({ source: 'feedback_confirm', action: 'tone_played', pointId: point.id, decision: Audio.beepDecision() });
         logEvent('FEEDBACK', `[FEEDBACK] feedback_confirmation_sound_played — ${point.id}`);
       }
     } catch (e) {}
@@ -7800,6 +8072,7 @@ const Confirm = {
     try {
       if (typeof Audio !== 'undefined' && typeof Audio.playFeedbackConfirmSound === 'function') {
         Audio.playFeedbackConfirmSound();
+        AudioAudit.log({ source: 'feedback_confirm', action: 'tone_played', pointId: point.id, decision: Audio.beepDecision(), extra: { kind: 'false_positive' } });
       }
     } catch (e) {}
     try { logEvent('FEEDBACK-POPUP', `false_positive submitted ${point.id}`); } catch (e) {}

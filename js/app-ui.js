@@ -1431,7 +1431,12 @@ const MapView = {
       lat: +pt.lat.toFixed(5),
       lng: +pt.lng.toFixed(5),
     };
-    if (navigator.vibrate) navigator.vibrate(40);
+    // Vibration is intentionally independent from the master sound setting.
+    // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
+    if (navigator.vibrate) {
+      navigator.vibrate(40);
+      try { AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, extra: { relatedSource: 'manual_capture', site: 'map_capture_override' } }); } catch (e) {}
+    }
     Utils.toast(`Capture at ${pt.lat.toFixed(4)}, ${pt.lng.toFixed(4)}`, 'good');
     UI.openCaptureMenu();
   },
@@ -2629,7 +2634,13 @@ const UI = {
     const list = Alerts.ahead();
     if (!list.length) {
       Utils.toast('Nothing ahead', 'bad');
-      if (State.settings.voiceGender !== 'none') Audio.say('Nothing ahead');
+      // Manual announce. Original gate preserved (voiceGender!=='none').
+      if (State.settings.voiceGender !== 'none') {
+        Audio.say('Nothing ahead', { auditSource: 'manual_announce' });
+        AudioAudit.log({ source: 'manual_announce', action: 'speech_spoken', decision: { allowed: true, reason: null }, extra: { kind: 'nothing_ahead' } });
+      } else {
+        AudioAudit.log({ source: 'manual_announce', action: 'speech_suppressed', decision: { allowed: false, reason: 'voice_gender_none' }, extra: { kind: 'nothing_ahead' } });
+      }
       return;
     }
     // v22.15 FIX: Alerts.ahead() returns objects with the point's fields
@@ -2643,9 +2654,18 @@ const UI = {
     // v23.7.0: route through playAlertSoundForType — same mapping
     // pipeline as the live alert. Matches whatever the driver will
     // hear when the point fires for real.
-    if (State.settings.sound !== 'off') Audio.playAlertSoundForType(nearest.type);
+    // Manual announce. Original gates preserved (tone: sound!=='off'; speech: voiceGender!=='none').
+    if (State.settings.sound !== 'off') {
+      Audio.playAlertSoundForType(nearest.type, { auditSource: 'manual_announce' });
+      AudioAudit.log({ source: 'manual_announce', action: 'tone_played', pointId: nearest.id, pointType: nearest.type, decision: { allowed: true, reason: null } });
+    } else {
+      AudioAudit.log({ source: 'manual_announce', action: 'tone_suppressed', pointId: nearest.id, pointType: nearest.type, decision: { allowed: false, reason: 'sound_off' } });
+    }
     if (State.settings.voiceGender !== 'none') {
-      setTimeout(() => Audio.say(text), 300);
+      setTimeout(() => Audio.say(text, { auditSource: 'manual_announce' }), 300);
+      AudioAudit.log({ source: 'manual_announce', action: 'speech_spoken', pointId: nearest.id, pointType: nearest.type, decision: { allowed: true, reason: null } });
+    } else {
+      AudioAudit.log({ source: 'manual_announce', action: 'speech_suppressed', pointId: nearest.id, pointType: nearest.type, decision: { allowed: false, reason: 'voice_gender_none' } });
     }
   },
 
@@ -2657,7 +2677,13 @@ const UI = {
     if (!point) {
       const msg = id ? 'Last capture was deleted' : 'Nothing captured this trip yet';
       Utils.toast(msg, 'bad');
-      if (State.settings.voiceGender !== 'none') Audio.say(msg);
+      // Manual announce. Original gate preserved.
+      if (State.settings.voiceGender !== 'none') {
+        Audio.say(msg, { auditSource: 'manual_announce' });
+        AudioAudit.log({ source: 'manual_announce', action: 'speech_spoken', decision: { allowed: true, reason: null }, extra: { kind: 'last_capture_none' } });
+      } else {
+        AudioAudit.log({ source: 'manual_announce', action: 'speech_suppressed', decision: { allowed: false, reason: 'voice_gender_none' }, extra: { kind: 'last_capture_none' } });
+      }
       return;
     }
     const dist = State.pos ? Utils.distKm(State.pos, point) : null;
@@ -2665,9 +2691,18 @@ const UI = {
     Utils.toast('📢 ' + text, 'good');
     // v23.7.0: route through mapping-aware peep so the preview matches
     // what would fire live for this point's type.
-    if (State.settings.sound !== 'off') Audio.playAlertSoundForType(point.type);
+    // Manual announce. Original gates preserved.
+    if (State.settings.sound !== 'off') {
+      Audio.playAlertSoundForType(point.type, { auditSource: 'manual_announce' });
+      AudioAudit.log({ source: 'manual_announce', action: 'tone_played', pointId: point.id, pointType: point.type, decision: { allowed: true, reason: null }, extra: { kind: 'last_capture' } });
+    } else {
+      AudioAudit.log({ source: 'manual_announce', action: 'tone_suppressed', pointId: point.id, pointType: point.type, decision: { allowed: false, reason: 'sound_off' }, extra: { kind: 'last_capture' } });
+    }
     if (State.settings.voiceGender !== 'none') {
-      setTimeout(() => Audio.say(text), 300);
+      setTimeout(() => Audio.say(text, { auditSource: 'manual_announce' }), 300);
+      AudioAudit.log({ source: 'manual_announce', action: 'speech_spoken', pointId: point.id, pointType: point.type, decision: { allowed: true, reason: null }, extra: { kind: 'last_capture' } });
+    } else {
+      AudioAudit.log({ source: 'manual_announce', action: 'speech_suppressed', pointId: point.id, pointType: point.type, decision: { allowed: false, reason: 'voice_gender_none' }, extra: { kind: 'last_capture' } });
     }
   },
 
@@ -2903,10 +2938,17 @@ const UI = {
     const dest = State.activeDest();
     this.closeAllModals();
     Audio.unlock();
-    Audio.beep('checkpoint');
+    // GPS-start confirmation tone — historically plays regardless of master
+    // sound mode; behavior preserved (not gated). Decision attached as context.
+    Audio.beep('checkpoint', { auditSource: 'gps_start' });
+    AudioAudit.log({ source: 'gps_start', action: 'tone_played', decision: Audio.beepDecision() });
+    // GPS-start confirmation voice. Original gate preserved.
     if (State.settings.sound !== 'off' && State.settings.voiceGender !== 'none') {
-      if (dest) setTimeout(() => Audio.say('Heading to ' + dest.name), 250);
-      else setTimeout(() => Audio.say('Auto route. Detecting alerts ahead.'), 250);
+      if (dest) setTimeout(() => Audio.say('Heading to ' + dest.name, { auditSource: 'gps_start' }), 250);
+      else setTimeout(() => Audio.say('Auto route. Detecting alerts ahead.', { auditSource: 'gps_start' }), 250);
+      AudioAudit.log({ source: 'gps_start', action: 'speech_spoken', decision: Audio.speakDecision() });
+    } else {
+      AudioAudit.log({ source: 'gps_start', action: 'speech_suppressed', decision: { allowed: false, reason: State.settings.sound === 'off' ? 'sound_off' : 'voice_gender_none' } });
     }
     if (!dest) logEvent('AUTO-ROUTE', 'started without destination');
     GPS.start();
@@ -3352,11 +3394,24 @@ const UI = {
       MapView._lastPointRefresh = Date.now();
       MapView.updatePoints();
     }
-    if (navigator.vibrate) navigator.vibrate(40);
-    // v22.9: tone confirmation + voice announcement
-    if (State.settings.sound !== 'off') Audio.beep(c.type);
+    // Vibration is intentionally independent from the master sound setting.
+    // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
+    if (navigator.vibrate) {
+      navigator.vibrate(40);
+      try { AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, pointType: c.type, extra: { relatedSource: 'manual_capture' } }); } catch (e) {}
+    }
+    // v22.9: tone confirmation + voice announcement. Original gates preserved.
+    if (State.settings.sound !== 'off') {
+      Audio.beep(c.type, { auditSource: 'manual_capture' });
+      AudioAudit.log({ source: 'manual_capture', action: 'tone_played', pointType: c.type, decision: { allowed: true, reason: null } });
+    } else {
+      AudioAudit.log({ source: 'manual_capture', action: 'tone_suppressed', pointType: c.type, decision: { allowed: false, reason: 'sound_off' } });
+    }
     if (State.settings.voiceGender !== 'none') {
-      setTimeout(() => Audio.say(announce), 300);
+      setTimeout(() => Audio.say(announce, { auditSource: 'manual_capture' }), 300);
+      AudioAudit.log({ source: 'manual_capture', action: 'speech_spoken', pointType: c.type, decision: { allowed: true, reason: null } });
+    } else {
+      AudioAudit.log({ source: 'manual_capture', action: 'speech_suppressed', pointType: c.type, decision: { allowed: false, reason: 'voice_gender_none' } });
     }
   },
 
@@ -4540,7 +4595,8 @@ function wire() {
     UI.updateSoundIcon();
     Utils.toast('Sound: ' + (State.settings.sound === 'voice' ? 'voice' : 'tone'), 'good');
     Audio.unlock();
-    Audio.beep('petrol');
+    Audio.beep('petrol', { preview: true, auditSource: 'preview_test' });
+    AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', previewBypass: true, reason: 'preview_bypass', pointType: 'petrol', extra: { kind: 'sound_toggle_preview' } });
   };
   document.getElementById('btn-theme').onclick = () => {
     const cycle = ['light', 'dark', 'auto'];
@@ -4961,7 +5017,10 @@ function wire() {
     b.onclick = () => {
       State.settings.sound = b.dataset.sound; State.saveSettings(); UI.syncSettings(); UI.updateSoundIcon();
       Audio.unlock();
-      if (b.dataset.sound !== 'off') Audio.beep('petrol');
+      if (b.dataset.sound !== 'off') {
+        Audio.beep('petrol', { preview: true, auditSource: 'preview_test' });
+        AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', previewBypass: true, reason: 'preview_bypass', pointType: 'petrol', extra: { kind: 'sound_mode_preview', mode: b.dataset.sound } });
+      }
     }
   );
   // v23.3.x Phase 3: alert engine mode segmented control. Logs the
@@ -5002,7 +5061,10 @@ function wire() {
       State.saveSettings();
       UI.syncSettings();
       Audio.unlock();
-      if (b.dataset.voice !== 'none') Audio.say('Voice set');
+      if (b.dataset.voice !== 'none') {
+        Audio.say('Voice set', { preview: true, auditSource: 'preview_test' });
+        AudioAudit.log({ source: 'preview_test', action: 'preview_speech_spoken', previewBypass: true, reason: 'preview_bypass', extra: { kind: 'voice_preview', voice: b.dataset.voice } });
+      }
     }
   );
   document.querySelectorAll('[data-speed]').forEach(b =>
@@ -5078,7 +5140,8 @@ function wire() {
       State.settings.toneFreq = v;
       State.saveSettings();
       Audio.unlock();
-      Audio.proximityPing(); // preview
+      Audio.proximityPing(); // preview (bypasses mute — preview-only)
+      AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', previewBypass: true, reason: 'preview_bypass', extra: { kind: 'tonefreq_preview', freq: v } });
       Utils.toast('Tone ' + v + 'Hz', 'good');
     }
   };
@@ -5292,20 +5355,23 @@ function wire() {
   // v22.8: Sound check test buttons
   document.getElementById('sc-tone').onclick = () => {
     Audio.unlock();
-    Audio.beep('petrol');
+    Audio.beep('petrol', { preview: true, auditSource: 'preview_test' });
+    AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', previewBypass: true, reason: 'preview_bypass', pointType: 'petrol', extra: { kind: 'sound_check_tone' } });
   };
   document.getElementById('sc-tone-cam').onclick = () => {
     Audio.unlock();
-    Audio.beep('speed_camera');
+    Audio.beep('speed_camera', { preview: true, auditSource: 'preview_test' });
+    AudioAudit.log({ source: 'preview_test', action: 'preview_tone_played', previewBypass: true, reason: 'preview_bypass', pointType: 'speed_camera', extra: { kind: 'sound_check_tone_cam' } });
   };
   document.getElementById('sc-voice').onclick = () => {
     Audio.unlock();
-    Audio.say('Speed camera in 500 meters');
+    Audio.say('Speed camera in 500 meters', { preview: true, auditSource: 'preview_test' });
+    AudioAudit.log({ source: 'preview_test', action: 'preview_speech_spoken', previewBypass: true, reason: 'preview_bypass', extra: { kind: 'sound_check_voice' } });
   };
   document.getElementById('sc-alert').onclick = () => {
     Audio.unlock();
-    // Build a fake point and call alert() once
-    Audio.alert({ name: 'Speed camera', type: 'speed_camera' }, 500);
+    // Build a fake point and call alert() once (preview bypasses mute; alert() logs its own preview events)
+    Audio.alert({ name: 'Speed camera', type: 'speed_camera' }, 500, { preview: true });
   };
   document.getElementById('sc-repeat').onclick = () => {
     Audio.unlock();
@@ -5313,7 +5379,7 @@ function wire() {
     const original = { count: State.settings.alertRepeatCount, gap: State.settings.alertRepeatGapS };
     State.settings.alertRepeatCount = 3;
     State.settings.alertRepeatGapS = 1.5;
-    Audio.alert({ name: 'Test', type: 'speed_camera' }, 500);
+    Audio.alert({ name: 'Test', type: 'speed_camera' }, 500, { preview: true });
     // Restore after the test finishes
     setTimeout(() => {
       State.settings.alertRepeatCount = original.count;
@@ -5332,7 +5398,8 @@ function wire() {
     const n = ahead[0];
     const meters = Math.round(n.dist * 1000);
     Utils.toast(`Forcing alert: ${n.name} @ ${meters}m`, 'good');
-    Audio.alert(n, meters);
+    // Sound Check force-alert is a diagnostic test → preview bypass.
+    Audio.alert(n, meters, { preview: true });
   };
 
   document.querySelectorAll('[data-close]').forEach(b =>

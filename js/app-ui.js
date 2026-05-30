@@ -2064,7 +2064,11 @@ const UI = {
     const RAIL_MOVE_AWAY_SLACK_M = 25;
     const lastDistMap = State.lastDistByPoint;
     const passed = State.passedPoints;
+    // Right rail hides Speed zone, Traffic light, Gate and Custom captures —
+    // these still appear on the map and in the left rail, just not here.
+    const RAIL_RIGHT_HIDE_TYPES = new Set(['speed_change', 'traffic_light', 'gate', 'other']);
     const rightCountdown = rightPts.filter(p => {
+      if (RAIL_RIGHT_HIDE_TYPES.has(p.type)) return false;
       if (passed && passed.has && passed.has(p.id)) return false;
       const distM = (p.dist || 0) * 1000;
       const prevM = (lastDistMap && lastDistMap.get) ? lastDistMap.get(p.id) : null;

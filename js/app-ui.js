@@ -1946,6 +1946,49 @@ const UI = {
       </div>`
     ).join('');
     list.scrollTop = 0;
+    // v-audio-audit: refresh the separate Audio Audit section in the same modal.
+    this.renderAudioAudit();
+  },
+
+  /** Audio Audit viewer — renders the latest AudioAudit ring-buffer
+   *  entries inside the debug modal. Diagnostics-only; never shown on the
+   *  driving screen. Pure display — reads AudioAudit.logs, never gates or
+   *  emits audio. Safe before AudioAudit exists (null-guarded). */
+  renderAudioAudit() {
+    const body = document.getElementById('audio-audit-body');
+    const count = document.getElementById('audio-audit-count');
+    if (!body) return;
+    const logs = (typeof AudioAudit !== 'undefined' && AudioAudit.logs) ? AudioAudit.logs : [];
+    if (count) count.textContent = `(${logs.length})`;
+    if (!logs.length) {
+      body.innerHTML = '<div class="empty">No audio events logged yet</div>';
+      return;
+    }
+    // Suppressed / error rows get the 'err' tint; played/fired get 'ok'.
+    const levelFor = a => {
+      if (!a) return '';
+      if (a.indexOf('error') !== -1 || a.indexOf('suppressed') !== -1) return 'err';
+      if (a.indexOf('played') !== -1 || a.indexOf('spoken') !== -1 || a.indexOf('fired') !== -1) return 'ok';
+      return '';
+    };
+    body.innerHTML = logs.map(L => {
+      const ts = new Date(L.ts).toLocaleTimeString();
+      const bits = [];
+      if (L.reason) bits.push('reason=' + L.reason);
+      if (L.pointType) bits.push(L.pointType);
+      if (L.distanceM != null) bits.push(L.distanceM + 'm');
+      bits.push('snd=' + L.sound);
+      if (L.previewBypass) bits.push('preview');
+      if (L.vibrationFired) bits.push('vibrated');
+      if (L.error) bits.push('err=' + L.error);
+      if (L.extra && L.extra.relatedSource) bits.push('via ' + L.extra.relatedSource);
+      return `<div class="debug-row ${levelFor(L.action)}">
+        <span class="ts">${Utils.escapeHtml(ts)}</span>
+        <span class="ty">${Utils.escapeHtml(L.source + '/' + L.action)}</span>
+        <span class="msg">${Utils.escapeHtml(bits.join(' · '))}</span>
+      </div>`;
+    }).join('');
+    body.scrollTop = 0;
   },
 
   /** v23.5.8: GPS altitude diagnostic readout. Pure display — never
@@ -4471,6 +4514,35 @@ function wire() {
   document.getElementById('debug-clear').onclick = () => {
     Logger.clear();
     Utils.toast('Log cleared', 'good');
+  };
+  // Audio Audit — Clear + Copy for the separate audio/speech/vibration
+  // collector embedded in the debug modal. Buttons are null-guarded so
+  // older markup without the panel doesn't break wiring.
+  const audioAuditClear = document.getElementById('audio-audit-clear');
+  if (audioAuditClear) audioAuditClear.onclick = () => {
+    if (typeof AudioAudit !== 'undefined') AudioAudit.clear();
+    UI.renderAudioAudit();
+    Utils.toast('Audio audit cleared', 'good');
+  };
+  const audioAuditCopy = document.getElementById('audio-audit-copy');
+  if (audioAuditCopy) audioAuditCopy.onclick = async () => {
+    const text = (typeof AudioAudit !== 'undefined') ? AudioAudit.asText() : '';
+    if (!text) { Utils.toast('Nothing to copy', 'bad'); return; }
+    const n = AudioAudit.logs.length;
+    try {
+      await navigator.clipboard.writeText(text);
+      Utils.toast(`Copied ${n} audio events`, 'good');
+    } catch (e) {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select(); document.execCommand('copy');
+        ta.remove();
+        Utils.toast(`Copied ${n} audio events`, 'good');
+      } catch (e2) { Utils.toast('Copy failed', 'bad'); }
+    }
   };
   document.getElementById('debug-copy').onclick = async () => {
     const text = Logger.asText();

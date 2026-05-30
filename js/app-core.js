@@ -4333,6 +4333,9 @@ const Audio = {
       if (auditSrc) AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, extra: { relatedSource: auditSrc, fallback: 'no_audio_context' } });
       return;
     }
+    // Declared outside the try so the vibration mirror below can still
+    // read the pattern even if tone scheduling throws.
+    let pings = null;
     try {
     // v22.31: Radarbot-style alert — two pure-tone "pings" with slight pitch
     // rise between them. Distinctive radar-return character: short attack,
@@ -4389,7 +4392,7 @@ const Audio = {
         { freq: 1800, dur: 0.18 },
       ],
     };
-    const pings = patterns[type] || patterns.other;
+    pings = patterns[type] || patterns.other;
     const peakGain = 0.6;
     const gap = 0.05; // gap between pings
     // v22.32: scale all per-type frequencies by user's preferred base.
@@ -4421,7 +4424,7 @@ const Audio = {
     // Vibration mirror — silent mode safety net.
     // Vibration is intentionally independent from the master sound setting.
     // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
-    if (navigator.vibrate) {
+    if (pings && navigator.vibrate) {
       const vibPattern = [];
       pings.forEach((p, i) => {
         if (i > 0) vibPattern.push(60);
@@ -7578,8 +7581,29 @@ const Alerts = {
           Audio.beep('speed_change');
         }
       }
-      if (mode === 'voice' || mode === 'both') Audio.say(`Speed limit ${limit}`);
-      if (navigator.vibrate) navigator.vibrate([50, 50, 50]);
+      if (_overspeedTonePlayed) {
+        AudioAudit.log({ source: 'overspeed', action: 'tone_played', decision: { allowed: true, reason: null }, extra: { limit: limit, mode: mode } });
+      } else {
+        AudioAudit.log({ source: 'overspeed', action: 'tone_suppressed', decision: overspeedToneDec, extra: { limit: limit, mode: mode } });
+      }
+      if (mode === 'voice' || mode === 'both') {
+        Audio.say(`Speed limit ${limit}`, { auditSource: 'overspeed' });
+        AudioAudit.log({ source: 'overspeed', action: 'speech_spoken', decision: { allowed: true, reason: null }, extra: { limit: limit, mode: mode } });
+      } else {
+        AudioAudit.log({ source: 'overspeed', action: 'speech_suppressed', decision: overspeedSpeechDec, extra: { limit: limit, mode: mode } });
+      }
+      // Vibration is intentionally independent from the master sound setting.
+      // sound='off' mutes generated audio/speech only; haptic feedback remains enabled.
+      // (Behavior preserved exactly: the original over-speed buzz fired only inside
+      // this s!=='off' block, so it stays here — no new haptic path is introduced.)
+      if (navigator.vibrate) {
+        navigator.vibrate([50, 50, 50]);
+        AudioAudit.log({ source: 'haptic', action: 'haptic_fired', vibrationFired: true, reason: null, extra: { relatedSource: 'overspeed', limit: limit } });
+      }
+    } else {
+      // Master mute suppressed both over-speed channels this episode.
+      AudioAudit.log({ source: 'overspeed', action: 'tone_suppressed', decision: overspeedToneDec, extra: { limit: limit, mode: mode } });
+      AudioAudit.log({ source: 'overspeed', action: 'speech_suppressed', decision: overspeedSpeechDec, extra: { limit: limit, mode: mode } });
     }
     State.speedAlertWasOver = true;
   },

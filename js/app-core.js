@@ -9,11 +9,27 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.24';
+const APP_VERSION = 'v23.18.25';
+
+// Developer-only console mirror. Direct console.* output is noisy during
+// normal use, so raw diagnostics are routed through Dev.* — it forwards to
+// the real devtools console ONLY when State.settings.developerMode is true.
+// The in-memory Logger/logEvent stream and the in-app Debug log are
+// independent of this gate and always record. Reads State lazily so it is
+// safe to call before State is initialized (defaults to suppressed).
+const Dev = {
+  _on() {
+    try { return !!(typeof State !== 'undefined' && State.settings && State.settings.developerMode); }
+    catch (e) { return false; }
+  },
+  log(...a)   { if (this._on()) { try { console.log(...a); }   catch (e) {} } },
+  warn(...a)  { if (this._on()) { try { console.warn(...a); }  catch (e) {} } },
+  error(...a) { if (this._on()) { try { console.error(...a); } catch (e) {} } },
+};
 
 // Global error handler — surface real errors
 window.addEventListener('error', function(e) {
-  console.error('[uncaught]', e.message, e.filename, e.lineno);
+  Dev.error('[uncaught]', e.message, e.filename, e.lineno);
   var t = document.getElementById('toast');
   if (t) {
     t.textContent = 'Error: ' + (e.message || 'unknown');
@@ -42,13 +58,30 @@ const Utils = {
     const x = Math.sin(dLat/2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng/2) ** 2;
     return 2 * R * Math.asin(Math.sqrt(x));
   },
+  /** Initial-bearing FROM a TO b ({lat,lng} objects), degrees [0, 360).
+   *  Object-arg wrapper over the canonical Speed.bearingBetween scalar
+   *  implementation; output normalization is identical. */
   bearing(a, b) {
-    const toRad = d => d * Math.PI / 180;
-    const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-    const dLng = toRad(b.lng - a.lng);
-    const y = Math.sin(dLng) * Math.cos(lat2);
-    const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
-    return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    return Speed.bearingBetween(a.lat, a.lng, b.lat, b.lng);
+  },
+  /** Planar (flat-earth) distance in metres from point P to the closest
+   *  spot on the segment A→B. Accurate over short distances (≤ a few km).
+   *  All inputs in {lat,lng}. Canonical helper shared by corridor /
+   *  off-route geometry (Corridor.distanceToRouteSegment,
+   *  MapView._pointToSegmentMeters). */
+  pointToSegmentMeters(point, a, b) {
+    const latToM = 111320;
+    const lngToM = 111320 * Math.cos(point.lat * Math.PI / 180);
+    const px = (point.lng - a.lng) * lngToM;
+    const py = (point.lat - a.lat) * latToM;
+    const bx = (b.lng - a.lng) * lngToM;
+    const by = (b.lat - a.lat) * latToM;
+    const segLenSq = bx * bx + by * by;
+    if (segLenSq === 0) return Math.sqrt(px * px + py * py);
+    let t = (px * bx + py * by) / segLenSq;
+    t = Math.max(0, Math.min(1, t));
+    const dx = px - t * bx, dy = py - t * by;
+    return Math.sqrt(dx * dx + dy * dy);
   },
   fmtDist(km) {
     if (km == null || isNaN(km)) return '—';
@@ -69,6 +102,13 @@ const Utils = {
     if (hr < 24) return hr + (hr === 1 ? ' hour ago' : ' hours ago');
     const days = Math.floor(hr / 24);
     return days + (days === 1 ? ' day ago' : ' days ago');
+  },
+  /** True if `s` is a string that parses to a valid date. Canonical
+   *  ISO-like validator shared by Validator and StorageInventory. */
+  isIsoLike(s) {
+    if (typeof s !== 'string') return false;
+    const d = new Date(s);
+    return !isNaN(d.getTime());
   },
   escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -116,7 +156,7 @@ const Logger = {
     this.logs.unshift(entry);
     if (this.logs.length > this.MAX) this.logs.length = this.MAX;
     // Mirror to devtools console
-    try { console.log(`[${entry.type}]`, entry.msg); } catch (e) {}
+    try { Dev.log(`[${entry.type}]`, entry.msg); } catch (e) {}
     // If the debug modal is open, refresh the visible list
     try {
       const modal = document.getElementById('m-debug');
@@ -196,14 +236,6 @@ const Speed = {
     const u = ((userBearingDeg % 360) + 360) % 360;
     const c = ((cameraBearingDeg % 360) + 360) % 360;
     return Speed.angleDiff(u, c) <= tol;
-  },
-
-  /** Returns true if the point is roughly in front of the user (≤90° off
-   *  the user's heading vector). Returns null if heading is unavailable. */
-  isPointAhead(userLat, userLng, userHeading, pointLat, pointLng) {
-    if (userHeading == null) return null;
-    const b = Speed.bearingBetween(userLat, userLng, pointLat, pointLng);
-    return Speed.angleDiff(userHeading, b) <= 90;
   },
 
   /** Rolling-speed-based road type guess.
@@ -774,20 +806,10 @@ const Migration = {
    available to whichever code later opts into corridor filtering.
    ============================================================ */
 const Corridor = {
-  /** Planar distance from a single point to the segment a→b, in metres. */
+  /** Planar distance from a single point to the segment a→b, in metres.
+   *  Delegates to the canonical Utils.pointToSegmentMeters helper. */
   distanceToRouteSegment(point, segmentStart, segmentEnd) {
-    const latToM = 111320;
-    const lngToM = 111320 * Math.cos(point.lat * Math.PI / 180);
-    const px = (point.lng - segmentStart.lng) * lngToM;
-    const py = (point.lat - segmentStart.lat) * latToM;
-    const bx = (segmentEnd.lng - segmentStart.lng) * lngToM;
-    const by = (segmentEnd.lat - segmentStart.lat) * latToM;
-    const segLenSq = bx * bx + by * by;
-    if (segLenSq === 0) return Math.sqrt(px * px + py * py);
-    let t = (px * bx + py * by) / segLenSq;
-    t = Math.max(0, Math.min(1, t));
-    const dx = px - t * bx, dy = py - t * by;
-    return Math.sqrt(dx * dx + dy * dy);
+    return Utils.pointToSegmentMeters(point, segmentStart, segmentEnd);
   },
 
   /** True if the point is within corridorMeters of any segment of the
@@ -804,46 +826,6 @@ const Corridor = {
       if (d <= corridorMeters) return true;
     }
     return false;
-  },
-
-  /** Filter global points to those inside the active route's corridor.
-   *  Falls back to a bounding-box around the destination if no
-   *  routeGeometry is available, or to "all points" if neither is set. */
-  getRouteCandidatePoints(activeRoute, globalPoints) {
-    if (!activeRoute) return globalPoints.slice();
-    const dest = activeRoute.destination;
-    const geom = activeRoute.routeGeometry;
-    // Determine corridor width per road type (defaults to unknown if not set)
-    const rt = activeRoute.roadType || 'unknown';
-    const corridor = rt === 'highway' ? MigrationConfig.CORRIDOR_HIGHWAY_METERS
-                  : rt === 'city'    ? MigrationConfig.CORRIDOR_CITY_METERS
-                  : MigrationConfig.CORRIDOR_UNKNOWN_METERS;
-    if (geom && Array.isArray(geom.coordinates)) {
-      return globalPoints.filter(p => Corridor.isPointInsideRouteCorridor(p, geom, corridor));
-    }
-    // Fallback: bbox around destination (5 km square)
-    if (dest && typeof dest.lat === 'number') {
-      const km = 5;
-      const dLat = km / 111;
-      const dLng = km / (111 * Math.cos(dest.lat * Math.PI / 180));
-      return globalPoints.filter(p =>
-        p.lat >= dest.lat - dLat && p.lat <= dest.lat + dLat &&
-        p.lng >= dest.lng - dLng && p.lng <= dest.lng + dLng);
-    }
-    return globalPoints.slice();
-  },
-
-  /** Nearby-only filter for "no active route" mode. Returns points
-   *  within `radiusKm` of userState.{lat,lng}. */
-  getGlobalCandidatePoints(userState, globalPoints, radiusKm) {
-    const r = (typeof radiusKm === 'number') ? radiusKm : 5;
-    return globalPoints.filter(p => Utils.distKm(p, userState) <= r);
-  },
-
-  /** Top-level dispatcher used by future Alerts integration. */
-  getAlertCandidates(userState, activeRoute, globalPoints) {
-    if (activeRoute) return Corridor.getRouteCandidatePoints(activeRoute, globalPoints);
-    return Corridor.getGlobalCandidatePoints(userState, globalPoints);
   },
 };
 
@@ -952,7 +934,7 @@ const AutoRoute = {
   },
   /** Perpendicular distance (m) from point to the line through userPosition
    *  along `headingDeg`. Local-flat-earth approximation; matches the math
-   *  used by Corridor.distanceToRouteSegment. */
+   *  used by Utils.pointToSegmentMeters. */
   lateralOffsetM(userPosition, point, headingDeg) {
     if (!userPosition || !point || !Number.isFinite(headingDeg)) return null;
     const latToM = 111320;
@@ -1659,20 +1641,6 @@ const AutoRoute = {
    *  AUTO-ROUTE-FINAL log. The returned object now also carries
    *  pointId / shortId / dist / heading / bearingTo / captureBearing
    *  / chain / safetyOverride so callers can log uniformly. */
-  HARD_SUPPRESSION_REASONS: new Set([
-    'feedback-similar-approach',
-    'feedback-opposite-direction',
-    'feedback-revalidation',
-    'chain-opposite-directional',
-    'opposite-direction',
-    'side-road-chain',
-    'lateral',
-    'moving-away',
-    'cooldown-passed',
-  ]),
-  isHardSuppression(reason) {
-    return !!(reason && this.HARD_SUPPRESSION_REASONS.has(reason));
-  },
   finalGateForEmission(point, meters, alertKind) {
     const kind = alertKind || 'threshold';
     const out = { emit: true, reason: 'pass', source: 'final',
@@ -2061,52 +2029,6 @@ const Observations = {
     return { ahead, trusted, isKnownRoad: ahead >= ObservationsConfig.KNOWN_ROAD_MIN_COUNT };
   },
 
-  /** Conservative, type-aware merge guard for new captures. Returns
-   *  the existing point that should absorb this new observation, or
-   *  null when no safe match exists. NEVER merges across types,
-   *  NEVER merges opposite-direction directional points, and NEVER
-   *  deletes the old record. Caller is responsible for updating
-   *  confirmedCount / lastConfirmedAt; this function only locates
-   *  the merge target.
-   *
-   *  Defaults:
-   *    radius — 18 m
-   *    bearing — 25° if both points are directional with known bearings
-   *
-   *  When uncertain, returns null so both observations are kept
-   *  (spec 11 + 12d). */
-  findMergeTarget(newPoint, existingPoints, opts) {
-    if (!newPoint || !Array.isArray(existingPoints)) return null;
-    const radiusM    = (opts && opts.radiusM)    || 18;
-    const bearingDeg = (opts && opts.bearingDeg) || 25;
-    const type = newPoint.type;
-    for (const ex of existingPoints) {
-      if (!ex || ex.type !== type) continue;
-      const distM = Utils.distKm(ex, newPoint) * 1000;
-      if (distM > radiusM) continue;
-      // Directional / opposite-heading guard.
-      if (ex.directional && newPoint.directional) {
-        const eb = (ex.captureBearing != null) ? ex.captureBearing : ex.heading;
-        const nb = (newPoint.captureBearing != null) ? newPoint.captureBearing : newPoint.heading;
-        if (eb != null && nb != null) {
-          const diff = Speed.angleDiff(eb, nb);
-          if (diff > bearingDeg) continue;
-          // Hard-opposite => never merge.
-          if (diff >= 135) continue;
-        }
-      }
-      // speed_change with different speedLimit => never merge (caller
-      // handles pending-speed-change promotion separately).
-      if (type === 'speed_change') {
-        const exLim = (typeof ex.speedLimit === 'number') ? ex.speedLimit : ex.limit;
-        const npLim = (typeof newPoint.speedLimit === 'number') ? newPoint.speedLimit : newPoint.limit;
-        if (exLim != null && npLim != null && exLim !== npLim) continue;
-      }
-      return ex;
-    }
-    return null;
-  },
-
   /** Additive backward-compatible migration. Touches each point in
    *  the global pool and fills the new spec fields when missing. Never
    *  overwrites an existing value, never deletes. Returns count of
@@ -2316,12 +2238,6 @@ const RouteMemory = {
       RouteMemory._write(pruned);
       logEvent('ROUTE', `cleaned up ${arr.length - pruned.length} expired learned routes`);
     }
-  },
-
-  /** Convenience wrapper: same as saveLearnedRoute but logs as
-   *  "replaced" — called from the reroute success path. */
-  replaceLearnedRoute(destId, destName, geometry, distance, duration, originPos) {
-    RouteMemory.saveLearnedRoute(destId, destName, geometry, distance, duration, originPos);
   },
 };
 
@@ -2584,9 +2500,7 @@ const Validator = {
   },
 
   _isIsoLike(s) {
-    if (typeof s !== 'string') return false;
-    const d = new Date(s);
-    return !isNaN(d.getTime());
+    return Utils.isIsoLike(s);
   },
 
   _truncString(s, max, label, warnings) {
@@ -2841,9 +2755,7 @@ const StorageInventory = {
   },
 
   _isIsoLike(s) {
-    if (typeof s !== 'string') return false;
-    const d = new Date(s);
-    return !isNaN(d.getTime());
+    return Utils.isIsoLike(s);
   },
 
   /** Section 4 — quota safety. Estimate total bytes used by ALL keys. */
@@ -3410,6 +3322,12 @@ const Storage = {
         behindRejectDeg: 120,
         destinationMatchBonus: true,
       },
+      // Developer mode. When false (default) direct console.* output is
+      // suppressed so the devtools console stays quiet during normal use.
+      // The in-memory Logger/logEvent stream and the in-app Debug log are
+      // unaffected — only the raw console mirror is gated. Set true to
+      // surface console diagnostics while debugging.
+      developerMode: false,
     };
   },
   /** One-time migration: orphan points get auto-assigned to their nearest
@@ -3437,11 +3355,11 @@ const Storage = {
             });
             if (assigned > 0) {
               this.save(this.KEYS.data, d);
-              console.log('v22.3: assigned', assigned, 'orphan points to nearest destinations');
+              Dev.log('v22.3: assigned', assigned, 'orphan points to nearest destinations');
             }
           }
           localStorage.setItem('roadAlert.v22.3.orphansMigrated', '1');
-        } catch (e) { console.warn('orphan migration', e); }
+        } catch (e) { Dev.warn('orphan migration', e); }
       }
       // v22.64: heading-up rotation is now the default. Flip existing
       // users' navMode to true once. They can still turn it off via the
@@ -3453,10 +3371,10 @@ const Storage = {
           if (s && s.navMode !== true) {
             s.navMode = true;
             this.save(this.KEYS.settings, s);
-            console.log('v22.64: navMode set to true (heading-up rotation default)');
+            Dev.log('v22.64: navMode set to true (heading-up rotation default)');
           }
           localStorage.setItem('roadAlert.v22.64.navModeDefault', '1');
-        } catch (e) { console.warn('navMode default migration', e); }
+        } catch (e) { Dev.warn('navMode default migration', e); }
       }
       // v22.69: re-run navMode default once. The rotation direction was
       // bugged (setBearing(-heading)) through v22.68, so users may have
@@ -3469,10 +3387,10 @@ const Storage = {
           if (s && s.navMode !== true) {
             s.navMode = true;
             this.save(this.KEYS.settings, s);
-            console.log('v22.69: navMode reset to true (rotation direction fix)');
+            Dev.log('v22.69: navMode reset to true (rotation direction fix)');
           }
           localStorage.setItem('roadAlert.v22.69.navModeRefresh', '1');
-        } catch (e) { console.warn('navMode refresh migration', e); }
+        } catch (e) { Dev.warn('navMode refresh migration', e); }
       }
       // v22.91: extend speed-point schema — adds directional, roadType,
       // captureBearing, updatedAt, speedLimit alias. One-time per device.
@@ -3483,11 +3401,11 @@ const Storage = {
             const n = Speed.migrateSpeedPoints(d.points);
             if (n > 0) {
               this.save(this.KEYS.data, d);
-              console.log('v22.91: extended schema on', n, 'speed-related points');
+              Dev.log('v22.91: extended schema on', n, 'speed-related points');
             }
           }
           localStorage.setItem('roadAlert.v22.91.speedPointsMigrated', '1');
-        } catch (e) { console.warn('speed-point migration', e); }
+        } catch (e) { Dev.warn('speed-point migration', e); }
       }
       // v23.8.0: additive observation schema for the global pool —
       // confirmedCount, firstSeenAt, lastSeenAt, heading,
@@ -3501,11 +3419,11 @@ const Storage = {
             const n = Observations.migrateAdditive(d.points);
             if (n > 0) {
               this.save(this.KEYS.data, d);
-              console.log('v23.8.0: added observation fields on', n, 'points');
+              Dev.log('v23.8.0: added observation fields on', n, 'points');
             }
           }
           localStorage.setItem('roadAlert.v23.8.0.observationFields', '1');
-        } catch (e) { console.warn('observation-field migration', e); }
+        } catch (e) { Dev.warn('observation-field migration', e); }
       }
       return;
     }
@@ -3523,7 +3441,7 @@ const Storage = {
         if (!p.status) p.status = 'active';
       });
       this.save(this.KEYS.data, newData);
-      console.log('Migrated', newData.points.length, 'points from legacy storage');
+      Dev.log('Migrated', newData.points.length, 'points from legacy storage');
     }
     const legacySettings = this.load(this.KEYS.legacySettings) || this.load(this.KEYS.legacySettingsV8);
     if (legacySettings) {
@@ -3922,11 +3840,6 @@ const State = {
     let avg = Math.atan2(sy / n, sx / n) * 180 / Math.PI;
     if (avg < 0) avg += 360;
     return avg;
-  },
-
-  /** All points without a destination assignment (for orphan management). */
-  orphanPoints() {
-    return this.data.points.filter(p => !p.destId);
   },
 };
 
@@ -4378,13 +4291,6 @@ const Audio = {
    *  reset via opts.onCancelPrev() before the new run begins. */
   _previewToken: 0,
   _previewCancelPrev: null,
-  cancelPreview() {
-    this._previewToken++;
-    if (typeof this._previewCancelPrev === 'function') {
-      try { this._previewCancelPrev(); } catch (e) {}
-    }
-    this._previewCancelPrev = null;
-  },
   async preview(soundId, opts) {
     opts = opts || {};
     const def = (typeof SoundCatalogue !== 'undefined') ? SoundCatalogue.find(s => s.id === soundId) : null;
@@ -5774,11 +5680,11 @@ const CaptureMeta = {
       const n = CaptureMeta.migrateAdditive(State.data.points);
       if (n > 0) {
         Storage.save(Storage.KEYS.data, State.data);
-        console.log('v23.14.0: added capture-metadata fields on', n, 'points');
+        Dev.log('v23.14.0: added capture-metadata fields on', n, 'points');
       }
     }
     localStorage.setItem('roadAlert.v23.14.0.captureMetaFields', '1');
-  } catch (e) { console.warn('capture-metadata migration', e); }
+  } catch (e) { Dev.warn('capture-metadata migration', e); }
 })();
 // v23.18.10 — one-shot bulk fill of chainPrev3 / chainNext3 across every
 // existing point. Same pattern as the v23.14.0 migration above: flag-
@@ -5792,11 +5698,11 @@ const CaptureMeta = {
       const n = CaptureMeta.migrateChain(State.data.points);
       if (n > 0) {
         Storage.save(Storage.KEYS.data, State.data);
-        console.log('v23.18.10: filled capture chain on', n, 'point(s)');
+        Dev.log('v23.18.10: filled capture chain on', n, 'point(s)');
       }
     }
     localStorage.setItem('roadAlert.v23.18.10.captureChain', '1');
-  } catch (e) { console.warn('capture-chain migration', e); }
+  } catch (e) { Dev.warn('capture-chain migration', e); }
 })();
 // v23.18.12 — chain integrity migration. One-shot, flag-gated, runs
 // after CaptureMeta is defined. Ensures every point has a unique
@@ -5811,12 +5717,12 @@ const CaptureMeta = {
       const r = CaptureMeta.migrateChainIntegrity(State.data.points);
       if (r && (r.repaired || r.chainsAssigned || r.duplicateShortIds)) {
         Storage.save(Storage.KEYS.data, State.data);
-        console.log('v23.18.12: chain integrity', r);
+        Dev.log('v23.18.12: chain integrity', r);
       }
       try { CaptureMeta.validateChainIntegrity(State.data.points); } catch (e) {}
     }
     localStorage.setItem('roadAlert.v23.18.11.captureChainIntegrity', '1');
-  } catch (e) { console.warn('chain-integrity migration', e); }
+  } catch (e) { Dev.warn('chain-integrity migration', e); }
 })();
 // v23.18.11 — backfill captureBearing on EVERY capture type. Older
 // non-camera / non-speed_change points were saved without a bearing.
@@ -5838,11 +5744,11 @@ const CaptureMeta = {
       }
       if (touched > 0) {
         Storage.save(Storage.KEYS.data, State.data);
-        console.log('v23.18.11: backfilled captureBearing on', touched, 'point(s)');
+        Dev.log('v23.18.11: backfilled captureBearing on', touched, 'point(s)');
       }
     }
     localStorage.setItem('roadAlert.v23.18.11.captureBearingAll', '1');
-  } catch (e) { console.warn('captureBearing backfill', e); }
+  } catch (e) { Dev.warn('captureBearing backfill', e); }
 })();
 
 /* ============================================================
@@ -8639,10 +8545,10 @@ const FeedbackGate = {
       ` gpsPoor=${summary.gpsPoorSamples} destMismatch=${summary.destinationMismatchSamples}` +
       ` hardDistance=${summary.hardDistanceRejects} maxDistanceM=${summary.maxDistanceM}` +
       ` recategorized=${summary.pointsRecategorized}`); } catch (e) {}
-    console.log('v23.17.0: feedback-geometry audit', summary);
+    Dev.log('v23.17.0: feedback-geometry audit', summary);
   } catch (e) {
     try { localStorage.setItem('roadAlert.v23.17.0.feedbackGeometryGateV1', '1'); } catch (e2) {}
-    console.warn('feedback-geometry audit', e);
+    Dev.warn('feedback-geometry audit', e);
   }
 })();
 
@@ -8662,10 +8568,10 @@ const FeedbackGate = {
       `[ROUTE-POINT-REFS-REPAIR] destinationsChecked=${summary.destinationsChecked}` +
       ` refsAdded=${summary.refsAdded} duplicatesRemoved=${summary.duplicatesRemoved}` +
       ` missingPointRefsFound=${summary.missingPointRefsFound}`); } catch (e) {}
-    console.log('v23.17.0: routePointRefs repair', summary);
+    Dev.log('v23.17.0: routePointRefs repair', summary);
   } catch (e) {
     try { localStorage.setItem('roadAlert.v23.17.0.routePointRefsRepairV1', '1'); } catch (e2) {}
-    console.warn('routePointRefs repair', e);
+    Dev.warn('routePointRefs repair', e);
   }
 })();
 
@@ -8684,10 +8590,10 @@ const FeedbackGate = {
     }
     localStorage.setItem('roadAlert.v23.17.0.orphanTripsAuditV1', '1');
     try { logEvent('DATA-REPAIR', `[ORPHAN-TRIPS-AUDIT] orphanTripsMarked=${summary.orphanTripsMarked}`); } catch (e) {}
-    console.log('v23.17.0: orphan trips audit', summary);
+    Dev.log('v23.17.0: orphan trips audit', summary);
   } catch (e) {
     try { localStorage.setItem('roadAlert.v23.17.0.orphanTripsAuditV1', '1'); } catch (e2) {}
-    console.warn('orphan trips audit', e);
+    Dev.warn('orphan trips audit', e);
   }
 })();
 

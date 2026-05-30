@@ -152,11 +152,11 @@ const MapView = {
         if (status === 'unavailable') {
           maplibregl.setRTLTextPlugin(
             'https://unpkg.com/@mapbox/mapbox-gl-rtl-text@0.2.3/mapbox-gl-rtl-text.min.js',
-            err => { if (err) console.warn('RTL plugin load error:', err); },
+            err => { if (err) Dev.warn('RTL plugin load error:', err); },
             true  // lazy: only fetch when an RTL character is encountered
           );
         }
-      } catch (e) { console.warn('RTL plugin setup failed:', e); }
+      } catch (e) { Dev.warn('RTL plugin setup failed:', e); }
 
       const dest = State.activeDest();
       // MapLibre uses [lng, lat] (NOT [lat, lng] like Leaflet!).
@@ -283,7 +283,7 @@ const MapView = {
       setTimeout(() => { try { this.m.resize(); } catch (e) {} }, 200);
 
     } catch (e) {
-      console.error('Map init error', e);
+      Dev.error('Map init error', e);
       Utils.toast('Map error: ' + e.message, 'bad');
     }
   },
@@ -1116,7 +1116,7 @@ const MapView = {
         try { if (typeof UI !== 'undefined' && UI.applyOfflineIndicator) UI.applyOfflineIndicator(); } catch (e) {}
       })
       .catch(e => {
-        console.warn('Route fetch failed:', e);
+        Dev.warn('Route fetch failed:', e);
         const msg = (e && e.message) || String(e);
         if (this._isReroute) {
           logEvent('ROUTE', '[ROUTE-DEVIATION] reroute failed: ' + msg, 'err');
@@ -1186,18 +1186,10 @@ const MapView = {
 
   /** v22.95: planar (flat-earth) distance in metres from a point P to
    *  the closest spot on the segment A→B. Accurate over short distances
-   *  (≤ a few km). Inputs in {lat,lng}. Used by _distanceToRouteMeters. */
+   *  (≤ a few km). Inputs in {lat,lng}. Used by _distanceToRouteMeters.
+   *  Delegates to the canonical Utils.pointToSegmentMeters helper. */
   _pointToSegmentMeters(p, a, b) {
-    const latToM = 111320;
-    const lngToM = 111320 * Math.cos(p.lat * Math.PI / 180);
-    const px = (p.lng - a.lng) * lngToM, py = (p.lat - a.lat) * latToM;
-    const bx = (b.lng - a.lng) * lngToM, by = (b.lat - a.lat) * latToM;
-    const segLenSq = bx * bx + by * by;
-    if (segLenSq === 0) return Math.sqrt(px * px + py * py);
-    let t = (px * bx + py * by) / segLenSq;
-    t = Math.max(0, Math.min(1, t));
-    const dx = px - t * bx, dy = py - t * by;
-    return Math.sqrt(dx * dx + dy * dy);
+    return Utils.pointToSegmentMeters(p, a, b);
   },
 
   /** v22.95: minimum perpendicular distance in metres from `pos` to any
@@ -5546,7 +5538,7 @@ function boot() {
       }, 1500);
     }
   } catch (e) {
-    console.error('Boot error', e);
+    Dev.error('Boot error', e);
     Utils.toast('Boot error: ' + e.message, 'bad');
     try { logEvent('BOOT', 'Error: ' + e.message, 'err'); } catch (_) {}
   }

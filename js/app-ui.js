@@ -2049,13 +2049,33 @@ const UI = {
     const startM = +State.settings.proximityStartM || 1000;
     const finalM = startM * 0.2;
 
-    if (railR) this._renderRailList(railR, rightPts.slice(0, 50), aheadIds, startM, finalM, myPos, 'No captures yet');
+    // v23.18.23 — right rail shows COUNTDOWN ONLY. Drop captures the
+    // engine has already marked passed, and any whose distance is
+    // trending up vs the previous Alerts.tick sample (i.e. the user
+    // is driving away from them). State.lastDistByPoint is populated
+    // by Alerts.tick for every point ≤ 5 km this tick, so the trend
+    // signal is fresh. Captures without a previous sample yet stay
+    // visible so newly-detected points still show on first tick.
+    // Left rail keeps every opposite-direction capture (those are
+    // inherently "behind" by design).
+    const RAIL_MOVE_AWAY_SLACK_M = 25;
+    const lastDistMap = State.lastDistByPoint;
+    const passed = State.passedPoints;
+    const rightCountdown = rightPts.filter(p => {
+      if (passed && passed.has && passed.has(p.id)) return false;
+      const distM = (p.dist || 0) * 1000;
+      const prevM = (lastDistMap && lastDistMap.get) ? lastDistMap.get(p.id) : null;
+      if (prevM != null && distM > prevM + RAIL_MOVE_AWAY_SLACK_M) return false;
+      return true;
+    });
+
+    if (railR) this._renderRailList(railR, rightCountdown.slice(0, 50), aheadIds, startM, finalM, myPos, 'No captures ahead');
     if (railL) this._renderRailList(railL, leftPts.slice(0, 50), aheadIds, startM, finalM, myPos,
       headingReliable ? 'No opposite-side captures' : 'Drive to split by direction');
 
     // v22.65: auto-scroll the right rail back to top when the focused
     // (closest) point changes.
-    const focusedId = rightPts[0] && rightPts[0].id;
+    const focusedId = rightCountdown[0] && rightCountdown[0].id;
     if (railR && focusedId && this._lastFocusedTimelineId !== focusedId) {
       this._lastFocusedTimelineId = focusedId;
       try { railR.scrollTo({ top: 0, behavior: 'smooth' }); }

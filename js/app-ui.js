@@ -2032,15 +2032,26 @@ const UI = {
       if (pb == null) return false;
       return Speed.angleDiff(heading, pb) > 135;
     };
-    // v23.11.0: only split when the left rail is enabled — otherwise
-    // every capture stays on the right rail (original behavior) so
-    // nothing disappears into a hidden rail.
+    // v23.11.0: when the left rail is enabled, opposite-direction
+    // captures route there.
+    // v23.18.24 — the right rail is now SAME-DIRECTION ONLY. Opposite-
+    // direction captures NEVER appear there, regardless of whether the
+    // left rail is enabled. If the left rail is disabled, opposite-
+    // direction captures are dropped from both rails (they're shown on
+    // the map either way). Captures with unknown direction (no
+    // captureBearing or no reliable heading) stay on the right rail so
+    // a fresh trip with no GPS heading yet still shows captures.
     const leftEnabled = State.settings.leftRailEnabled !== false;
     const rightPts = [];
     const leftPts = [];
     for (const p of pts) {
-      if (railL && leftEnabled && isOpposite(p)) leftPts.push(p);
-      else rightPts.push(p);
+      const opp = isOpposite(p);
+      if (opp) {
+        if (railL && leftEnabled) leftPts.push(p);
+        // else: drop entirely — never goes to the right rail.
+      } else {
+        rightPts.push(p);
+      }
     }
 
     const aheadList = (typeof Alerts !== 'undefined') ? Alerts.ahead() : [];

@@ -76,6 +76,12 @@ const MapView = {
   currentMarkerEl: null,
   destMarker: null,
   _pointMarkers: null,   // id -> maplibregl.Marker
+  // v23.19.0 — Waze-style clustering. When zoomed out, nearby point
+  // markers collapse into a single count bubble; zooming in expands them
+  // back into individual markers. Purely visual: _pointMarkers still holds
+  // every point so alert scoring, distance labels, ahead-ranks, the right
+  // rail and delete all keep operating on the full set.
+  _clusterBubbles: null, // array of maplibregl.Marker (cluster count bubbles)
   _activePopup: null,
   longPressTimer: null,
   _initTries: 0,
@@ -262,7 +268,9 @@ const MapView = {
       // v23.18.4 — recompute marker de-overlap offsets whenever the zoom
       // changes. Cheap pixel-bucket pass; only touches setOffset() on
       // markers we already track in this._pointMarkers.
-      this.m.on('zoomend', () => MapView._deoverlapMarkers());
+      // v23.19.0 — also re-run clustering on zoom so nearby markers
+      // collapse/expand as the user zooms out/in (Waze-style).
+      this.m.on('zoomend', () => { MapView._recluster(); MapView._deoverlapMarkers(); });
 
       // Wait for style+tiles to load before drawing points (otherwise markers
       // attach to a non-ready map and may not render).
@@ -609,10 +617,126 @@ const MapView = {
       });
       this._pointMarkers.set(p.id, marker);
     });
+    // v23.19.0 — collapse dense markers into cluster bubbles first, then
+    // de-overlap whatever individual markers remain visible. Both are
+    // visual-only: stored lat/lng is untouched and tap/popup still
+    // resolves to the original point.
+    this._recluster();
     // v23.18.4 — visual-only de-overlap so densely captured areas stay
     // readable. Pure pixel math via marker.setOffset(); stored lat/lng
     // is untouched and tap/popup still resolves to the original point.
     this._deoverlapMarkers();
+  },
+
+  /** v23.19.0 — Waze-style marker clustering. Groups nearby point
+   *  markers into screen-pixel buckets at low zoom. Any bucket holding
+   *  more than one point hides those individual markers (display:none on
+   *  the marker element) and drops a single count bubble at the bucket's
+   *  average position; tapping the bubble zooms in to expand it. At/above
+   *  CLUSTER_MAX_ZOOM every individual marker is shown and all bubbles are
+   *  removed, so the user sees each point as before.
+   *
+   *  Purely presentational:
+   *    - this._pointMarkers still contains every point marker, so
+   *      _updateMarkerDistances, updateAheadRanks, delete, the right rail
+   *      and alert scoring are all unaffected.
+   *    - stored coordinates are never modified.
+   *    - the destination + current-location markers are never clustered.
+   *
+   *  Hidden markers (passed / disabled) and the destination marker are
+   *  left out of the bucket math so a faint passed camera can't inflate a
+   *  cluster count for live points. */
+  CLUSTER_BUCKET_PX: 44,   // grid cell size for grouping (screen px)
+  CLUSTER_MAX_ZOOM: 16,    // at/above this zoom, never cluster — show all
+  CLUSTER_MIN_COUNT: 2,    // need at least this many to form a bubble
+  _recluster() {
+    if (!this.m || !this._mapLoaded || !this._pointMarkers) return;
+
+    // Tear down any existing cluster bubbles before recomputing.
+    if (this._clusterBubbles) {
+      this._clusterBubbles.forEach(b => { try { b.remove(); } catch (e) {} });
+    }
+    this._clusterBubbles = [];
+
+    const showAll = () => {
+      this._pointMarkers.forEach(mk => {
+        const el = mk.getElement();
+        if (el && el.style.display === 'none') el.style.display = '';
+      });
+    };
+
+    const zoom = (typeof this.m.getZoom === 'function') ? this.m.getZoom() : 0;
+    // Close enough that markers are already spread — show every marker.
+    if (zoom >= this.CLUSTER_MAX_ZOOM) { showAll(); return; }
+
+    // Bucket every CURRENTLY-VISIBLE point marker by screen-pixel cell.
+    // Skip passed / disabled markers (they're de-emphasised, not counted)
+    // so cluster counts reflect live points the driver cares about.
+    const bucket = this.CLUSTER_BUCKET_PX;
+    const buckets = new globalThis.Map();
+    this._pointMarkers.forEach((mk, id) => {
+      const el = mk.getElement();
+      const inner = el && el.firstElementChild;
+      if (inner && (inner.classList.contains('passed') || inner.classList.contains('disabled'))) {
+        // Leave faded markers visible and uncounted.
+        if (el && el.style.display === 'none') el.style.display = '';
+        return;
+      }
+      let ll, pt;
+      try { ll = mk.getLngLat(); pt = this.m.project(ll); } catch (e) { return; }
+      const key = Math.round(pt.x / bucket) + ':' + Math.round(pt.y / bucket);
+      let list = buckets.get(key);
+      if (!list) { list = []; buckets.set(key, list); }
+      list.push({ id, mk, el, lng: ll.lng, lat: ll.lat });
+    });
+
+    buckets.forEach(list => {
+      if (list.length < this.CLUSTER_MIN_COUNT) {
+        // Singleton — make sure it's shown as a normal marker.
+        const el = list[0].el;
+        if (el && el.style.display === 'none') el.style.display = '';
+        return;
+      }
+      // Multi-point bucket → hide members, drop one count bubble at the
+      // bucket's average lng/lat. setOffset is cleared so a previously
+      // de-overlapped member doesn't leave a phantom shift behind.
+      let sumLng = 0, sumLat = 0;
+      list.forEach(e => {
+        sumLng += e.lng; sumLat += e.lat;
+        try { e.mk.setOffset([0, 0]); } catch (err) {}
+        if (e.el) e.el.style.display = 'none';
+      });
+      const avgLng = sumLng / list.length;
+      const avgLat = sumLat / list.length;
+      const bubble = this._buildClusterBubble(list.length, [avgLng, avgLat]);
+      if (bubble) this._clusterBubbles.push(bubble);
+    });
+  },
+
+  /** v23.19.0 — build + add a single cluster count bubble. Tapping it
+   *  eases the map in toward the bubble so the cluster expands into its
+   *  individual markers (clustering re-runs on zoomend). */
+  _buildClusterBubble(count, lngLat) {
+    if (!this.m) return null;
+    const el = document.createElement('div');
+    el.className = 'ra-cluster';
+    el.textContent = count > 99 ? '99+' : String(count);
+    // Larger bubble for denser clusters, mirroring Waze's growth.
+    if (count >= 25) el.classList.add('ra-cluster-lg');
+    else if (count >= 10) el.classList.add('ra-cluster-md');
+    el.setAttribute('title', count + ' nearby — tap to expand');
+    const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+      .setLngLat(lngLat)
+      .addTo(this.m);
+    el.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      try {
+        const target = Math.min(this.CLUSTER_MAX_ZOOM + 1, this.m.getZoom() + 2.5);
+        State.followMap = false; UI.updateFollowPill();
+        this.m.easeTo({ center: lngLat, zoom: target, duration: 450, essential: true });
+      } catch (e) {}
+    });
+    return marker;
   },
 
   /** v23.18.4 — Visual marker de-overlap. Buckets markers by current
@@ -640,6 +764,11 @@ const MapView = {
     const entries = [];
     this._pointMarkers.forEach((mk, id) => {
       try {
+        // v23.19.0 — skip markers currently collapsed into a cluster
+        // bubble. They're display:none, so spreading them is pointless and
+        // would leave stale offsets when they re-expand.
+        const el = mk.getElement();
+        if (el && el.style.display === 'none') return;
         const ll = mk.getLngLat();
         const pt = this.m.project(ll);
         const key = Math.round(pt.x / bucket) + ':' + Math.round(pt.y / bucket);

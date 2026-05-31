@@ -1093,7 +1093,7 @@ body {
   margin-left: -17px; margin-top: -17px;
   border-radius: 50%;
   border: 2px solid #fff;
-  background: var(--ink-1, #1c1917);
+  background: #1c1917;       /* literal dark disc in both themes */
   color: #fff;
   display: grid; place-items: center;
   font-size: 13px;

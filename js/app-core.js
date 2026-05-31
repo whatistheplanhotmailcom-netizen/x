@@ -9,7 +9,7 @@
 //   MAJOR — architecture or major system milestone
 //   MINOR — new features or meaningful capability additions
 //   PATCH — bug fixes, tuning, logging, UI adjustments
-const APP_VERSION = 'v23.18.26';
+const APP_VERSION = 'v23.19.0';
 
 // Developer-only console mirror. Direct console.* output is noisy during
 // normal use, so raw diagnostics are routed through Dev.* — it forwards to

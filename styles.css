@@ -1084,6 +1084,37 @@ body {
 }
 .ra-marker.disabled { opacity: 0.3; filter: grayscale(1); }
 
+/* v23.19.0 — Waze-style cluster bubble. Shown when several nearby point
+   markers are collapsed at low zoom; tapping zooms in to expand them.
+   Neutral dark disc with a white count so it reads as a grouping, not as
+   any one alert type. Three size tiers grow with the cluster count. */
+.ra-cluster {
+  width: 34px; height: 34px;
+  margin-left: -17px; margin-top: -17px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  background: #1c1917;       /* literal dark disc in both themes */
+  color: #fff;
+  display: grid; place-items: center;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+  cursor: pointer;
+  z-index: 500;
+  -webkit-user-select: none; user-select: none;
+}
+.ra-cluster.ra-cluster-md {
+  width: 40px; height: 40px;
+  margin-left: -20px; margin-top: -20px;
+  font-size: 14px;
+}
+.ra-cluster.ra-cluster-lg {
+  width: 46px; height: 46px;
+  margin-left: -23px; margin-top: -23px;
+  font-size: 15px;
+}
+
 /* v22.34: visual indicator for the ahead-ranking points.
    #1 (focused/closest): hard on/off flash synced with proximity ping
    #2 / #3 (next-up): heartbeat glow (continuous breathing pulse)
